@@ -225,6 +225,45 @@ async def test_attach_result_requires_confirmed_status(client):
     assert res.json()["resultMatchId"] == match_id
 
 
+async def test_attach_result_allows_non_participant(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    c = await _signup(client, "carol", "Carol#1003")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    headers_c = {"Authorization": f"Bearer {c['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+    await _approve(client, a["accessToken"], "carol")
+
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    challenge_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "accepted"},
+    )
+
+    match_res = await client.post(
+        "/api/matches", headers=headers_c,
+        json={
+            "date": "2026-07-09",
+            "team1": [{"memberId": "alice", "race": "테란"}],
+            "team2": [{"memberId": "bob", "race": "저그"}],
+            "status": "completed",
+            "result": "team1",
+        },
+    )
+    assert match_res.status_code == 200, match_res.text
+    match_id = match_res.json()["id"]
+
+    # 참가자(alice/bob)가 아닌 carol도 결과를 연결할 수 있어야 한다 — 리플레이 등록/
+    # 게임아이디 매핑을 참가자 전용에서 아무나 도울 수 있도록 권한을 확장했다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/attach-result", headers=headers_c,
+        json={"matchId": match_id},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["resultMatchId"] == match_id
+
+
 async def test_creator_can_cancel_pending_challenge(client):
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")

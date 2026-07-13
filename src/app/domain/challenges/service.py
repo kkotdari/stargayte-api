@@ -206,12 +206,12 @@ class ChallengeService:
         return to_challenge_out(challenge, viewer_pk=actor.pk)
 
     async def attach_result(self, challenge_id: int, match_id: int, *, actor: Member) -> ChallengeOut:
+        # 예전엔 도전장 참가자만 결과를 연결할 수 있었지만, 리플레이 등록(및 그 안의
+        # 게임아이디 매핑)을 누구나 할 수 있게 열면서 이 연결도 참가자로 좁힐 이유가
+        # 없어졌다 — 인증된 회원이면 누구나 연결할 수 있다.
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
-        involved = any(p.member_pk == actor.pk for p in challenge.participants)
-        if not involved:
-            raise ForbiddenError("이 도전장과 관련 없는 회원은 결과를 연결할 수 없습니다.")
         if _status_of(challenge) != "confirmed":
             raise ValidationError("전원이 승락한 도전장만 결과를 연결할 수 있습니다.")
         match = await self._session.get(Match, match_id)
