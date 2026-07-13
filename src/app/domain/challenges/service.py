@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,8 @@ from app.domain.challenges.schemas import (
 from app.domain.matches.models import Match
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
+from app.storage.base import FileStorage
+from app.storage.data_url import decode_data_url, guess_extension, is_data_url
 
 
 def _status_of(challenge: Challenge) -> str:
@@ -42,6 +45,7 @@ def to_challenge_out(challenge: Challenge, *, viewer_pk: int) -> ChallengeOut:
         matchType=challenge.match_type,
         scheduledAt=challenge.scheduled_at,
         message=challenge.message,
+        photoUrl=challenge.photo_url,
         status=_status_of(challenge),
         createdBy=ChallengeAuthor(id=challenge.creator.id, nickname=challenge.creator.nickname),
         targets=[
@@ -70,10 +74,11 @@ def to_challenge_out(challenge: Challenge, *, viewer_pk: int) -> ChallengeOut:
 
 
 class ChallengeService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, storage: FileStorage) -> None:
         self._session = session
         self._repo = ChallengeRepository(session)
         self._member_repo = MemberRepository(session)
+        self._storage = storage
 
     async def list_challenges(self, *, actor: Member) -> list[ChallengeOut]:
         challenges = await self._repo.list_all()
@@ -106,10 +111,12 @@ class ChallengeService:
             "0101" if len(target_members) == 1 and len(own_members) == 0 else "0102"
         )
 
+        photo_url = await self._store_photo_if_needed(payload.photo)
         challenge = Challenge(
             match_type=match_type,
             scheduled_at=payload.scheduled_at,
             message=payload.message,
+            photo_url=photo_url,
             created_by=actor.pk,
             updated_by=actor.pk,
         )
@@ -123,6 +130,18 @@ class ChallengeService:
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["creator", "participants"])
         return to_challenge_out(challenge, viewer_pk=actor.pk)
+
+    async def _store_photo_if_needed(self, photo: str | None) -> str | None:
+        """photo가 data URL이면 디스크에 저장하고 그 URL을 반환한다 — 회원 아바타
+        저장(MemberService._store_avatar_if_needed)과 같은 방식이다. null이면 None."""
+        if photo is None or not is_data_url(photo):
+            return None
+        content, content_type = decode_data_url(photo)
+        ext = guess_extension(content_type)
+        stored = await self._storage.save(
+            subdir="challenges", filename=f"{uuid4().hex}{ext}", content=content, content_type=content_type,
+        )
+        return stored.url
 
     async def get_pending_for_me(self, *, actor: Member) -> list[ChallengeOut]:
         pending = await self._repo.list_pending_targets_for_member(actor.pk)

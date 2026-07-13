@@ -43,6 +43,8 @@ class ChallengeOut(BaseModel):
     match_type: ChallengeMatchType = Field(alias="matchType")
     scheduled_at: datetime | None = Field(alias="scheduledAt")
     message: str
+    # 도전장 보내기 폼에서 함께 첨부한 사진(선택) — 정적 파일 서빙 URL.
+    photo_url: str | None = Field(default=None, alias="photoUrl")
     status: ChallengeStatus
     created_by: ChallengeAuthor = Field(alias="createdBy")
     targets: list[ChallengeTargetOut]
@@ -56,6 +58,9 @@ class ChallengeCreate(BaseModel):
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
     message: str = ""
+    # data URL(base64) — 새 첨부 사진. 프론트가 업로드 전에 이미 리사이즈/재인코딩해서
+    # 보낸다(utils/image.ts). 서버는 그대로 디코드해 저장만 한다.
+    photo: str | None = None
     target_member_ids: list[str] = Field(alias="targetMemberIds", min_length=1, max_length=4)
     # 도전자 본인은 자동 포함(뺄 수 없음)이라 여기엔 "본인 제외 나머지 내 팀원"만 담는다
     # — 본인 포함 최대 4명이라 이 목록 자체는 최대 3명. (지금 UI는 1:1만 신청하므로 항상
