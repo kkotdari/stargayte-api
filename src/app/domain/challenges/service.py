@@ -29,8 +29,9 @@ def _status_of(challenge: Challenge) -> str:
 
 
 def to_challenge_out(challenge: Challenge, *, viewer_pk: int) -> ChallengeOut:
-    # 거절 사유는 요청자만 볼 수 있다 — 조회자가 요청자가 아니면 여기서 아예 걷어내서,
-    # 어느 엔드포인트로 조회하든(목록/받은함 등) 새어나갈 방법이 없게 한다.
+    # 응답 한마디(수락/거절 모두)는 요청자만 볼 수 있다 — 조회자가 요청자가 아니면
+    # 여기서 아예 걷어내서, 어느 엔드포인트로 조회하든(목록/받은함 등) 새어나갈 방법이
+    # 없게 한다.
     is_creator_viewer = viewer_pk == challenge.created_by
     targets = [p for p in challenge.participants if p.side == "target"]
     own_members = [
@@ -50,7 +51,7 @@ def to_challenge_out(challenge: Challenge, *, viewer_pk: int) -> ChallengeOut:
                 battletag=p.member.battletag,
                 avatar=p.member.avatar_url,
                 response=p.response,
-                rejectReason=p.reject_reason if is_creator_viewer else None,
+                responseMessage=p.response_message if is_creator_viewer else None,
             )
             for p in targets
         ],
@@ -151,7 +152,9 @@ class ChallengeService:
             raise ValidationError("이미 응답한 도전장입니다.")
         target.response = response
         target.responded_at = datetime.now(UTC)
-        target.reject_reason = reason if response == "rejected" else None
+        # 이제 수락에도 한마디를 받는다(요청: "편지지에 수락/거절 한줄 메시지 필수화")
+        # — 응답 종류와 무관하게 그대로 저장한다.
+        target.response_message = reason
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge, viewer_pk=actor.pk)
@@ -198,7 +201,7 @@ class ChallengeService:
             if p.side != "target":
                 continue
             p.response = "pending"
-            p.reject_reason = None
+            p.response_message = None
             p.responded_at = None
             p.notified = False
         await self._session.commit()

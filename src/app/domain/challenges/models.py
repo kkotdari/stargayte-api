@@ -53,7 +53,7 @@ class Challenge(AuditMixin, TimestampMixin, Base):
 class ChallengeParticipant(Base):
     """도전장 하나에 딸린 참가자 한 명 — match_participants(team1/team2)와 같은 원칙으로,
     "요청자 쪽"(side='creator': 도전자 본인 + 같은 편 팀원)과 "지목된 쪽"(side='target')을
-    한 테이블에서 side로만 구분한다. response/reject_reason/responded_at/notified는
+    한 테이블에서 side로만 구분한다. response/response_message/responded_at/notified는
     side='target' 행에서만 의미가 있다 — creator 쪽은 개별 수락/거절 없이(도전자가 자기
     팀을 구성해 보내는 것이므로) response가 항상 기본값('pending')에 머문다."""
 
@@ -75,9 +75,10 @@ class ChallengeParticipant(Base):
     )
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     response: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
-    # 거절 사유(선택) — 요청자만 볼 수 있다(서비스 레이어의 to_challenge_out이 viewer가
-    # 요청자가 아니면 API 응답에서 이 값을 걷어낸다).
-    reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 응답(수락/거절)에 남기는 한마디 — 거절 전용이었다가 수락에도 필수 입력을 받게
+    # 되면서 이름을 일반화했다. 요청자만 볼 수 있다(서비스 레이어의 to_challenge_out이
+    # viewer가 요청자가 아니면 API 응답에서 이 값을 걷어낸다).
+    response_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 지목된 사람이 다음 접속 때 팝업으로 한 번 본 뒤로는 다시 안 뜨게 하는 플래그 —
     # 목록/응답 상태 자체와는 별개다(팝업을 이미 봤어도 목록에서는 계속 pending으로 보인다).

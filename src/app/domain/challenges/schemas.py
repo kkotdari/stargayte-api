@@ -22,9 +22,9 @@ class ChallengeTargetOut(BaseModel):
     battletag: str
     avatar: str | None
     response: TargetResponse
-    # 거절 사유(선택) — 요청자가 아닌 조회자에게는 항상 None으로 내려간다
+    # 응답(수락/거절) 한마디 — 요청자가 아닌 조회자에게는 항상 None으로 내려간다
     # (to_challenge_out의 viewer_pk 검사 참고).
-    reject_reason: str | None = Field(default=None, alias="rejectReason")
+    response_message: str | None = Field(default=None, alias="responseMessage")
 
 
 class ChallengeOwnMemberOut(BaseModel):
@@ -75,7 +75,10 @@ class ChallengeCreate(BaseModel):
 
 class ChallengeRespondIn(BaseModel):
     response: Literal["accepted", "rejected"]
-    # 거절할 때만 의미가 있다(선택) — 승락에 사유를 보내도 그냥 무시된다.
+    # 응답 한마디 — API 자체는 선택으로 둔다(경기결과 화면 목록의 빠른 승락/거절
+    # 버튼은 메시지 없이 한 번에 응답하는 흐름을 그대로 유지해야 한다). "필수화" 요청은
+    # 인박스(편지지) 화면에서만 적용되고, 그쪽은 프론트에서 빈 값이면 제출 버튼 자체를
+    # 막는다(ChallengeInboxModal.tsx 참고).
     reason: str | None = None
 
 

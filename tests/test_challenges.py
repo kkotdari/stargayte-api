@@ -63,14 +63,14 @@ async def test_multi_target_is_team_type_and_requires_all_accepts(client):
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "pending"  # carol이 아직 응답 안 함
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_c,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "confirmed"
@@ -93,14 +93,14 @@ async def test_any_rejection_marks_challenge_rejected(client):
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "rejected"},
+        json={"response": "rejected", "reason": "다음에 해요"},
     )
     assert res.json()["status"] == "rejected"
 
     # carol이 나중에 승락해도 이미 거부된 초대장은 그대로 거부다.
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_c,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
     assert res.json()["status"] == "rejected"
 
@@ -119,13 +119,13 @@ async def test_cannot_respond_twice(client):
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
     assert res.status_code == 200, res.text
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "rejected"},
+        json={"response": "rejected", "reason": "다음에 해요"},
     )
     assert res.status_code == 400, res.text
 
@@ -145,7 +145,7 @@ async def test_non_target_cannot_respond(client):
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_c,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
     assert res.status_code == 403, res.text
 
@@ -214,7 +214,7 @@ async def test_attach_result_requires_confirmed_status(client):
 
     await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
 
     res = await client.post(
@@ -238,7 +238,7 @@ async def test_attach_result_allows_non_participant(client):
     res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
     challenge_id = res.json()["id"]
     await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "accepted"},
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "accepted", "reason": "OK!"},
     )
 
     match_res = await client.post(
@@ -308,7 +308,7 @@ async def test_cannot_cancel_after_confirmed(client):
     challenge_id = res.json()["id"]
     await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
 
     res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
@@ -340,11 +340,11 @@ async def test_reject_reason_visible_only_to_creator(client):
 
     res = await client.get("/api/challenges", headers=headers_a)
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
-    assert body["targets"][0]["rejectReason"] == "그날은 바빠요"
+    assert body["targets"][0]["responseMessage"] == "그날은 바빠요"
 
     res = await client.get("/api/challenges", headers=headers_c)
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
-    assert body["targets"][0]["rejectReason"] is None
+    assert body["targets"][0]["responseMessage"] is None
 
 
 async def test_reapply_resets_target_responses_and_can_edit_time(client):
@@ -376,12 +376,12 @@ async def test_reapply_resets_target_responses_and_can_edit_time(client):
     assert body["scheduledAt"].startswith("2026-08-05")
     assert body["message"] == "이번엔 어때요"
     assert body["targets"][0]["response"] == "pending"
-    assert body["targets"][0]["rejectReason"] is None
+    assert body["targets"][0]["responseMessage"] is None
 
     # 다시 승락하면 정상적으로 확정된다.
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted"},
+        json={"response": "accepted", "reason": "OK!"},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "confirmed"
@@ -400,7 +400,7 @@ async def test_reapply_without_edits_keeps_existing_time_and_message(client):
     )
     challenge_id = res.json()["id"]
     await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "rejected"},
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "rejected", "reason": "다음에 해요"},
     )
 
     res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
@@ -427,7 +427,7 @@ async def test_only_creator_can_reapply_and_only_when_rejected(client):
     assert res.status_code == 400, res.text
 
     await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "rejected"},
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "rejected", "reason": "다음에 해요"},
     )
 
     # 요청자가 아니면 거절된 뒤라도 재신청할 수 없다.
