@@ -1,0 +1,236 @@
+"""랭킹 정렬 검증 — 개인전(GET /api/matches/stats의 sortOrder/tieGroup)과 팀전(GET /api/matches/team-ranking).
+
+정렬 규칙이 "동률일 때만 다음 단계로 넘어간다"는 단계형이라, 각 단계가 실제로 순서를 가르는
+최소 픽스처를 단계별로 하나씩 만든다.
+"""
+
+from datetime import date
+
+
+async def _signup(client, member_id: str, battletag: str) -> dict:
+    res = await client.post(
+        "/api/auth/signup",
+        json={
+            "id": member_id, "password": "pass1234", "battletag": battletag,
+            "replayAliases": [member_id], "insta": "",
+        },
+    )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+async def _signup_many(client, count: int) -> dict:
+    """player01..playerNN을 만들고 첫 회원의 인증 헤더를 돌려준다."""
+    first = None
+    for i in range(1, count + 1):
+        res = await _signup(client, f"player{i:02d}", f"Tag{i:02d}#100{i}")
+        first = first or res
+    return {"Authorization": f"Bearer {first['accessToken']}"}
+
+
+async def _match(client, headers, team1: list[str], team2: list[str], result: str, when: str) -> None:
+    def slots(ids: list[str]) -> list[dict]:
+        return [{"memberId": i, "race": "테란"} for i in ids]
+
+    res = await client.post(
+        "/api/matches",
+        headers=headers,
+        json={
+            "date": when, "team1": slots(team1), "team2": slots(team2),
+            "result": result, "note": "",
+            "matchType": "0102" if len(team1) > 1 or len(team2) > 1 else "0101",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+
+async def _stats(client, headers) -> dict:
+    res = await client.get("/api/matches/stats", headers=headers)
+    assert res.status_code == 200, res.text
+    return {m["memberId"]: m for m in res.json()["members"]}
+
+
+TODAY = date.today().isoformat()
+
+
+async def test_rank_order_puts_head_to_head_winner_first(client):
+    """승자승이 1순위다 — 승률도, 승점도 보기 전에 "그 둘이 직접 붙었을 때 누가 이겼나"부터 본다.
+    p1은 1전 1승(승점 +1), p2는 3전 2승 1패(승점 +1)로 승점이 같지만, 둘의 맞대결에서 p1이 이겼다."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2
+    await _match(client, headers, ["player02"], ["player03"], "team1", TODAY)  # p2 > p3
+    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4
+
+    by_id = await _stats(client, headers)
+    # 승률만 보면 p1(100%)이 p2(66.7%)보다 위지만, 그건 근거가 아니다 — 맞대결이 근거다.
+    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
+    assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
+
+
+async def test_rank_order_ties_when_only_points_differ(client):
+    """승점(승-패) 기준은 없앴다 — 맞대결도 없고 공통상대도 없는 두 사람이 전체 승수만
+    같다면, 승점(승-패)이 서로 달라도 이제는 진짜 동률(같은 tieGroup)로 취급된다.
+    p1은 2전 2승(승점 +2), p2는 4전 2승 2패(승점 0) — 승수는 둘 다 2로 같다.
+
+    p2에게 진 상대(p7)는 승자승으로 p2보다 무조건 위에 서지만, p7 자신의 승수(p9까지
+    이겨 3승)가 p1보다도 많게 잡아서 p7이 p1-p2 사이에 끼어들지 않게 한다 — 안 그러면
+    "p2에게 이긴 사람은 항상 p2보다 위"라는 별개 규칙 때문에 p1과 p2가 동률이어도 그
+    사이에 다른 사람이 끼어 보여, 이 테스트가 확인하려는 것(p1·p2가 서로 인접한 동률)과
+    무관한 이유로 실패한다."""
+    headers = await _signup_many(client, 8)
+    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
+    await _match(client, headers, ["player01"], ["player04"], "team1", TODAY)  # p1 > p4
+    await _match(client, headers, ["player02"], ["player05"], "team1", TODAY)  # p2 > p5
+    await _match(client, headers, ["player02"], ["player06"], "team1", TODAY)  # p2 > p6
+    await _match(client, headers, ["player07"], ["player02"], "team1", TODAY)  # p7 > p2
+    await _match(client, headers, ["player07"], ["player02"], "team1", TODAY)  # p7 > p2 (한 번 더)
+    await _match(client, headers, ["player07"], ["player08"], "team1", TODAY)  # p7 > p8
+
+    by_id = await _stats(client, headers)
+    assert by_id["player01"]["overall"]["wins"] == by_id["player02"]["overall"]["wins"] == 2
+    assert by_id["player01"]["overall"]["losses"] == 0
+    assert by_id["player02"]["overall"]["losses"] == 2
+
+    assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
+    assert abs(by_id["player01"]["sortOrder"] - by_id["player02"]["sortOrder"]) == 1
+
+
+async def test_rank_order_falls_back_to_common_opponents(client):
+    """맞대결도 없고 승점도 같으면, 둘 다 붙어본 상대(공통상대)에 대한 승점으로 가른다.
+    p1/p2는 각각 1승 1패(승점 0)이고 서로 만난 적이 없다 — 공통상대는 p3 하나뿐인데
+    p1은 p3에게 이겼고(+1) p2는 졌다(-1)."""
+    headers = await _signup_many(client, 6)
+    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
+    await _match(client, headers, ["player04"], ["player01"], "team1", TODAY)  # p4 > p1
+    await _match(client, headers, ["player03"], ["player02"], "team1", TODAY)  # p3 > p2
+    await _match(client, headers, ["player02"], ["player05"], "team1", TODAY)  # p2 > p5
+
+    by_id = await _stats(client, headers)
+    assert by_id["player01"]["overall"]["wins"] == by_id["player02"]["overall"]["wins"] == 1
+    assert by_id["player01"]["overall"]["losses"] == by_id["player02"]["overall"]["losses"] == 1
+
+    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
+    assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
+
+
+async def test_rank_order_marks_full_ties_as_same_tie_group(client):
+    """모든 기준(맞대결 → 공통상대 → 승수)이 같으면 공동순위 — 셋이 물고 물리는
+    순환(p1>p2>p3>p1)이라 승점도 전원 0, 공통상대도 없고 승수도 1로 같다.
+
+    순환에서는 "이겼는데 아래"인 쌍이 반드시 하나 생긴다(원리적으로 순서를 정할 수 없다) —
+    그래도 정렬은 끝나야 하고, 같은 입력이면 매번 같은 결과가 나와야 한다."""
+    headers = await _signup_many(client, 3)
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
+    await _match(client, headers, ["player02"], ["player03"], "team1", TODAY)
+    await _match(client, headers, ["player03"], ["player01"], "team1", TODAY)
+
+    by_id = await _stats(client, headers)
+    orders = [by_id[f"player0{i}"]["sortOrder"] for i in (1, 2, 3)]
+    assert sorted(orders) == [0, 1, 2]  # 순서 자체는 항상 결정된다
+
+    # 두 번 조회해도 같은 결과 — 순환이어도 매 요청 흔들리지 않는다.
+    again = await _stats(client, headers)
+    assert [again[f"player0{i}"]["sortOrder"] for i in (1, 2, 3)] == orders
+
+
+async def test_rank_order_is_none_for_members_without_matches(client):
+    headers = await _signup_many(client, 2)
+    by_id = await _stats(client, headers)
+    assert by_id["player01"]["sortOrder"] is None
+    assert by_id["player01"]["tieGroup"] is None
+
+
+async def test_team_ranking_aggregates_actual_team_lineups(client):
+    """실제로 같은 편이었던 2인 이상 구성만 팀으로 잡고, 승점(승 +1, 무 0, 패 -1) 순으로 줄세운다."""
+    headers = await _signup_many(client, 4)
+    # [p1,p2] vs [p3,p4] 2전: 2승 → +2점 / 2패 → -2점. 둘 다 2전을 채워 랭킹에 오른다.
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    # 편을 바꿔 한 번만 뛴 조합은 2전에 못 미쳐 랭킹에 안 나온다(개인 승점 계산에는 그대로 들어간다).
+    await _match(client, headers, ["player01", "player03"], ["player02", "player04"], "draw", TODAY)
+    # 1:1 경기는 팀(2인 이상)이 아니라 팀랭킹에 아예 안 잡힌다.
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
+
+    res = await client.get("/api/matches/team-ranking", headers=headers)
+    assert res.status_code == 200, res.text
+    teams = res.json()["teams"]
+    assert [t["memberIds"] for t in teams] == [
+        ["player01", "player02"],
+        ["player03", "player04"],
+    ]
+    assert teams[0] == {
+        "memberIds": ["player01", "player02"], "plays": 2, "wins": 2, "losses": 0, "draws": 0, "points": 2,
+    }
+    assert teams[1] == {
+        "memberIds": ["player03", "player04"], "plays": 2, "wins": 0, "losses": 2, "draws": 0, "points": -2,
+    }
+
+
+async def test_team_ranking_excludes_sides_with_a_placeholder_slot(client):
+    """한 편에 컴퓨터/비회원이 한 명이라도 섞이면, 남은 실제 회원끼리를 더 작은(별개의)
+    팀으로 잘못 집계해서는 안 된다 — 예: 3인 편(회원 2명+비회원 1명)이 회원 2명짜리 2인
+    팀처럼 랭킹에 뜨는 버그가 실제로 있었다. 반대편([player03, player04])은 그 자체로
+    깨끗한(비회원이 안 섞인) 2인 편이라 정상적으로 팀 랭킹에 잡혀야 한다."""
+    headers = await _signup_many(client, 4)
+    # [p1,p2,비회원] vs [p3,p4] 2전 — p1/p2 편에 비회원이 끼어 있으니 이 편은 팀으로
+    # 잡히면 안 된다.
+    for _ in range(2):
+        res = await client.post(
+            "/api/matches",
+            headers=headers,
+            json={
+                "date": TODAY,
+                "team1": [
+                    {"memberId": "player01", "race": "테란"},
+                    {"memberId": "player02", "race": "테란"},
+                    {"memberId": "__unregistered__x", "race": "저그"},
+                ],
+                "team2": [
+                    {"memberId": "player03", "race": "테란"},
+                    {"memberId": "player04", "race": "테란"},
+                ],
+                "result": "team1", "note": "", "matchType": "0102",
+            },
+        )
+        assert res.status_code == 200, res.text
+
+    res = await client.get("/api/matches/team-ranking", headers=headers)
+    assert res.status_code == 200, res.text
+    team_ids = [t["memberIds"] for t in res.json()["teams"]]
+    assert ["player01", "player02"] not in team_ids
+    assert ["player03", "player04"] in team_ids
+
+    # 진짜 2:2(비회원 없이)로 두 번 뛰면 그제서야 [player01, player02]도 팀으로 잡힌다.
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    res = await client.get("/api/matches/team-ranking", headers=headers)
+    team_ids = [t["memberIds"] for t in res.json()["teams"]]
+    assert ["player01", "player02"] in team_ids
+
+
+async def test_team_ranking_hides_teams_below_the_minimum_plays(client):
+    """딱 한 번 같이 뛰고 이긴 조합이 승점 +1로 상위에 앉으면 랭킹이 의미를 잃는다 — 2전부터 올린다."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+
+    res = await client.get("/api/matches/team-ranking", headers=headers)
+    assert res.json()["teams"] == []
+
+    # 한 번 더 뛰면 두 조합 모두 랭킹에 오른다.
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    res = await client.get("/api/matches/team-ranking", headers=headers)
+    assert [t["memberIds"] for t in res.json()["teams"]] == [
+        ["player01", "player02"], ["player03", "player04"],
+    ]
+
+
+async def test_team_ranking_counts_every_match_regardless_of_age(client):
+    """기간 조건이 없다 — 클럽 경기 수가 워낙 적어서 아무리 오래된 경기도 그대로 집계에 들어간다."""
+    headers = await _signup_many(client, 4)
+    for day in ("2020-01-01", "2020-01-02"):
+        await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", day)
+
+    res = await client.get("/api/matches/team-ranking", headers=headers)
+    teams = res.json()["teams"]
+    assert [t["memberIds"] for t in teams] == [["player01", "player02"], ["player03", "player04"]]
+    assert teams[0]["points"] == 2
