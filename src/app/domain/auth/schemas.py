@@ -23,10 +23,11 @@ class SignupRequest(BaseModel):
     id: str = Field(min_length=2, max_length=64)
     password: str = Field(min_length=4, max_length=128)
     battletag: str = Field(min_length=1, max_length=50)
-    # 리플레이(.rep)에 실제로 기록되는 게임 내 표시 이름 — 리플레이 일괄 등록 매칭에 꼭
-    # 필요해서 가입 시점부터 최소 1개는 필수로 받는다. 개수 제한은 없다 — 가입 화면에서도
-    # 처음부터 여러 개를 받을 수 있다.
-    replay_aliases: list[str] = Field(min_length=1, alias="replayAliases")
+    # 리플레이(.rep)에 실제로 기록되는 게임 내 표시 이름 — 가입 화면에서 이 항목을 뺐다
+    # (요청: "회원가입 모달에서 게임아이디 항목 삭제"). 관리자가 회원을 직접 만들 때
+    # (MemberCreate)와 마찬가지로 0개로 시작하고, 필요하면 가입 후 내 정보 수정에서
+    # 언제든 추가할 수 있다.
+    replay_aliases: list[str] = Field(default_factory=list, alias="replayAliases")
     insta: str = ""
     avatar: str | None = None
 
