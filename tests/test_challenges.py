@@ -315,7 +315,9 @@ async def test_cannot_cancel_after_confirmed(client):
     assert res.status_code == 400, res.text
 
 
-async def test_reject_reason_visible_only_to_creator(client):
+async def test_reject_reason_is_visible_to_anyone(client):
+    """응답 한마디(수락/거절)는 전체 공개다 — 요청자든 제3자든 똑같이 볼 수 있다
+    (요청: "요청자 계정이 아니더라도 다 보여야해 전체 공개")."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     c = await _signup(client, "carol", "Carol#1003")
@@ -335,16 +337,16 @@ async def test_reject_reason_visible_only_to_creator(client):
         json={"response": "rejected", "reason": "그날은 바빠요"},
     )
     assert res.status_code == 200, res.text
-    # respond() 자신의 응답은 viewer=bob(요청자가 아님)으로 직렬화되므로 여기서는
-    # 굳이 확인하지 않는다 — 가림 규칙은 아래처럼 "다른 사람이 목록을 조회할 때" 확인한다.
+    assert res.json()["targets"][0]["responseMessage"] == "그날은 바빠요"
 
     res = await client.get("/api/challenges", headers=headers_a)
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
     assert body["targets"][0]["responseMessage"] == "그날은 바빠요"
 
+    # 요청자도, 지목된 당사자도 아닌 제3자(carol)에게도 똑같이 보인다.
     res = await client.get("/api/challenges", headers=headers_c)
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
-    assert body["targets"][0]["responseMessage"] is None
+    assert body["targets"][0]["responseMessage"] == "그날은 바빠요"
 
 
 async def test_reapply_resets_target_responses_and_can_edit_time(client):

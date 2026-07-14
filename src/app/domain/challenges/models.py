@@ -76,8 +76,7 @@ class ChallengeParticipant(Base):
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     response: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
     # 응답(수락/거절)에 남기는 한마디 — 거절 전용이었다가 수락에도 필수 입력을 받게
-    # 되면서 이름을 일반화했다. 요청자만 볼 수 있다(서비스 레이어의 to_challenge_out이
-    # viewer가 요청자가 아니면 API 응답에서 이 값을 걷어낸다).
+    # 되면서 이름을 일반화했다. 전체 공개(누구나 조회 가능).
     response_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 지목된 사람이 다음 접속 때 팝업으로 한 번 본 뒤로는 다시 안 뜨게 하는 플래그 —

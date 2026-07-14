@@ -28,11 +28,9 @@ def _status_of(challenge: Challenge) -> str:
     return "pending"
 
 
-def to_challenge_out(challenge: Challenge, *, viewer_pk: int) -> ChallengeOut:
-    # 응답 한마디(수락/거절 모두)는 요청자만 볼 수 있다 — 조회자가 요청자가 아니면
-    # 여기서 아예 걷어내서, 어느 엔드포인트로 조회하든(목록/받은함 등) 새어나갈 방법이
-    # 없게 한다.
-    is_creator_viewer = viewer_pk == challenge.created_by
+def to_challenge_out(challenge: Challenge) -> ChallengeOut:
+    # 응답 한마디(수락/거절 모두)는 전체 공개다 — 요청자가 아니어도 누구나 볼 수 있다
+    # (예전엔 요청자만 봤지만, 요청에 따라 제한을 없앴다).
     targets = [p for p in challenge.participants if p.side == "target"]
     own_members = [
         p for p in challenge.participants if p.side == "creator" and p.member_pk != challenge.created_by
@@ -51,7 +49,7 @@ def to_challenge_out(challenge: Challenge, *, viewer_pk: int) -> ChallengeOut:
                 battletag=p.member.battletag,
                 avatar=p.member.avatar_url,
                 response=p.response,
-                responseMessage=p.response_message if is_creator_viewer else None,
+                responseMessage=p.response_message,
             )
             for p in targets
         ],
@@ -77,7 +75,7 @@ class ChallengeService:
 
     async def list_challenges(self, *, actor: Member) -> list[ChallengeOut]:
         challenges = await self._repo.list_all()
-        return [to_challenge_out(c, viewer_pk=actor.pk) for c in challenges]
+        return [to_challenge_out(c) for c in challenges]
 
     async def create_challenge(self, payload: ChallengeCreate, *, actor: Member) -> ChallengeOut:
         target_members: list[Member] = []
@@ -122,7 +120,7 @@ class ChallengeService:
         await self._repo.flush()
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["creator", "participants"])
-        return to_challenge_out(challenge, viewer_pk=actor.pk)
+        return to_challenge_out(challenge)
 
     async def get_pending_for_me(self, *, actor: Member) -> list[ChallengeOut]:
         pending = await self._repo.list_pending_targets_for_member(actor.pk)
@@ -133,7 +131,7 @@ class ChallengeService:
             if challenge is not None:
                 challenges.append(challenge)
         await self._session.commit()
-        return [to_challenge_out(c, viewer_pk=actor.pk) for c in challenges]
+        return [to_challenge_out(c) for c in challenges]
 
     async def respond(
         self, challenge_id: int, response: str, *, actor: Member, reason: str | None = None
@@ -157,7 +155,7 @@ class ChallengeService:
         target.response_message = reason
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, viewer_pk=actor.pk)
+        return to_challenge_out(challenge)
 
     async def cancel_challenge(self, challenge_id: int, *, actor: Member) -> ChallengeOut:
         """요청자(도전자)가 확정 전에 스스로 취소한다 — 이미 전원이 승락(confirmed)한
@@ -173,7 +171,7 @@ class ChallengeService:
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, viewer_pk=actor.pk)
+        return to_challenge_out(challenge)
 
     async def reapply_challenge(
         self,
@@ -206,7 +204,7 @@ class ChallengeService:
             p.notified = False
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, viewer_pk=actor.pk)
+        return to_challenge_out(challenge)
 
     async def attach_result(self, challenge_id: int, match_id: int, *, actor: Member) -> ChallengeOut:
         # 예전엔 도전장 참가자만 결과를 연결할 수 있었지만, 리플레이 등록(및 그 안의
@@ -224,4 +222,4 @@ class ChallengeService:
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, viewer_pk=actor.pk)
+        return to_challenge_out(challenge)

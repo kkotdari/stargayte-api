@@ -22,8 +22,8 @@ class ChallengeTargetOut(BaseModel):
     battletag: str
     avatar: str | None
     response: TargetResponse
-    # 응답(수락/거절) 한마디 — 요청자가 아닌 조회자에게는 항상 None으로 내려간다
-    # (to_challenge_out의 viewer_pk 검사 참고).
+    # 응답(수락/거절) 한마디 — 전체 공개다(요청자가 아니어도 누구나 볼 수 있다). 아직
+    # 응답 안 했으면(response="pending") None.
     response_message: str | None = Field(default=None, alias="responseMessage")
 
 
