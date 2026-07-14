@@ -33,11 +33,6 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 미정이면 NULL.
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # 확정된 뒤 실제로 경기를 치르고 리플레이를 등록하면, 그 결과(matches.id)를 여기 연결한다.
-    # 도전장 게시판 자체는 독립적이지만, 실제로 열린 경기와의 연결 고리만 얇게 남긴다.
-    result_match_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("matches.id", ondelete="SET NULL"), nullable=True
-    )
     # 요청자(도전자)가 확정 전에 스스로 취소한 시각 — NULL이면 취소 안 됨. 확정된 뒤에는
     # 취소할 수 없다(서비스 레이어에서 막는다).
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

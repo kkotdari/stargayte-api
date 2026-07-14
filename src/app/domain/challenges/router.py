@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from app.api.deps import CurrentMember, DbSession
 from app.domain.challenges.schemas import (
-    ChallengeAttachResultIn,
     ChallengeCreate,
     ChallengeListOut,
     ChallengeOut,
@@ -57,10 +56,3 @@ async def reapply_challenge(
     return await ChallengeService(db).reapply_challenge(
         challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
     )
-
-
-@router.post("/{challenge_id}/attach-result", response_model=ChallengeOut)
-async def attach_challenge_result(
-    challenge_id: int, payload: ChallengeAttachResultIn, db: DbSession, current: CurrentMember
-) -> ChallengeOut:
-    return await ChallengeService(db).attach_result(challenge_id, payload.match_id, actor=current)

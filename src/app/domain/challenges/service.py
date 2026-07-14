@@ -13,7 +13,6 @@ from app.domain.challenges.schemas import (
     ChallengeOwnMemberOut,
     ChallengeTargetOut,
 )
-from app.domain.matches.models import Match
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
@@ -85,7 +84,6 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
             )
             for p in own_members
         ],
-        resultMatchId=challenge.result_match_id,
         createdAt=challenge.created_at,
         reappliedFromId=challenge.reapplied_from_id,
         history=[_history_entry(c) for c in (history or [])],
@@ -99,11 +97,11 @@ class ChallengeService:
         self._member_repo = MemberRepository(session)
 
     # 재신청 체인(reapplied_from_id를 따라 올라가는 사슬)에서 이 도전장보다 앞선 기록을
-    # 오래된 순으로 모은다 — 단일 도전장 하나만 다루는 엔드포인트(respond/cancel/reapply/
-    # attach-result)에서 쓴다. 체인은 실제로는 몇 단계 안 넘을 것으로 보고(계속 거절만
-    # 당하는 극단적인 경우가 아니면), 매번 get()으로 한 단계씩 거슬러 올라가는 정도의
-    # 비용은 감수한다 — list_challenges처럼 전체 목록을 한 번에 다룰 때는 그 안에서
-    # 이미 불러온 것들로 메모리에서 처리한다(_history_chain_from_map 참고).
+    # 오래된 순으로 모은다 — 단일 도전장 하나만 다루는 엔드포인트(respond/cancel/reapply)
+    # 에서 쓴다. 체인은 실제로는 몇 단계 안 넘을 것으로 보고(계속 거절만 당하는 극단적인
+    # 경우가 아니면), 매번 get()으로 한 단계씩 거슬러 올라가는 정도의 비용은 감수한다 —
+    # list_challenges처럼 전체 목록을 한 번에 다룰 때는 그 안에서 이미 불러온 것들로
+    # 메모리에서 처리한다(_history_chain_from_map 참고).
     async def _history_chain(self, challenge: Challenge) -> list[Challenge]:
         chain: list[Challenge] = []
         cur = challenge
@@ -292,21 +290,3 @@ class ChallengeService:
         await self._session.commit()
         await self._session.refresh(new_challenge, attribute_names=["creator", "participants"])
         return to_challenge_out(new_challenge, history=await self._history_chain(new_challenge))
-
-    async def attach_result(self, challenge_id: int, match_id: int, *, actor: Member) -> ChallengeOut:
-        # 예전엔 도전장 참가자만 결과를 연결할 수 있었지만, 리플레이 등록(및 그 안의
-        # 게임아이디 매핑)을 누구나 할 수 있게 열면서 이 연결도 참가자로 좁힐 이유가
-        # 없어졌다 — 인증된 회원이면 누구나 연결할 수 있다.
-        challenge = await self._repo.get(challenge_id)
-        if challenge is None:
-            raise NotFoundError("도전장을 찾을 수 없습니다.")
-        if _status_of(challenge) != "confirmed":
-            raise ValidationError("전원이 승락한 도전장만 결과를 연결할 수 있습니다.")
-        match = await self._session.get(Match, match_id)
-        if match is None:
-            raise NotFoundError("경기결과를 찾을 수 없습니다.")
-        challenge.result_match_id = match_id
-        challenge.updated_by = actor.pk
-        await self._session.commit()
-        await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, history=await self._history_chain(challenge))

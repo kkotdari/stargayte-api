@@ -62,7 +62,6 @@ class ChallengeOut(BaseModel):
     created_by: ChallengeAuthor = Field(alias="createdBy")
     targets: list[ChallengeTargetOut]
     own_members: list[ChallengeOwnMemberOut] = Field(alias="ownMembers")
-    result_match_id: int | None = Field(alias="resultMatchId")
     created_at: datetime = Field(alias="createdAt")
     # 재신청 체인 — 이 도전장이 재신청으로 만들어졌으면 원래 도전장의 id, 아니면 None.
     reapplied_from_id: int | None = Field(default=None, alias="reappliedFromId")
@@ -118,12 +117,6 @@ class ChallengeReapplyIn(BaseModel):
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
     message: str | None = None
-
-
-class ChallengeAttachResultIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    match_id: int = Field(alias="matchId")
 
 
 class ChallengeListOut(BaseModel):
