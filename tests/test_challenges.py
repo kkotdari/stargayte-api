@@ -55,7 +55,7 @@ async def test_multi_target_is_team_type_and_requires_all_accepts(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob", "carol"]},
+        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
     )
     assert res.status_code == 200, res.text
     challenge_id = res.json()["id"]
@@ -87,7 +87,8 @@ async def test_any_rejection_marks_challenge_rejected(client):
     await _approve(client, a["accessToken"], "carol")
 
     res = await client.post(
-        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob", "carol"]},
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
     )
     challenge_id = res.json()["id"]
 
@@ -113,7 +114,8 @@ async def test_cannot_respond_twice(client):
     await _approve(client, a["accessToken"], "bob")
 
     res = await client.post(
-        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
     )
     challenge_id = res.json()["id"]
 
@@ -189,7 +191,10 @@ async def test_attach_result_requires_confirmed_status(client):
     headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
     await _approve(client, a["accessToken"], "bob")
 
-    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
     challenge_id = res.json()["id"]
 
     match_res = await client.post(
@@ -235,7 +240,10 @@ async def test_attach_result_allows_non_participant(client):
     await _approve(client, a["accessToken"], "bob")
     await _approve(client, a["accessToken"], "carol")
 
-    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
     challenge_id = res.json()["id"]
     await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b, json={"response": "accepted", "reason": "OK!"},
@@ -303,7 +311,8 @@ async def test_cannot_cancel_after_confirmed(client):
     await _approve(client, a["accessToken"], "bob")
 
     res = await client.post(
-        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
     )
     challenge_id = res.json()["id"]
     await client.post(
@@ -480,3 +489,62 @@ async def test_cannot_put_same_member_on_both_teams(client):
         json={"targetMemberIds": ["bob"], "ownTeamMemberIds": ["bob"]},
     )
     assert res.status_code == 422, res.text
+
+
+async def test_accepting_unscheduled_challenge_requires_time(client):
+    """요청자가 "시간 지정"을 끄고 보낸(scheduledAt 없음) 도전장은 "상대가 정해도
+    된다"는 뜻이다 — 그 시간을 아무도 안 채우면 영원히 미정인 채 승락 상태에 박제되는
+    문제가 있었다(요청: "도전자/상대 모두 시간을 지정하지 않았는데 수락이 된 경우가
+    있네 이러면 안되는데"). 수락하는 시점에 상대가 시간을 정하지 않으면 거부돼야 한다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    challenge_id = res.json()["id"]
+    assert res.json()["scheduledAt"] is None
+
+    # 시간 없이 그냥 승락하려 하면 막혀야 한다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    assert res.status_code == 400, res.text
+
+    # 시간을 같이 보내면 그 시간으로 정해지며 정상 승락된다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!", "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "confirmed"
+    assert body["scheduledAt"].startswith("2026-08-01")
+
+
+async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client):
+    """요청자가 이미 시간을 정해 보낸 도전장은, 응답하는 쪽이 다른 시간을 같이 보내도
+    무시되고 원래 시간 그대로 유지돼야 한다(응답하는 쪽이 요청자의 시간을 바꿀 수는
+    없다)."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!", "scheduledAt": "2026-12-25T10:00:00Z"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["scheduledAt"].startswith("2026-08-01")

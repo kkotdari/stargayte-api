@@ -134,7 +134,13 @@ class ChallengeService:
         return [to_challenge_out(c) for c in challenges]
 
     async def respond(
-        self, challenge_id: int, response: str, *, actor: Member, reason: str | None = None
+        self,
+        challenge_id: int,
+        response: str,
+        *,
+        actor: Member,
+        reason: str | None = None,
+        scheduled_at: datetime | None = None,
     ) -> ChallengeOut:
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
@@ -148,6 +154,16 @@ class ChallengeService:
             raise ValidationError("취소된 도전장입니다.")
         if target.response != "pending":
             raise ValidationError("이미 응답한 도전장입니다.")
+        # 요청자가 "시간 지정"을 끄고 보낸(scheduled_at=None) 도전장은 "상대가 정해도
+        # 된다"는 뜻이라, 수락하는 이 시점에 상대가 직접 정하게 한다 — 안 그러면 시간이
+        # 영원히 안 채워진 채 "승락" 상태로 박제된다(요청: "도전자/상대 모두 시간을
+        # 지정하지 않았는데 수락이 된 경우가 있네 이러면 안되는데"). 이미 시간이 정해진
+        # 도전장은 응답하는 쪽이 바꿀 수 없으므로 여기서 들어온 값은 무시한다.
+        if response == "accepted" and challenge.scheduled_at is None:
+            if scheduled_at is None:
+                raise ValidationError("일시가 정해지지 않은 도전장이에요 — 수락하며 시간을 정해주세요.")
+            challenge.scheduled_at = scheduled_at
+            challenge.updated_by = actor.pk
         target.response = response
         target.responded_at = datetime.now(UTC)
         # 이제 수락에도 한마디를 받는다(요청: "편지지에 수락/거절 한줄 메시지 필수화")

@@ -74,12 +74,21 @@ class ChallengeCreate(BaseModel):
 
 
 class ChallengeRespondIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     response: Literal["accepted", "rejected"]
     # 응답 한마디 — API 자체는 선택으로 둔다(경기결과 화면 목록의 빠른 승락/거절
     # 버튼은 메시지 없이 한 번에 응답하는 흐름을 그대로 유지해야 한다). "필수화" 요청은
     # 인박스(편지지) 화면에서만 적용되고, 그쪽은 프론트에서 빈 값이면 제출 버튼 자체를
     # 막는다(ChallengeInboxModal.tsx 참고).
     reason: str | None = None
+    # 도전장 작성 시 "시간 지정"을 끄면(scheduled_at=None) "상대가 정해도 된다"는
+    # 뜻인데, 그 이후 아무도 시간을 채워 넣을 방법이 없어서 시간 미정인 채로 영원히
+    # "승락" 상태에 박제되는 문제가 있었다(요청: "도전자/상대 모두 시간을 지정하지
+    # 않았는데 수락이 된 경우가 있네 이러면 안되는데") — 원래 의도대로 상대가 수락하는
+    # 시점에 이걸로 시간을 정하게 한다. 이미 시간이 정해진 도전장에는 서비스 레이어에서
+    # 무시한다(응답하는 쪽이 요청자가 정한 시간을 바꿀 수는 없다).
+    scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
 
 
 class ChallengeReapplyIn(BaseModel):

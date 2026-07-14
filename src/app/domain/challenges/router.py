@@ -38,7 +38,8 @@ async def respond_to_challenge(
     challenge_id: int, payload: ChallengeRespondIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
     return await ChallengeService(db).respond(
-        challenge_id, payload.response, actor=current, reason=payload.reason
+        challenge_id, payload.response, actor=current, reason=payload.reason,
+        scheduled_at=payload.scheduled_at,
     )
 
 
