@@ -36,6 +36,21 @@ class ChallengeOwnMemberOut(BaseModel):
     avatar: str | None
 
 
+class ChallengeHistoryEntry(BaseModel):
+    """재신청 체인에서 지금 이 도전장보다 앞선(더 예전) 기록 한 건 — 목록 화면 카드
+    안에서 좌우로 슬라이드해 볼 수 있게 넘겨준다. 도전자/팀 구성은 체인 내내 그대로라
+    (재신청이 손대는 건 시간/메시지/응답뿐) 따로 안 담는다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    scheduled_at: datetime | None = Field(alias="scheduledAt")
+    message: str
+    status: ChallengeStatus
+    targets: list[ChallengeTargetOut]
+    created_at: datetime = Field(alias="createdAt")
+
+
 class ChallengeOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -49,6 +64,10 @@ class ChallengeOut(BaseModel):
     own_members: list[ChallengeOwnMemberOut] = Field(alias="ownMembers")
     result_match_id: int | None = Field(alias="resultMatchId")
     created_at: datetime = Field(alias="createdAt")
+    # 재신청 체인 — 이 도전장이 재신청으로 만들어졌으면 원래 도전장의 id, 아니면 None.
+    reapplied_from_id: int | None = Field(default=None, alias="reappliedFromId")
+    # 이 도전장보다 앞선 체인 기록(오래된 순) — 재신청 이력이 없으면 빈 배열.
+    history: list[ChallengeHistoryEntry] = Field(default_factory=list)
 
 
 class ChallengeCreate(BaseModel):
@@ -92,7 +111,8 @@ class ChallengeRespondIn(BaseModel):
 
 
 class ChallengeReapplyIn(BaseModel):
-    """거절된 도전장을 재신청 — 시간/메모를 비우면(None) 기존 값을 그대로 유지한다."""
+    """거절된 도전장을 재신청 — 원래 도전장은 손대지 않고(거절 상태 그대로 종료) 새
+    도전장을 만든다. 시간/메모를 비우면(None) 원래 도전장의 값을 그대로 물려받는다."""
 
     model_config = ConfigDict(populate_by_name=True)
 

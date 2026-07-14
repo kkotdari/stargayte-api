@@ -358,7 +358,11 @@ async def test_reject_reason_is_visible_to_anyone(client):
     assert body["targets"][0]["responseMessage"] == "그날은 바빠요"
 
 
-async def test_reapply_resets_target_responses_and_can_edit_time(client):
+async def test_reapply_creates_new_challenge_linked_to_original(client):
+    """요청: "재신청하면 원래건은 종료되고 새로운 도전 행이 만들어져 새 아이디로...
+    refer라던지 그런 느낌의 컬럼을 만들어서 어디서 이어졌는지 저장해둬" — 원래 행은
+    안 건드리고(거절 상태 그대로) 새 id의 도전장이 생기며, reappliedFromId가 원래
+    id를 가리키고 history에 원래 기록이 담긴다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -369,33 +373,53 @@ async def test_reapply_resets_target_responses_and_can_edit_time(client):
         "/api/challenges", headers=headers_a,
         json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
     )
-    challenge_id = res.json()["id"]
+    original_id = res.json()["id"]
     await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        f"/api/challenges/{original_id}/respond", headers=headers_b,
         json={"response": "rejected", "reason": "그날은 바빠요"},
     )
 
-    # 확정되지 않은 한 재신청 전에도 취소는 여전히 가능해야 하므로 별도로 막지 않는다 —
-    # 여기서는 곧장 재신청부터 확인한다.
     res = await client.post(
-        f"/api/challenges/{challenge_id}/reapply", headers=headers_a,
+        f"/api/challenges/{original_id}/reapply", headers=headers_a,
         json={"scheduledAt": "2026-08-05T12:00:00Z", "message": "이번엔 어때요"},
     )
     assert res.status_code == 200, res.text
     body = res.json()
+    new_id = body["id"]
+    assert new_id != original_id
+    assert body["reappliedFromId"] == original_id
     assert body["status"] == "pending"
     assert body["scheduledAt"].startswith("2026-08-05")
     assert body["message"] == "이번엔 어때요"
     assert body["targets"][0]["response"] == "pending"
     assert body["targets"][0]["responseMessage"] is None
+    assert len(body["history"]) == 1
+    assert body["history"][0]["id"] == original_id
+    assert body["history"][0]["status"] == "rejected"
+    assert body["history"][0]["targets"][0]["responseMessage"] == "그날은 바빠요"
 
-    # 다시 승락하면 정상적으로 확정된다.
+    # 원래 도전장은 그대로 거절 상태로 남아있다(더 이상 응답할 수 없다 — 새 행이
+    # 그 자리를 대신한다).
     res = await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        f"/api/challenges/{original_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    assert res.status_code == 400, res.text
+
+    # 새 도전장에 승락하면 정상적으로 확정된다.
+    res = await client.post(
+        f"/api/challenges/{new_id}/respond", headers=headers_b,
         json={"response": "accepted", "reason": "OK!"},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "confirmed"
+
+    # 목록에는 새 도전장만 보이고 원래 도전장은 안 보인다(요청: "최신 1건만 목록에
+    # 나오고, 카드 안에서 좌우로 슬라이드해 이전 기록을 본다").
+    res = await client.get("/api/challenges", headers=headers_a)
+    ids = [c["id"] for c in res.json()["items"]]
+    assert new_id in ids
+    assert original_id not in ids
 
 
 async def test_reapply_without_edits_keeps_existing_time_and_message(client):

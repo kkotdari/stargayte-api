@@ -41,6 +41,15 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 요청자(도전자)가 확정 전에 스스로 취소한 시각 — NULL이면 취소 안 됨. 확정된 뒤에는
     # 취소할 수 없다(서비스 레이어에서 막는다).
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 재신청(요청: "재신청하면 원래건은 종료되고 새로운 도전 행이 만들어져 새 아이디로...
+    # refer라던지 그런 느낌의 컬럼을 만들어서 어디서 이어졌는지 저장해둬") — 예전엔
+    # 재신청이 같은 행을 그대로 고쳐 썼는데(시간/메시지 갱신 + 응답 초기화), 이제는 원래
+    # 행은 손대지 않고(거절 상태 그대로 "종료") 새 행을 만들어 여기에 원래 행의 id를
+    # 남긴다. 체인(원래건 → 재신청건 → 또 재신청건...)을 얼마든지 이어갈 수 있다 —
+    # service.py가 이 컬럼을 따라 올라가며 이력(history)을 만든다.
+    reapplied_from_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("challenges.id", ondelete="SET NULL"), nullable=True
+    )
 
     participants: Mapped[list["ChallengeParticipant"]] = relationship(
         back_populates="challenge", cascade="all, delete-orphan", lazy="selectin",

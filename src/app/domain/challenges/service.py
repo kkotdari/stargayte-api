@@ -8,6 +8,7 @@ from app.domain.challenges.repository import ChallengeRepository
 from app.domain.challenges.schemas import (
     ChallengeAuthor,
     ChallengeCreate,
+    ChallengeHistoryEntry,
     ChallengeOut,
     ChallengeOwnMemberOut,
     ChallengeTargetOut,
@@ -28,7 +29,29 @@ def _status_of(challenge: Challenge) -> str:
     return "pending"
 
 
-def to_challenge_out(challenge: Challenge) -> ChallengeOut:
+def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
+    targets = [p for p in challenge.participants if p.side == "target"]
+    return ChallengeHistoryEntry(
+        id=challenge.id,
+        scheduledAt=challenge.scheduled_at,
+        message=challenge.message,
+        status=_status_of(challenge),
+        targets=[
+            ChallengeTargetOut(
+                memberId=p.member.id,
+                nickname=p.member.nickname,
+                battletag=p.member.battletag,
+                avatar=p.member.avatar_url,
+                response=p.response,
+                responseMessage=p.response_message,
+            )
+            for p in targets
+        ],
+        createdAt=challenge.created_at,
+    )
+
+
+def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = None) -> ChallengeOut:
     # 응답 한마디(수락/거절 모두)는 전체 공개다 — 요청자가 아니어도 누구나 볼 수 있다
     # (예전엔 요청자만 봤지만, 요청에 따라 제한을 없앴다).
     targets = [p for p in challenge.participants if p.side == "target"]
@@ -64,6 +87,8 @@ def to_challenge_out(challenge: Challenge) -> ChallengeOut:
         ],
         resultMatchId=challenge.result_match_id,
         createdAt=challenge.created_at,
+        reappliedFromId=challenge.reapplied_from_id,
+        history=[_history_entry(c) for c in (history or [])],
     )
 
 
@@ -73,9 +98,50 @@ class ChallengeService:
         self._repo = ChallengeRepository(session)
         self._member_repo = MemberRepository(session)
 
+    # 재신청 체인(reapplied_from_id를 따라 올라가는 사슬)에서 이 도전장보다 앞선 기록을
+    # 오래된 순으로 모은다 — 단일 도전장 하나만 다루는 엔드포인트(respond/cancel/reapply/
+    # attach-result)에서 쓴다. 체인은 실제로는 몇 단계 안 넘을 것으로 보고(계속 거절만
+    # 당하는 극단적인 경우가 아니면), 매번 get()으로 한 단계씩 거슬러 올라가는 정도의
+    # 비용은 감수한다 — list_challenges처럼 전체 목록을 한 번에 다룰 때는 그 안에서
+    # 이미 불러온 것들로 메모리에서 처리한다(_history_chain_from_map 참고).
+    async def _history_chain(self, challenge: Challenge) -> list[Challenge]:
+        chain: list[Challenge] = []
+        cur = challenge
+        while cur.reapplied_from_id is not None:
+            parent = await self._repo.get(cur.reapplied_from_id)
+            if parent is None:
+                break
+            chain.append(parent)
+            cur = parent
+        chain.reverse()
+        return chain
+
+    def _history_chain_from_map(self, challenge: Challenge, by_id: dict[int, Challenge]) -> list[Challenge]:
+        chain: list[Challenge] = []
+        cur = challenge
+        while cur.reapplied_from_id is not None:
+            parent = by_id.get(cur.reapplied_from_id)
+            if parent is None:
+                break
+            chain.append(parent)
+            cur = parent
+        chain.reverse()
+        return chain
+
     async def list_challenges(self, *, actor: Member) -> list[ChallengeOut]:
         challenges = await self._repo.list_all()
-        return [to_challenge_out(c) for c in challenges]
+        by_id = {c.id: c for c in challenges}
+        # 재신청으로 새 행이 생기면 원래 행은 화면에서 더 안 보여야 한다(요청: "최신 1건만
+        # 목록에 나오고, 카드 안에서 좌우로 슬라이드해 이전 기록을 본다") — 어떤 행의 id를
+        # reapplied_from_id로 가리키는 다른 행이 있으면(=그 행이 나중에 재신청됐으면) 그
+        # 원래 행은 숨긴다. 체인이 길어도(재신청을 여러 번 거쳐도) 맨 끝(가장 최신)만
+        # 자연히 남는다.
+        superseded_ids = {c.reapplied_from_id for c in challenges if c.reapplied_from_id is not None}
+        visible = [c for c in challenges if c.id not in superseded_ids]
+        return [
+            to_challenge_out(c, history=self._history_chain_from_map(c, by_id))
+            for c in visible
+        ]
 
     async def create_challenge(self, payload: ChallengeCreate, *, actor: Member) -> ChallengeOut:
         target_members: list[Member] = []
@@ -171,7 +237,7 @@ class ChallengeService:
         target.response_message = reason
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge)
+        return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def cancel_challenge(self, challenge_id: int, *, actor: Member) -> ChallengeOut:
         """요청자(도전자)가 확정 전에 스스로 취소한다 — 이미 전원이 승락(confirmed)한
@@ -187,7 +253,7 @@ class ChallengeService:
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge)
+        return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def reapply_challenge(
         self,
@@ -197,8 +263,11 @@ class ChallengeService:
         scheduled_at: datetime | None = None,
         message: str | None = None,
     ) -> ChallengeOut:
-        """거절된 도전장을 재신청 — 지목된 쪽 전원의 응답을 pending으로 되돌리고, 시간/
-        메모를 원하면 이 참에 고쳐서 다시 보낸다(안 넘기면 기존 값 그대로)."""
+        """거절된 도전장을 재신청 — 원래 행은 그대로 두고(거절 상태로 "종료") 같은
+        구성원으로 새 도전장을 만든다(요청: "재신청하면 원래건은 종료되고 새로운 도전
+        행이 만들어져 새 아이디로... refer라던지 그런 느낌의 컬럼을 만들어서 어디서
+        이어졌는지 저장해둬"). 시간/메모를 원하면 이 참에 고쳐서 다시 보내고, 안
+        넘기면 원래 도전장의 값을 그대로 물려받는다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
@@ -206,21 +275,23 @@ class ChallengeService:
             raise ForbiddenError("요청자만 재신청할 수 있습니다.")
         if _status_of(challenge) != "rejected":
             raise ValidationError("거절된 도전장만 재신청할 수 있습니다.")
-        if scheduled_at is not None:
-            challenge.scheduled_at = scheduled_at
-        if message is not None:
-            challenge.message = message
-        challenge.updated_by = actor.pk
-        for p in challenge.participants:
-            if p.side != "target":
-                continue
-            p.response = "pending"
-            p.response_message = None
-            p.responded_at = None
-            p.notified = False
+
+        new_challenge = Challenge(
+            match_type=challenge.match_type,
+            scheduled_at=scheduled_at if scheduled_at is not None else challenge.scheduled_at,
+            message=message if message is not None else challenge.message,
+            created_by=actor.pk,
+            updated_by=actor.pk,
+            reapplied_from_id=challenge.id,
+        )
+        new_challenge.participants = [
+            ChallengeParticipant(member_pk=p.member_pk, side=p.side) for p in challenge.participants
+        ]
+        self._repo.add(new_challenge)
+        await self._repo.flush()
         await self._session.commit()
-        await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge)
+        await self._session.refresh(new_challenge, attribute_names=["creator", "participants"])
+        return to_challenge_out(new_challenge, history=await self._history_chain(new_challenge))
 
     async def attach_result(self, challenge_id: int, match_id: int, *, actor: Member) -> ChallengeOut:
         # 예전엔 도전장 참가자만 결과를 연결할 수 있었지만, 리플레이 등록(및 그 안의
@@ -238,4 +309,4 @@ class ChallengeService:
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge)
+        return to_challenge_out(challenge, history=await self._history_chain(challenge))
