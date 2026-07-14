@@ -19,6 +19,7 @@ from app.db.session import AsyncSessionLocal, engine
 
 # 테이블 등록을 위해 모든 도메인 모델을 import 해야 한다.
 from app.domain.app_version import models as _app_version_models  # noqa: F401
+from app.domain.auth import models as _auth_models  # noqa: F401
 from app.domain.challenges import models as _challenges_models  # noqa: F401
 from app.domain.env_vars import models as _env_vars_models  # noqa: F401
 from app.domain.matches import models as _matches_models  # noqa: F401

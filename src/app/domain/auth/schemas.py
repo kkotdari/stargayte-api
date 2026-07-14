@@ -6,9 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.members.schemas import MemberOut
 
 # 프론트엔드 ScreenKey(App.tsx)와 동일한 값 — app.domain.auth.models.SCREEN_CODES 참고.
+# official/accessHistory/menuPermissions/userMapping은 예전 화면 이름 체계의 흔적으로
+# 지금 프론트는 안 보내지만(과거 접속 기록과의 호환을 위해 그대로 둔다), challenge(너
+# 나와!)/gameId(게임아이디)는 나중에 추가된 실제 화면인데 여기 누락돼 있었다 — 그 값으로
+# 오는 pingAccess가 검증 단계(422)에서 그대로 막혀 조용히 기록이 안 됐다(요청: "접속
+# 이력 남길때 새 메뉴인 너 나와의 코드가 안들어가는거 같음").
 ScreenCode = Literal[
     "ranking", "match", "official", "stats", "members", "accessHistory",
-    "imageSettings", "menuPermissions", "userMapping",
+    "imageSettings", "menuPermissions", "userMapping", "challenge", "gameId",
 ]
 
 

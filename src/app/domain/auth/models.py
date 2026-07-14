@@ -9,9 +9,13 @@ from app.db.types import BigIntPk
 # 프론트엔드 ScreenKey(App.tsx)와 동일한 값만 허용 — 화면 종류는 프론트 코드가 고정하는
 # 값이라 코드관리 화면처럼 관리자가 임의로 추가/편집할 이유가 없어서, 코드 테이블 대신
 # DB 제약조건으로 못박아 둔다. 화면 이동 없이 발생하는 로그인 자체는 NULL로 남는다.
+# challenge(너 나와!)/gameId(게임아이디)가 나중에 추가된 실제 화면인데 이 목록에는 없어서
+# 그 화면으로의 이동은 접속 기록에 조용히 안 남았다(요청: "접속 이력 남길때 새 메뉴인
+# 너 나와의 코드가 안들어가는거 같음") — schemas.py의 ScreenCode, 그리고 DB CHECK
+# 제약(마이그레이션 0005)과 함께 추가한다.
 SCREEN_CODES = (
     "ranking", "match", "official", "stats", "members", "accessHistory",
-    "imageSettings", "menuPermissions", "userMapping",
+    "imageSettings", "menuPermissions", "userMapping", "challenge", "gameId",
 )
 
 
