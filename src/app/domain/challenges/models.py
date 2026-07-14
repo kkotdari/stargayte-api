@@ -45,12 +45,29 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     reapplied_from_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("challenges.id", ondelete="SET NULL"), nullable=True
     )
+    # reapplied_from_id가 이 도전장을 만든 방식 — 거절/무응답만료 뒤 같은 대진으로 다시
+    # 신청한 것("reapply")인지, 확정되고 결과까지 나온 뒤 패배한 쪽이 설욕전을 신청한
+    # 것("revenge")인지. reapplied_from_id가 NULL이면 이 값도 항상 NULL이다.
+    chain_kind: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # 확정된 대결의 승부 결과 — 이긴 쪽(side)만 기록한다. 예정 일시가 지난 뒤 참가자
+    # 누구든 먼저 입력하는 쪽이 그대로 인정된다(요청: "먼저 입력하는 쪽 인정"). 아무도
+    # 입력하지 않으면 계속 NULL로 남는다(요청: "그냥 결과 미정으로 계속 남음").
+    result_winner_side: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    result_entered_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("members.pk", ondelete="SET NULL"), nullable=True
+    )
+    result_entered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     participants: Mapped[list["ChallengeParticipant"]] = relationship(
         back_populates="challenge", cascade="all, delete-orphan", lazy="selectin",
     )
     creator: Mapped["Member | None"] = relationship(
         "Member", foreign_keys="Challenge.created_by", viewonly=True, lazy="selectin",
+    )
+
+    __table_args__ = (
+        CheckConstraint("chain_kind IN ('reapply','revenge')", name="ck_challenges_chain_kind"),
+        CheckConstraint("result_winner_side IN ('creator','target')", name="ck_challenges_result_winner_side"),
     )
 
 

@@ -143,10 +143,11 @@ async def test_rank_order_is_none_for_members_without_matches(client):
 async def test_team_ranking_aggregates_actual_team_lineups(client):
     """실제로 같은 편이었던 2인 이상 구성만 팀으로 잡고, 승점(승 +1, 무 0, 패 -1) 순으로 줄세운다."""
     headers = await _signup_many(client, 4)
-    # [p1,p2] vs [p3,p4] 2전: 2승 → +2점 / 2패 → -2점. 둘 다 2전을 채워 랭킹에 오른다.
+    # [p1,p2] vs [p3,p4] 2전: 2승 → +2점 / 2패 → -2점.
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
-    # 편을 바꿔 한 번만 뛴 조합은 2전에 못 미쳐 랭킹에 안 나온다(개인 승점 계산에는 그대로 들어간다).
+    # 편을 바꿔 한 번만 뛴 조합도 최소 경기수 기준이 없으니(요청: "팀랭킹 경기수 기준 삭제")
+    # 그대로 랭킹에 오른다.
     await _match(client, headers, ["player01", "player03"], ["player02", "player04"], "draw", TODAY)
     # 1:1 경기는 팀(2인 이상)이 아니라 팀랭킹에 아예 안 잡힌다.
     await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
@@ -156,12 +157,20 @@ async def test_team_ranking_aggregates_actual_team_lineups(client):
     teams = res.json()["teams"]
     assert [t["memberIds"] for t in teams] == [
         ["player01", "player02"],
+        ["player01", "player03"],
+        ["player02", "player04"],
         ["player03", "player04"],
     ]
     assert teams[0] == {
         "memberIds": ["player01", "player02"], "plays": 2, "wins": 2, "losses": 0, "draws": 0, "points": 2,
     }
     assert teams[1] == {
+        "memberIds": ["player01", "player03"], "plays": 1, "wins": 0, "losses": 0, "draws": 1, "points": 0,
+    }
+    assert teams[2] == {
+        "memberIds": ["player02", "player04"], "plays": 1, "wins": 0, "losses": 0, "draws": 1, "points": 0,
+    }
+    assert teams[3] == {
         "memberIds": ["player03", "player04"], "plays": 2, "wins": 0, "losses": 2, "draws": 0, "points": -2,
     }
 
@@ -208,16 +217,12 @@ async def test_team_ranking_excludes_sides_with_a_placeholder_slot(client):
     assert ["player01", "player02"] in team_ids
 
 
-async def test_team_ranking_hides_teams_below_the_minimum_plays(client):
-    """딱 한 번 같이 뛰고 이긴 조합이 승점 +1로 상위에 앉으면 랭킹이 의미를 잃는다 — 2전부터 올린다."""
+async def test_team_ranking_shows_teams_after_a_single_match(client):
+    """예전엔 2전 미만인 팀을 랭킹에서 숨겼지만(요청: "팀랭킹 경기수 기준 삭제") 이제
+    최소 경기수 기준이 없어 단 한 번만 같이 뛰어도 바로 랭킹에 오른다."""
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
 
-    res = await client.get("/api/matches/team-ranking", headers=headers)
-    assert res.json()["teams"] == []
-
-    # 한 번 더 뛰면 두 조합 모두 랭킹에 오른다.
-    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
     res = await client.get("/api/matches/team-ranking", headers=headers)
     assert [t["memberIds"] for t in res.json()["teams"]] == [
         ["player01", "player02"], ["player03", "player04"],
@@ -239,7 +244,7 @@ async def test_team_ranking_counts_every_match_regardless_of_age(client):
 
 async def test_team_ranking_date_range_narrows_to_that_period(client):
     """랭킹 화면의 월 기준 기본 집계용 — dateFrom/dateTo를 넘기면 그 기간 밖의 경기는
-    plays 집계에서 아예 빠진다(TEAM_MIN_PLAYS 미달로 랭킹에서 통째로 사라질 수도 있다)."""
+    plays 집계에서 아예 빠진다."""
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-05")
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-06")
@@ -260,8 +265,10 @@ async def test_team_ranking_date_range_narrows_to_that_period(client):
         headers=headers,
         params={"dateFrom": "2026-02-01", "dateTo": "2026-02-28"},
     )
-    # 2월엔 1경기뿐이라 TEAM_MIN_PLAYS(2)에 못 미쳐 랭킹에서 아예 빠진다.
-    assert res_feb.json()["teams"] == []
+    # 2월엔 1경기뿐이지만 최소 경기수 기준이 없으니 그대로 랭킹에 오른다.
+    feb_teams = res_feb.json()["teams"]
+    assert feb_teams[0]["memberIds"] == ["player01", "player02"]
+    assert feb_teams[0]["plays"] == 1
 
 
 async def test_stats_monthly_returns_one_entry_per_requested_month(client):

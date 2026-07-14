@@ -1,5 +1,11 @@
 """도전장("너 나와!") 게시판 스모크 테스트."""
 
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import update
+
+from app.domain.challenges.models import Challenge
+
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
     res = await client.post(
@@ -485,3 +491,269 @@ async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client
     )
     assert res.status_code == 200, res.text
     assert res.json()["scheduledAt"].startswith("2026-08-01")
+
+
+async def test_canceled_challenge_is_hidden_from_list(client):
+    """취소된 도전장은 디비엔 남지만(상태값만 취소) 목록엔 안 보인다(요청: "도전장
+    취소시 삭제(디비에 있지만 상태값을 삭제로). 화면에 미노출")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    challenge_id = res.json()["id"]
+    await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
+
+    res = await client.get("/api/challenges", headers=headers_a)
+    ids = [c["id"] for c in res.json()["items"]]
+    assert challenge_id not in ids
+
+
+async def test_reapply_blocked_before_expiry_but_allowed_after(client, db_session):
+    """응답 없이 3일이 지나면(요청: "기한내 미응답시 재신청 가능") pending 상태 그대로도
+    재신청할 수 있다 — 3일이 안 지났으면 거절도 안 됐고 만료도 아니라 여전히 막힌다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    challenge_id = res.json()["id"]
+
+    res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
+    assert res.status_code == 400, res.text
+
+    # created_at을 3일 하고도 1시간 전으로 되돌려 "기한 내 무응답"을 재현한다.
+    await db_session.execute(
+        update(Challenge).where(Challenge.id == challenge_id).values(
+            created_at=datetime.now(UTC) - timedelta(days=3, hours=1)
+        )
+    )
+    await db_session.commit()
+
+    res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
+    assert res.status_code == 200, res.text
+    assert res.json()["reappliedFromId"] == challenge_id
+    assert res.json()["chainKind"] == "reapply"
+
+
+async def test_reapply_blocked_when_already_chained(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    challenge_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "rejected", "reason": "다음에 해요"},
+    )
+    await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
+
+    # 이미 한 번 재신청해서 이어졌으니, 원래 건으로 또 재신청할 수는 없다.
+    res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
+    assert res.status_code == 400, res.text
+
+
+async def test_only_first_target_responder_can_leave_a_message(client):
+    """한마디는 최초응답자만 가능(요청) — 팀전에서 지목된 두 번째 사람이 응답하며
+    남긴 한마디는 저장되지 않는다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    c = await _signup(client, "carol", "Carol#1003")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    headers_c = {"Authorization": f"Bearer {c['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+    await _approve(client, a["accessToken"], "carol")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "제가 먼저 응답!"},
+    )
+    bob_target = next(t for t in res.json()["targets"] if t["memberId"] == "bob")
+    assert bob_target["responseMessage"] == "제가 먼저 응답!"
+
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_c,
+        json={"response": "accepted", "reason": "저도 할래요"},
+    )
+    assert res.status_code == 200, res.text
+    carol_target = next(t for t in res.json()["targets"] if t["memberId"] == "carol")
+    assert carol_target["responseMessage"] is None
+
+
+async def test_enter_result_blocked_before_confirmed_or_before_schedule_passes(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+
+    # 아직 pending — 결과 입력 불가.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+    assert res.status_code == 400, res.text
+
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+
+    # 확정은 됐지만 예정 일시(2026-08-01)가 아직 안 지났다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+    assert res.status_code == 400, res.text
+
+
+async def test_enter_result_first_submission_wins_and_locks(client):
+    """참가자 누구든 먼저 입력하는 쪽이 그대로 인정되고, 이미 입력된 뒤엔 다시 입력할
+    수 없다(요청: "먼저 입력하는 쪽 인정")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    c = await _signup(client, "carol", "Carol#1003")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    headers_c = {"Authorization": f"Bearer {c['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+    await _approve(client, a["accessToken"], "carol")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+
+    # 참가자가 아닌 사람은 결과를 입력할 수 없다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_c, json={"winnerSide": "creator"},
+    )
+    assert res.status_code == 403, res.text
+
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_b, json={"winnerSide": "target"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["resultWinnerSide"] == "target"
+
+    # 이미 결과가 입력됐으니 다시(다른 값으로도) 입력할 수 없다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+    assert res.status_code == 400, res.text
+
+
+async def test_revenge_challenge_only_by_losing_side_and_links_chain(client):
+    """완료된 대결에서 패배한 쪽만 설욕전을 신청할 수 있고, 신청하면 패배한 쪽이 새
+    도전장의 요청자가 되며 원래 대결과 체인으로 이어진다(요청: "완료시 패배한 쪽에서
+    설욕전 신청 가능... 너나와 체인으로 연결")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    original_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{original_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    # alice(creator)가 이겼다 — bob(target)이 패배한 쪽.
+    await client.post(
+        f"/api/challenges/{original_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+
+    # 이긴 쪽(alice)은 설욕전을 신청할 수 없다.
+    res = await client.post(
+        f"/api/challenges/{original_id}/revenge", headers=headers_a, json={},
+    )
+    assert res.status_code == 403, res.text
+
+    # 패배한 쪽(bob)은 신청할 수 있고, bob이 새 도전장의 요청자가 된다.
+    res = await client.post(
+        f"/api/challenges/{original_id}/revenge", headers=headers_b,
+        json={"scheduledAt": "2026-09-01T10:00:00Z", "message": "이번엔 진짜 설욕한다"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["reappliedFromId"] == original_id
+    assert body["chainKind"] == "revenge"
+    assert body["createdBy"]["id"] == "bob"
+    assert [t["memberId"] for t in body["targets"]] == ["alice"]
+
+    # 원래 대결은 목록에서 더 안 보인다(체인은 최신건 기준으로만 노출).
+    res = await client.get("/api/challenges", headers=headers_a)
+    ids = [c["id"] for c in res.json()["items"]]
+    assert original_id not in ids
+    assert body["id"] in ids
+
+
+async def test_postpone_confirmed_challenge_resets_result_and_allows_either_side(client):
+    """수락된 대결은 도전자/상대 누구든 연기할 수 있고, 예정 일시가 지난 뒤에도
+    가능하다(요청). 잘못 입력됐을 수 있는 기존 결과는 새 일정으로 초기화된다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+
+    # 아직 확정 전엔 연기할 수 없다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/postpone", headers=headers_a,
+        json={"scheduledAt": "2026-09-01T10:00:00Z"},
+    )
+    assert res.status_code == 400, res.text
+
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+
+    # 상대(bob)가 연기해도 되고(도전자만 되는 게 아니다), 기존 결과는 초기화된다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/postpone", headers=headers_b,
+        json={"scheduledAt": "2026-09-01T10:00:00Z"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["scheduledAt"].startswith("2026-09-01")
+    assert body["resultWinnerSide"] is None
+    assert body["status"] == "confirmed"

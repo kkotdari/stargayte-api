@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,19 @@ from app.domain.challenges.schemas import (
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
+# 응답 없이 이 기간이 지나면(pending 상태 그대로) "기한 내 미응답"으로 보고 재신청을
+# 허용한다 — 프론트의 화면 표시 기준(ChallengeScreen.tsx의 EXPIRE_MS)과 같은 3일이다.
+REAPPLY_EXPIRE = timedelta(days=3)
+
+
+def _to_utc_naive(dt: datetime) -> datetime:
+    # Postgres(timestamptz)는 aware로, SQLite는 tz 정보 없이 naive로 돌아오는 등 방언마다
+    # 달라서, 비교 전에 항상 "UTC 기준 naive"로 맞춘다(matches/service.py의 같은 이름
+    # 헬퍼와 같은 이유 — 여긴 그 모듈을 참조하지 않는 독립된 도메인이라 그대로 복제한다).
+    if dt.tzinfo is not None:
+        return dt.astimezone(UTC).replace(tzinfo=None)
+    return dt
+
 
 def _status_of(challenge: Challenge) -> str:
     if challenge.canceled_at is not None:
@@ -28,6 +41,19 @@ def _status_of(challenge: Challenge) -> str:
     return "pending"
 
 
+def _is_expired(challenge: Challenge) -> bool:
+    if _status_of(challenge) != "pending":
+        return False
+    now = _to_utc_naive(datetime.now(UTC))
+    return now - _to_utc_naive(challenge.created_at) > REAPPLY_EXPIRE
+
+
+def _losing_side(challenge: Challenge) -> str | None:
+    if challenge.result_winner_side is None:
+        return None
+    return "target" if challenge.result_winner_side == "creator" else "creator"
+
+
 def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
     targets = [p for p in challenge.participants if p.side == "target"]
     return ChallengeHistoryEntry(
@@ -35,6 +61,8 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
         scheduledAt=challenge.scheduled_at,
         message=challenge.message,
         status=_status_of(challenge),
+        chainKind=challenge.chain_kind,
+        resultWinnerSide=challenge.result_winner_side,
         targets=[
             ChallengeTargetOut(
                 memberId=p.member.id,
@@ -86,6 +114,8 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         ],
         createdAt=challenge.created_at,
         reappliedFromId=challenge.reapplied_from_id,
+        chainKind=challenge.chain_kind,
+        resultWinnerSide=challenge.result_winner_side,
         history=[_history_entry(c) for c in (history or [])],
     )
 
@@ -135,7 +165,11 @@ class ChallengeService:
         # 원래 행은 숨긴다. 체인이 길어도(재신청을 여러 번 거쳐도) 맨 끝(가장 최신)만
         # 자연히 남는다.
         superseded_ids = {c.reapplied_from_id for c in challenges if c.reapplied_from_id is not None}
-        visible = [c for c in challenges if c.id not in superseded_ids]
+        # 취소된 도전장은 디비엔 남지만(상태값만 취소로) 화면엔 아예 안 보인다(요청:
+        # "도전장 취소시 삭제... 화면에 미노출").
+        visible = [
+            c for c in challenges if c.id not in superseded_ids and c.canceled_at is None
+        ]
         return [
             to_challenge_out(c, history=self._history_chain_from_map(c, by_id))
             for c in visible
@@ -231,8 +265,15 @@ class ChallengeService:
         target.response = response
         target.responded_at = datetime.now(UTC)
         # 이제 수락에도 한마디를 받는다(요청: "편지지에 수락/거절 한줄 메시지 필수화")
-        # — 응답 종류와 무관하게 그대로 저장한다.
-        target.response_message = reason
+        # — 응답 종류와 무관하게 그대로 저장한다. 단, 팀전(지목된 쪽이 여러 명)에서는
+        # 한마디를 최초 응답자만 남길 수 있다(요청: "한마디는 최초응답자만 가능") —
+        # 이미 다른 지목자가 먼저 응답했으면 이번 응답의 메시지는 저장하지 않는다.
+        already_responded = any(
+            p.response != "pending"
+            for p in challenge.participants
+            if p.side == "target" and p.member_pk != actor.pk
+        )
+        target.response_message = None if already_responded else reason
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
@@ -261,18 +302,22 @@ class ChallengeService:
         scheduled_at: datetime | None = None,
         message: str | None = None,
     ) -> ChallengeOut:
-        """거절된 도전장을 재신청 — 원래 행은 그대로 두고(거절 상태로 "종료") 같은
-        구성원으로 새 도전장을 만든다(요청: "재신청하면 원래건은 종료되고 새로운 도전
-        행이 만들어져 새 아이디로... refer라던지 그런 느낌의 컬럼을 만들어서 어디서
-        이어졌는지 저장해둬"). 시간/메모를 원하면 이 참에 고쳐서 다시 보내고, 안
-        넘기면 원래 도전장의 값을 그대로 물려받는다."""
+        """거절됐거나 기한(3일) 내 무응답인 도전장을 재신청 — 원래 행은 그대로 두고
+        같은 구성원으로 새 도전장을 만든다(요청: "재신청하면 원래건은 종료되고 새로운
+        도전 행이 만들어져 새 아이디로... refer라던지 그런 느낌의 컬럼을 만들어서
+        어디서 이어졌는지 저장해둬" + "기한내 미응답시 재신청 가능"). 시간/메모를
+        원하면 이 참에 고쳐서 다시 보내고, 안 넘기면 원래 도전장의 값을 그대로
+        물려받는다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if challenge.created_by != actor.pk:
             raise ForbiddenError("요청자만 재신청할 수 있습니다.")
-        if _status_of(challenge) != "rejected":
-            raise ValidationError("거절된 도전장만 재신청할 수 있습니다.")
+        status = _status_of(challenge)
+        if status != "rejected" and not _is_expired(challenge):
+            raise ValidationError("거절되었거나 기한 내 무응답인 도전장만 재신청할 수 있습니다.")
+        if await self._repo.is_superseded(challenge.id):
+            raise ValidationError("이미 이어진 도전장이 있습니다.")
 
         new_challenge = Challenge(
             match_type=challenge.match_type,
@@ -281,6 +326,7 @@ class ChallengeService:
             created_by=actor.pk,
             updated_by=actor.pk,
             reapplied_from_id=challenge.id,
+            chain_kind="reapply",
         )
         new_challenge.participants = [
             ChallengeParticipant(member_pk=p.member_pk, side=p.side) for p in challenge.participants
@@ -290,3 +336,101 @@ class ChallengeService:
         await self._session.commit()
         await self._session.refresh(new_challenge, attribute_names=["creator", "participants"])
         return to_challenge_out(new_challenge, history=await self._history_chain(new_challenge))
+
+    async def enter_result(
+        self, challenge_id: int, winner_side: str, *, actor: Member,
+    ) -> ChallengeOut:
+        """확정된 대결의 결과(이긴 쪽)를 입력 — 참가자 누구든 먼저 입력하는 쪽이 그대로
+        인정되고, 이미 입력된 뒤엔 다시 바꿀 수 없다(요청: "먼저 입력하는 쪽 인정")."""
+        challenge = await self._repo.get(challenge_id)
+        if challenge is None:
+            raise NotFoundError("도전장을 찾을 수 없습니다.")
+        if _status_of(challenge) != "confirmed":
+            raise ValidationError("확정된 대결만 결과를 입력할 수 있습니다.")
+        if challenge.scheduled_at is None or _to_utc_naive(challenge.scheduled_at) > _to_utc_naive(
+            datetime.now(UTC)
+        ):
+            raise ValidationError("예정 일시가 지난 뒤에만 결과를 입력할 수 있습니다.")
+        if not any(p.member_pk == actor.pk for p in challenge.participants):
+            raise ForbiddenError("이 대결의 참가자만 결과를 입력할 수 있습니다.")
+        if challenge.result_winner_side is not None:
+            raise ValidationError("이미 결과가 입력됐습니다.")
+
+        challenge.result_winner_side = winner_side
+        challenge.result_entered_by = actor.pk
+        challenge.result_entered_at = datetime.now(UTC)
+        challenge.updated_by = actor.pk
+        await self._session.commit()
+        await self._session.refresh(challenge, attribute_names=["participants"])
+        return to_challenge_out(challenge, history=await self._history_chain(challenge))
+
+    async def revenge_challenge(
+        self,
+        challenge_id: int,
+        *,
+        actor: Member,
+        scheduled_at: datetime | None = None,
+        message: str | None = None,
+    ) -> ChallengeOut:
+        """결과가 입력된 확정 대결에서, 패배한 쪽 참가자가 같은 대진으로 설욕전을
+        신청한다(요청: "완료시 패배한 쪽에서 설욕전 신청 가능... 이경우 너나와 체인으로
+        연결"). 패배한 편 전원이 새 도전장의 요청자 쪽이 되고, 승리한 편이 새 지목
+        대상이 된다."""
+        challenge = await self._repo.get(challenge_id)
+        if challenge is None:
+            raise NotFoundError("도전장을 찾을 수 없습니다.")
+        if challenge.result_winner_side is None:
+            raise ValidationError("결과가 입력된 대결만 설욕전을 신청할 수 있습니다.")
+        losing_side = _losing_side(challenge)
+        loser_pks = {p.member_pk for p in challenge.participants if p.side == losing_side}
+        if actor.pk not in loser_pks:
+            raise ForbiddenError("패배한 쪽만 설욕전을 신청할 수 있습니다.")
+        if await self._repo.is_superseded(challenge.id):
+            raise ValidationError("이미 이어진 도전장이 있습니다.")
+
+        winning_side = "creator" if losing_side == "target" else "target"
+        new_challenge = Challenge(
+            match_type=challenge.match_type,
+            scheduled_at=scheduled_at,
+            message=message if message is not None else "",
+            created_by=actor.pk,
+            updated_by=actor.pk,
+            reapplied_from_id=challenge.id,
+            chain_kind="revenge",
+        )
+        new_challenge.participants = (
+            [ChallengeParticipant(member_pk=pk, side="creator") for pk in loser_pks]
+            + [
+                ChallengeParticipant(member_pk=p.member_pk, side="target")
+                for p in challenge.participants
+                if p.side == winning_side
+            ]
+        )
+        self._repo.add(new_challenge)
+        await self._repo.flush()
+        await self._session.commit()
+        await self._session.refresh(new_challenge, attribute_names=["creator", "participants"])
+        return to_challenge_out(new_challenge, history=await self._history_chain(new_challenge))
+
+    async def postpone_challenge(
+        self, challenge_id: int, scheduled_at: datetime, *, actor: Member,
+    ) -> ChallengeOut:
+        """확정된 대결을 연기 — 도전자/상대 누구든 가능하고, 예정 일시가 지난 뒤에도
+        가능하다(요청: "수락된 대결 연기 가능(도전자/상대 모두 가능)... 예정 일시 지난
+        뒤에도 연기 가능"). 잘못 입력됐을 수 있는 기존 결과는 새 일정으로 초기화한다."""
+        challenge = await self._repo.get(challenge_id)
+        if challenge is None:
+            raise NotFoundError("도전장을 찾을 수 없습니다.")
+        if _status_of(challenge) != "confirmed":
+            raise ValidationError("확정된 대결만 연기할 수 있습니다.")
+        if not any(p.member_pk == actor.pk for p in challenge.participants):
+            raise ForbiddenError("이 대결의 참가자만 연기할 수 있습니다.")
+
+        challenge.scheduled_at = scheduled_at
+        challenge.result_winner_side = None
+        challenge.result_entered_by = None
+        challenge.result_entered_at = None
+        challenge.updated_by = actor.pk
+        await self._session.commit()
+        await self._session.refresh(challenge, attribute_names=["participants"])
+        return to_challenge_out(challenge, history=await self._history_chain(challenge))

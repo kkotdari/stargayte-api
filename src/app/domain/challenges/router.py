@@ -5,8 +5,10 @@ from app.domain.challenges.schemas import (
     ChallengeCreate,
     ChallengeListOut,
     ChallengeOut,
+    ChallengePostponeIn,
     ChallengeReapplyIn,
     ChallengeRespondIn,
+    ChallengeResultIn,
 )
 from app.domain.challenges.service import ChallengeService
 
@@ -55,4 +57,31 @@ async def reapply_challenge(
 ) -> ChallengeOut:
     return await ChallengeService(db).reapply_challenge(
         challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
+    )
+
+
+@router.post("/{challenge_id}/result", response_model=ChallengeOut)
+async def enter_challenge_result(
+    challenge_id: int, payload: ChallengeResultIn, db: DbSession, current: CurrentMember
+) -> ChallengeOut:
+    return await ChallengeService(db).enter_result(
+        challenge_id, payload.winner_side, actor=current
+    )
+
+
+@router.post("/{challenge_id}/revenge", response_model=ChallengeOut)
+async def revenge_challenge(
+    challenge_id: int, payload: ChallengeReapplyIn, db: DbSession, current: CurrentMember
+) -> ChallengeOut:
+    return await ChallengeService(db).revenge_challenge(
+        challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
+    )
+
+
+@router.post("/{challenge_id}/postpone", response_model=ChallengeOut)
+async def postpone_challenge(
+    challenge_id: int, payload: ChallengePostponeIn, db: DbSession, current: CurrentMember
+) -> ChallengeOut:
+    return await ChallengeService(db).postpone_challenge(
+        challenge_id, payload.scheduled_at, actor=current
     )

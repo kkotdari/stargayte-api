@@ -247,10 +247,6 @@ def _points_against(h2h: HeadToHead, pk: int, opponents: set[int]) -> int:
 
 # 팀으로 인정하는 최소 인원 — 2명 이상이면 (2:2든 3:3이든) 그 팀 구성 그대로 하나의 팀이다.
 TEAM_MIN_SIZE = 2
-# 랭킹에 올리는 최소 경기 수 — 딱 한 번 같이 뛰고 이긴 조합이 승점 +1로 상위에 앉으면
-# 랭킹이 의미를 잃는다. 다만 팀 조합은 개인보다 표본이 훨씬 적어서, 3전으로 자르면 남는 팀이
-# 한 손에 꼽힐 만큼 줄어 랭킹 자체가 심심해진다 — 경기가 더 쌓이면 그때 올린다.
-TEAM_MIN_PLAYS = 2
 
 
 def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> MatchSlot:
@@ -705,8 +701,6 @@ class MatchService:
 
         entries: list[TeamRankEntry] = []
         for pks, agg in teams.items():
-            if agg["plays"] < TEAM_MIN_PLAYS:
-                continue
             # 승점 높은 순 → (같으면) 닉네임 순. 순서만 정하는 값이라 완전 동률이어도 매 요청
             # 같은 결과가 나오도록 닉네임까지 본다.
             ordered_pks = sorted(pks, key=lambda pk: (-member_points.get(pk, 0), member_by_pk[pk].nickname))

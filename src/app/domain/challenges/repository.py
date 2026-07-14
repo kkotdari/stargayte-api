@@ -25,6 +25,14 @@ class ChallengeRepository:
         )
         return list(result.scalars().unique().all())
 
+    async def is_superseded(self, challenge_id: int) -> bool:
+        """다른 도전장이 이미 이 id를 reapplied_from_id로 가리키고 있으면(재신청이든
+        설욕전이든) True — 같은 원본에서 체인이 두 갈래로 갈라지는 것을 막는다."""
+        result = await self._session.execute(
+            select(Challenge.id).where(Challenge.reapplied_from_id == challenge_id).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def list_pending_targets_for_member(self, member_pk: int) -> list[ChallengeParticipant]:
         result = await self._session.execute(
             select(ChallengeParticipant).where(

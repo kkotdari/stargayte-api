@@ -7,6 +7,11 @@ TargetResponse = Literal["pending", "accepted", "rejected"]
 # 목록/폼 어디서도 회원이 직접 고르지 않는다 — 지목 인원수로 서버가 정한다(1명=1:1, 2명↑=팀전).
 ChallengeMatchType = Literal["0101", "0102"]
 ChallengeStatus = Literal["pending", "confirmed", "rejected", "canceled"]
+# 도전자 쪽/지목된 쪽 — 결과(누가 이겼는지)와 설욕전 신청 자격 판정에 쓰인다.
+ChallengeSide = Literal["creator", "target"]
+# reapplied_from_id로 이어진 체인이 어떻게 생겼는지 — 거절/무응답만료 뒤 재신청인지,
+# 확정+결과 입력 뒤 패배한 쪽의 설욕전 신청인지.
+ChainKind = Literal["reapply", "revenge"]
 
 
 class ChallengeAuthor(BaseModel):
@@ -49,6 +54,8 @@ class ChallengeHistoryEntry(BaseModel):
     status: ChallengeStatus
     targets: list[ChallengeTargetOut]
     created_at: datetime = Field(alias="createdAt")
+    result_winner_side: ChallengeSide | None = Field(default=None, alias="resultWinnerSide")
+    chain_kind: ChainKind | None = Field(default=None, alias="chainKind")
 
 
 class ChallengeOut(BaseModel):
@@ -63,9 +70,13 @@ class ChallengeOut(BaseModel):
     targets: list[ChallengeTargetOut]
     own_members: list[ChallengeOwnMemberOut] = Field(alias="ownMembers")
     created_at: datetime = Field(alias="createdAt")
-    # 재신청 체인 — 이 도전장이 재신청으로 만들어졌으면 원래 도전장의 id, 아니면 None.
+    # 재신청 체인 — 이 도전장이 재신청/설욕전으로 만들어졌으면 원래 도전장의 id, 아니면 None.
     reapplied_from_id: int | None = Field(default=None, alias="reappliedFromId")
-    # 이 도전장보다 앞선 체인 기록(오래된 순) — 재신청 이력이 없으면 빈 배열.
+    # reapplied_from_id가 있을 때만 의미 있음 — 재신청("reapply")인지 설욕전("revenge")인지.
+    chain_kind: ChainKind | None = Field(default=None, alias="chainKind")
+    # 확정된 대결의 결과(이긴 쪽) — 아직 아무도 입력하지 않았으면 None.
+    result_winner_side: ChallengeSide | None = Field(default=None, alias="resultWinnerSide")
+    # 이 도전장보다 앞선 체인 기록(오래된 순) — 재신청/설욕전 이력이 없으면 빈 배열.
     history: list[ChallengeHistoryEntry] = Field(default_factory=list)
 
 
@@ -117,6 +128,24 @@ class ChallengeReapplyIn(BaseModel):
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
     message: str | None = None
+
+
+class ChallengeResultIn(BaseModel):
+    """확정된 대결의 결과 입력 — 참가자 누구든(도전자편/상대편 상관없이) 먼저 입력하는
+    쪽이 그대로 인정된다. 이미 결과가 입력된 대결에는 다시 입력할 수 없다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    winner_side: ChallengeSide = Field(alias="winnerSide")
+
+
+class ChallengePostponeIn(BaseModel):
+    """확정된 대결을 연기 — 도전자/상대 누구든 가능하고, 예정 일시가 이미 지난
+    뒤에도 새 일시로 바꿀 수 있다(요청: "예정 일시 지난 뒤에도 연기 가능")."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scheduled_at: datetime = Field(alias="scheduledAt")
 
 
 class ChallengeListOut(BaseModel):
