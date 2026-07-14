@@ -419,14 +419,17 @@ class MatchRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
-    async def team_participant_rows(self) -> list[Row]:
-        """팀랭킹 집계용 원본 — 전체 기간의 모든 경기 참가행(컴퓨터/비회원 포함)과 그 경기
-        결과. "어떤 회원들이 한 팀이었나"는 (match_id, team)으로 묶어봐야 알 수 있어서 SQL에서
-        미리 뭉치지 않고 행 단위로 그대로 넘긴다. 회원이 아닌 행(컴퓨터/비회원, member_pk가
-        NULL)도 일부러 포함한다 — 서비스 쪽에서 "이 편에 컴퓨터/비회원이 한 명이라도 섞여
-        있는지"를 판단해야 하기 때문이다(섞여 있으면 남은 실제 회원끼리를 별개의 팀으로
-        잘못 집계하게 된다 — 예: 3:3에 컴퓨터 1명이 끼면 실제 회원 2명만 남아 2인 팀처럼
-        보이는데, 실제로는 그 둘이 2:2를 뛴 적이 없다)."""
+    async def team_participant_rows(
+        self, *, date_from: date | None = None, date_to: date | None = None,
+    ) -> list[Row]:
+        """팀랭킹 집계용 원본 — (기본은 전체 기간이지만, 월별 집계를 위해 date_from/date_to로
+        좁힐 수 있다) 모든 경기 참가행(컴퓨터/비회원 포함)과 그 경기 결과. "어떤 회원들이 한
+        팀이었나"는 (match_id, team)으로 묶어봐야 알 수 있어서 SQL에서 미리 뭉치지 않고 행
+        단위로 그대로 넘긴다. 회원이 아닌 행(컴퓨터/비회원, member_pk가 NULL)도 일부러
+        포함한다 — 서비스 쪽에서 "이 편에 컴퓨터/비회원이 한 명이라도 섞여 있는지"를 판단해야
+        하기 때문이다(섞여 있으면 남은 실제 회원끼리를 별개의 팀으로 잘못 집계하게 된다 —
+        예: 3:3에 컴퓨터 1명이 끼면 실제 회원 2명만 남아 2인 팀처럼 보이는데, 실제로는 그
+        둘이 2:2를 뛴 적이 없다)."""
         member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
         stmt = (
             select(
@@ -441,6 +444,10 @@ class MatchRepository:
             .outerjoin(member_alias, member_condition)
             .where(MatchResult.result != "not_held")
         )
+        if date_from is not None:
+            stmt = stmt.where(Match.match_date >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(Match.match_date <= date_to)
         return list((await self._session.execute(stmt)).all())
 
     async def earliest_match_date(self) -> date | None:

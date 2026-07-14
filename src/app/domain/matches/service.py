@@ -1,4 +1,5 @@
 import base64
+import calendar
 from datetime import UTC, date, datetime, timedelta, timezone
 from functools import cmp_to_key
 
@@ -18,9 +19,11 @@ from app.domain.matches.schemas import (
     MatchSlot,
     MatchWrite,
     MemberStatsEntry,
+    MemberStatsMonthEntry,
     RaceStatsEntry,
     TeamRankEntry,
     TeamRankingResponse,
+    TeamRankMonthEntry,
     is_computer_slot,
     is_placeholder_slot,
     is_unregistered_slot,
@@ -118,6 +121,14 @@ def _decode_cursor(cursor: str) -> str:
 
 def _parse_date(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
+
+
+def _month_range(month: str) -> tuple[date, date]:
+    """"YYYY-MM"을 그 달의 첫날/마지막날로 바꾼다 — 랭킹 화면의 월 기준 기본 집계와
+    월별 순위변동 비교(최근 5개월)가 함께 쓴다."""
+    y, m = (int(p) for p in month.split("-"))
+    last_day = calendar.monthrange(y, m)[1]
+    return date(y, m, 1), date(y, m, last_day)
 
 
 _KST = timezone(timedelta(hours=9))
@@ -610,9 +621,37 @@ class MatchService:
         )
         return entries[0].most_played_race if entries else None
 
-    async def get_team_ranking(self) -> TeamRankingResponse:
-        """실제로 함께 뛴 팀 구성(2인 이상)마다의 승점 랭킹 — 전체 기간이 대상이다.
-        클럽 경기 수 자체가 많지 않아 기간을 자르면 표본이 남지 않는다(화면에도 기간 선택이 없다).
+    async def get_stats_monthly(
+        self,
+        *,
+        months: list[str],
+        member_ids: list[str] | None,
+        match_type: str | None,
+        race: str | None,
+    ) -> list[MemberStatsMonthEntry]:
+        """개인 랭킹의 월별 순위변동(최근 5개월) 모달과, 목록의 전월 대비 화살표가 함께
+        쓴다 — 달마다 왕복하는 대신 한 번에 여러 달을 모아 받는다(요청: "api로 랭킹 목록
+        가져올때 배열형태로 파라미터 추가"). 달마다 완전히 독립된 get_stats 호출이라(그
+        달만의 기간으로 순위를 다시 매김) 여기서 합칠 계산은 없다."""
+        results: list[MemberStatsMonthEntry] = []
+        for month in months:
+            date_from, date_to = _month_range(month)
+            entries = await self.get_stats(
+                member_ids=member_ids,
+                date_from=date_from.isoformat(),
+                date_to=date_to.isoformat(),
+                match_type=match_type,
+                race=race,
+            )
+            results.append(MemberStatsMonthEntry(month=month, members=entries))
+        return results
+
+    async def get_team_ranking(
+        self, *, date_from: date | None = None, date_to: date | None = None,
+    ) -> TeamRankingResponse:
+        """실제로 함께 뛴 팀 구성(2인 이상)마다의 승점 랭킹 — date_from/date_to를 안 넘기면
+        전체 기간이 대상이고(예전 동작 그대로), 랭킹 화면이 기본으로 쓰는 "이번 달" 집계나
+        월별 순위변동 비교(get_team_ranking_monthly)는 이 값을 채워 특정 달로 좁힌다.
 
         팀의 정체성은 "그 경기에서 같은 편이었던 회원들의 집합" 하나뿐이다 — 순서도, 어느
         경기였는지도 상관없어서 [A,B]는 늘 같은 팀으로 누적된다. 실제 팀 구성만 잡고 부분
@@ -620,8 +659,10 @@ class MatchService:
         2:2를 뛴 적이 없는데도 2인 팀 랭킹에 섞여 들어가기 때문이다.
 
         정렬은 승점(승 +1, 무 0, 패 -1) → 승수 → 경기수 순. 승점은 음수가 될 수 있고, 개인전
-        랭킹과 달리 승자승(맞대결)은 보지 않는다."""
-        rows = await self._repo.team_participant_rows()
+        랭킹과 달리 승자승(맞대결)은 보지 않는다. 인원수(2인/3인/4인)별로 따로 줄세우는 건
+        화면(프론트)의 몫이다 — member_ids 길이만 봐도 인원수를 알 수 있어 서버가 다시 나눠
+        줄 필요가 없다."""
+        rows = await self._repo.team_participant_rows(date_from=date_from, date_to=date_to)
 
         # (경기, 팀) 한 칸에 그 편으로 뛴 슬롯을 전부 모은다(컴퓨터/비회원은 member_pk가
         # None) — 같은 경기의 team1/team2가 각각 한 칸이고, 그 칸의 승패는 경기 결과
@@ -682,6 +723,18 @@ class MatchService:
         entries.sort(key=lambda e: (-e.points, -e.wins, -e.plays, e.member_ids))
 
         return TeamRankingResponse(teams=entries)
+
+    async def get_team_ranking_monthly(self, *, months: list[str]) -> list[TeamRankMonthEntry]:
+        """팀 랭킹의 월별 순위변동(최근 5개월) 모달과, 목록의 전월 대비 화살표가 함께
+        쓴다 — get_stats_monthly와 같은 이유로 한 번에 여러 달을 모아 받는다. 인원수
+        (2인/3인/4인)별로 다시 줄세우는 건 화면(프론트)의 몫이라 여기서는 달마다 그 달
+        전체 팀(모든 인원수 섞여서)을 그대로 돌려준다."""
+        results: list[TeamRankMonthEntry] = []
+        for month in months:
+            date_from, date_to = _month_range(month)
+            resp = await self.get_team_ranking(date_from=date_from, date_to=date_to)
+            results.append(TeamRankMonthEntry(month=month, teams=resp.teams))
+        return results
 
     async def get_earliest_match_date(self) -> str | None:
         d = await self._repo.earliest_match_date()

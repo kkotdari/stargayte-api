@@ -179,6 +179,21 @@ class MatchStatsResponse(BaseModel):
     members: list[MemberStatsEntry]
 
 
+class MemberStatsMonthEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    # "YYYY-MM" — 요청한 순서 그대로 돌려준다.
+    month: str
+    members: list[MemberStatsEntry]
+
+
+class MonthlyMatchStatsResponse(BaseModel):
+    """랭킹 화면의 월별 순위변동(최근 5개월) 비교와, 목록의 전월 대비 순위 화살표가 함께
+    쓴다 — 달마다 따로 요청을 보내는 대신 한 번에 여러 달을 받아 왕복을 줄인다."""
+
+    months: list[MemberStatsMonthEntry]
+
+
 class TeamRankEntry(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -194,8 +209,21 @@ class TeamRankEntry(BaseModel):
 
 
 class TeamRankingResponse(BaseModel):
-    # 기간 조건이 없다(전체 경기 집계) — 화면에도 기간 선택이 없어 응답에 기간 정보를 싣지 않는다.
+    # dateFrom/dateTo를 안 넘기면 전체 경기 집계, 넘기면(랭킹 화면의 월 기준 기본 집계) 그
+    # 기간만 대상 — 어느 쪽이든 응답 자체에는 기간 정보를 다시 싣지 않는다(요청한 쪽이 이미
+    # 알고 있다).
     teams: list[TeamRankEntry]
+
+
+class TeamRankMonthEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    month: str
+    teams: list[TeamRankEntry]
+
+
+class MonthlyTeamRankingResponse(BaseModel):
+    months: list[TeamRankMonthEntry]
 
 
 class MainRaceResponse(BaseModel):

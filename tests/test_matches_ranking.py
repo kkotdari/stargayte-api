@@ -225,7 +225,8 @@ async def test_team_ranking_hides_teams_below_the_minimum_plays(client):
 
 
 async def test_team_ranking_counts_every_match_regardless_of_age(client):
-    """기간 조건이 없다 — 클럽 경기 수가 워낙 적어서 아무리 오래된 경기도 그대로 집계에 들어간다."""
+    """dateFrom/dateTo를 안 넘기면 기간 조건이 없다 — 클럽 경기 수가 워낙 적어서 아무리
+    오래된 경기도 그대로 집계에 들어간다(예전 동작 그대로)."""
     headers = await _signup_many(client, 4)
     for day in ("2020-01-01", "2020-01-02"):
         await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", day)
@@ -234,3 +235,65 @@ async def test_team_ranking_counts_every_match_regardless_of_age(client):
     teams = res.json()["teams"]
     assert [t["memberIds"] for t in teams] == [["player01", "player02"], ["player03", "player04"]]
     assert teams[0]["points"] == 2
+
+
+async def test_team_ranking_date_range_narrows_to_that_period(client):
+    """랭킹 화면의 월 기준 기본 집계용 — dateFrom/dateTo를 넘기면 그 기간 밖의 경기는
+    plays 집계에서 아예 빠진다(TEAM_MIN_PLAYS 미달로 랭킹에서 통째로 사라질 수도 있다)."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-05")
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-06")
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-02-05")
+
+    res = await client.get(
+        "/api/matches/team-ranking",
+        headers=headers,
+        params={"dateFrom": "2026-01-01", "dateTo": "2026-01-31"},
+    )
+    assert res.status_code == 200, res.text
+    teams = res.json()["teams"]
+    assert teams[0]["memberIds"] == ["player01", "player02"]
+    assert teams[0]["plays"] == 2  # 2월 경기는 1월 범위 밖이라 빠진다.
+
+    res_feb = await client.get(
+        "/api/matches/team-ranking",
+        headers=headers,
+        params={"dateFrom": "2026-02-01", "dateTo": "2026-02-28"},
+    )
+    # 2월엔 1경기뿐이라 TEAM_MIN_PLAYS(2)에 못 미쳐 랭킹에서 아예 빠진다.
+    assert res_feb.json()["teams"] == []
+
+
+async def test_stats_monthly_returns_one_entry_per_requested_month(client):
+    """개인 랭킹의 월별 순위변동/전월 대비 화살표가 쓰는 배치 조회 — 달마다 그 달만의
+    기간으로 다시 집계된 결과가 온다."""
+    headers = await _signup_many(client, 2)
+    await _match(client, headers, ["player01"], ["player02"], "team1", "2026-01-10")
+    await _match(client, headers, ["player01"], ["player02"], "team1", "2026-02-10")
+    await _match(client, headers, ["player01"], ["player02"], "team1", "2026-02-11")
+
+    res = await client.get(
+        "/api/matches/stats/monthly", headers=headers, params={"months": "2026-01,2026-02"},
+    )
+    assert res.status_code == 200, res.text
+    months = res.json()["months"]
+    assert [m["month"] for m in months] == ["2026-01", "2026-02"]
+    jan_by_id = {m["memberId"]: m for m in months[0]["members"]}
+    feb_by_id = {m["memberId"]: m for m in months[1]["members"]}
+    assert jan_by_id["player01"]["overall"]["plays"] == 1
+    assert feb_by_id["player01"]["overall"]["plays"] == 2
+
+
+async def test_team_ranking_monthly_returns_one_entry_per_requested_month(client):
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-05")
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-06")
+
+    res = await client.get(
+        "/api/matches/team-ranking/monthly", headers=headers, params={"months": "2026-01,2026-02"},
+    )
+    assert res.status_code == 200, res.text
+    months = res.json()["months"]
+    assert [m["month"] for m in months] == ["2026-01", "2026-02"]
+    assert months[0]["teams"][0]["memberIds"] == ["player01", "player02"]
+    assert months[1]["teams"] == []

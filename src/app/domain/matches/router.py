@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Literal
 from urllib.parse import quote
 
@@ -16,6 +17,8 @@ from app.domain.matches.schemas import (
     MatchPage,
     MatchStatsResponse,
     MatchWrite,
+    MonthlyMatchStatsResponse,
+    MonthlyTeamRankingResponse,
     ReplayNameClassificationEntry,
     ReplayNameClassificationLookupRequest,
     ReplayNameClassificationLookupResponse,
@@ -27,6 +30,10 @@ from app.domain.matches.schemas import (
     TeamRankingResponse,
 )
 from app.domain.matches.service import MatchService, to_match_out
+
+
+def _split_months(months: str) -> list[str]:
+    return [m.strip() for m in months.split(",") if m.strip()]
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -115,10 +122,48 @@ async def get_stats(
 
 @router.get("/team-ranking", response_model=TeamRankingResponse)
 async def get_team_ranking(
-    db: DbSession, storage: StorageDep, _current: CurrentMember
+    db: DbSession,
+    storage: StorageDep,
+    _current: CurrentMember,
+    # 랭킹 화면의 월 기준 기본 집계용 — 안 넘기면 예전처럼 전체 기간이 대상이다.
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
 ) -> TeamRankingResponse:
-    # 기간(최근 3개월)/정렬 기준이 전부 서버 고정이라 받을 쿼리 파라미터가 없다.
-    return await MatchService(db, storage).get_team_ranking()
+    return await MatchService(db, storage).get_team_ranking(
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+    )
+
+
+@router.get("/stats/monthly", response_model=MonthlyMatchStatsResponse)
+async def get_stats_monthly(
+    db: DbSession,
+    storage: StorageDep,
+    _current: CurrentMember,
+    # "YYYY-MM" 쉼표 목록 — 목록의 전월 대비 화살표(2개월)나 카드 클릭 시 최근 5개월
+    # 순위변동 모달이 한 번에 여러 달을 요청한다(요청: "api로 랭킹 목록 가져올때
+    # 배열형태로 파라미터 추가").
+    months: str = Query(alias="months"),
+    member_ids: str | None = Query(default=None, alias="memberIds"),
+    match_type: str | None = Query(default=None, alias="matchType"),
+    race: str | None = None,
+) -> MonthlyMatchStatsResponse:
+    ids = [i.strip() for i in member_ids.split(",") if i.strip()] if member_ids else None
+    result = await MatchService(db, storage).get_stats_monthly(
+        months=_split_months(months), member_ids=ids, match_type=match_type, race=race,
+    )
+    return MonthlyMatchStatsResponse(months=result)
+
+
+@router.get("/team-ranking/monthly", response_model=MonthlyTeamRankingResponse)
+async def get_team_ranking_monthly(
+    db: DbSession,
+    storage: StorageDep,
+    _current: CurrentMember,
+    months: str = Query(alias="months"),
+) -> MonthlyTeamRankingResponse:
+    result = await MatchService(db, storage).get_team_ranking_monthly(months=_split_months(months))
+    return MonthlyTeamRankingResponse(months=result)
 
 
 @router.get("/main-race", response_model=MainRaceResponse)
