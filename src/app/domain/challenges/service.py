@@ -231,6 +231,32 @@ class ChallengeService:
         await self._session.commit()
         return [to_challenge_out(c) for c in challenges]
 
+    async def get_result_pending_for_me(self, *, actor: Member) -> list[ChallengeOut]:
+        """"결과 입력" 팝업 큐 — 내가 참가한(도전자편/상대편 무관) 확정 대결 중 예정
+        일시가 지났는데 아직 결과가 안 들어온 것을, 참가자별로 한 번만 내려준다(요청:
+        "결과 입력 팝업 확인 여부는 디비에 관리"). 초대 팝업(get_pending_for_me)과 같은
+        원리 — 내려주는 즉시 "봤음"(result_notified)으로 표시해 다음 조회부터는 안 잡히고,
+        결과 입력 자체는 대결 화면의 버튼으로 언제든 할 수 있다. 아직 자격이 안 되는
+        것(예정 일시 전, 미확정)은 표시하지 않고 그대로 둬서, 나중에 자격이 되면 그때
+        팝업 대상으로 잡힌다."""
+        now = _to_utc_naive(datetime.now(UTC))
+        candidates = await self._repo.list_result_unnotified_for_member(actor.pk)
+        challenges: list[Challenge] = []
+        for p in candidates:
+            challenge = await self._repo.get(p.challenge_id)
+            if challenge is None:
+                continue
+            if (
+                _status_of(challenge) == "confirmed"
+                and challenge.scheduled_at is not None
+                and _to_utc_naive(challenge.scheduled_at) < now
+                and challenge.result_winner_side is None
+            ):
+                p.result_notified = True
+                challenges.append(challenge)
+        await self._session.commit()
+        return [to_challenge_out(c) for c in challenges]
+
     async def respond(
         self,
         challenge_id: int,

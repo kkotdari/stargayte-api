@@ -27,6 +27,12 @@ async def get_pending_for_me(db: DbSession, current: CurrentMember) -> Challenge
     return ChallengeListOut(items=items)
 
 
+@router.get("/result-pending-for-me", response_model=ChallengeListOut)
+async def get_result_pending_for_me(db: DbSession, current: CurrentMember) -> ChallengeListOut:
+    items = await ChallengeService(db).get_result_pending_for_me(actor=current)
+    return ChallengeListOut(items=items)
+
+
 @router.post("", response_model=ChallengeOut)
 async def create_challenge(
     payload: ChallengeCreate, db: DbSession, current: CurrentMember

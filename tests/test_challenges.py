@@ -757,3 +757,80 @@ async def test_postpone_confirmed_challenge_resets_result_and_allows_either_side
     assert body["scheduledAt"].startswith("2026-09-01")
     assert body["resultWinnerSide"] is None
     assert body["status"] == "confirmed"
+
+
+async def test_result_pending_for_me_returns_once_then_marks_result_notified(client):
+    """"결과 입력" 팝업 큐 — 예정 일시가 지난 미입력 확정 대결이 참가자별로 한 번만
+    내려오고(내려주는 즉시 result_notified), 결과가 입력된 대결은 애초에 안 잡힌다
+    (요청: "결과 입력 팝업 확인 여부는 디비에 관리")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+
+    # 아직 확정 전(응답 대기) — 팝업 대상이 아니다.
+    res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
+    assert res.status_code == 200, res.text
+    assert res.json()["items"] == []
+
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+
+    # 확정 + 예정 일시(2020년) 경과 + 결과 미입력 — 양쪽 참가자 모두에게 각각 한 번씩 잡힌다.
+    res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
+    assert [c["id"] for c in res.json()["items"]] == [challenge_id]
+    res = await client.get("/api/challenges/result-pending-for-me", headers=headers_b)
+    assert [c["id"] for c in res.json()["items"]] == [challenge_id]
+
+    # 이미 봤으니 다시 조회하면 비어 있다 — 프론트를 갈아엎어도(기기/브라우저가 바뀌어도)
+    # 서버가 기억하므로 재등장하지 않는다.
+    res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
+    assert res.json()["items"] == []
+
+
+async def test_result_pending_for_me_skips_future_schedule_and_entered_result(client):
+    """예정 일시가 아직 안 지난 확정 대결은 팝업 대상이 아니고(표시도 하지 않아 나중에
+    일시가 지나면 그때 잡힌다), 결과가 이미 입력된 대결도 잡히지 않는다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    # 미래 일시로 확정된 대결 — 아직 팝업 대상이 아니다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2099-01-01T10:00:00Z"},
+    )
+    future_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{future_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
+    assert res.json()["items"] == []
+
+    # 지난 일시 + 결과까지 이미 입력된 대결 — 역시 팝업 대상이 아니다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    done_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{done_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    await client.post(
+        f"/api/challenges/{done_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+    res = await client.get("/api/challenges/result-pending-for-me", headers=headers_b)
+    assert res.json()["items"] == []

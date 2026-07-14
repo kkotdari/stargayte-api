@@ -43,3 +43,16 @@ class ChallengeRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def list_result_unnotified_for_member(self, member_pk: int) -> list[ChallengeParticipant]:
+        """"결과 입력" 팝업 후보 — 이 회원이 참가한(side 무관) 도전장 중 아직 결과 팝업을
+        안 본 참가 행. "예정 일시가 지난 확정 대결 + 결과 미입력"이라는 실제 자격은 상태를
+        저장하지 않고 매번 계산하는 도메인 규칙이라(service의 _status_of) 여기서 SQL로
+        거르지 않고 서비스 레이어가 마저 거른다."""
+        result = await self._session.execute(
+            select(ChallengeParticipant).where(
+                ChallengeParticipant.member_pk == member_pk,
+                ChallengeParticipant.result_notified.is_(False),
+            )
+        )
+        return list(result.scalars().all())

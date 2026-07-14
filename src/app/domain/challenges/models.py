@@ -103,6 +103,12 @@ class ChallengeParticipant(Base):
     # 지목된 사람이 다음 접속 때 팝업으로 한 번 본 뒤로는 다시 안 뜨게 하는 플래그 —
     # 목록/응답 상태 자체와는 별개다(팝업을 이미 봤어도 목록에서는 계속 pending으로 보인다).
     notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 위 notified의 "결과 입력" 팝업 버전 — 예정 일시가 지났는데 결과가 안 들어온 확정
+    # 대결을 다음 접속 때 팝업으로 한 번 보여준 뒤 다시 안 뜨게 한다(요청: "결과 입력
+    # 팝업 확인 여부는 디비에 관리" — 처음엔 프론트 localStorage로 관리했다가 기기/브라우저를
+    # 바꾸면 또 뜨는 문제가 있어 서버로 옮겼다). notified와 달리 결과 입력은 양쪽 참가자
+    # 전원이 대상이라 side와 무관하게 모든 행에서 의미가 있다.
+    result_notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     challenge: Mapped[Challenge] = relationship(back_populates="participants")
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
