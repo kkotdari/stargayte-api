@@ -4,7 +4,7 @@ from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, o
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.domain.matches.models import Match, MatchAttachment, MatchParticipant, MatchResult
+from app.domain.matches.models import Match, MatchParticipant, MatchResult, Replay
 from app.domain.members.models import Member, ReplayAlias
 
 
@@ -15,7 +15,7 @@ class MatchRepository:
     def _base_query(self) -> Select[tuple[Match]]:
         return select(Match).options(
             selectinload(Match.participants),
-            selectinload(Match.attachment),
+            selectinload(Match.replay),
             selectinload(Match.result_row),
             selectinload(Match.creator),
         )
@@ -501,15 +501,15 @@ class MatchRepository:
         stmt = select(ReplayAlias).options(selectinload(ReplayAlias.member))
         return list((await self._session.execute(stmt)).scalars().all())
 
-    async def list_all_attachments(self) -> list[Row]:
-        # 리플레이 전체 다운로드(운영자)용 — 첨부(.rep)가 있는 모든 경기의 날짜/고유번호/
-        # 파일명/저장경로를 날짜 오름차순으로. 날짜별 폴더로 zip을 묶는 데 쓴다.
-        stmt = (
-            select(Match.match_date, Match.match_no, MatchAttachment.file_name, MatchAttachment.file_path)
-            .join(MatchAttachment, MatchAttachment.match_id == Match.id)
-            .order_by(Match.match_date, Match.match_no)
-        )
+    async def list_all_replays(self) -> list[Row]:
+        # 리플레이 전체 다운로드(운영자) + 전체 삭제 시 파일 정리용 — 저장 파일명(display_name)과
+        # 저장 경로를 등록 순으로.
+        stmt = select(Replay.display_name, Replay.file_path).order_by(Replay.created_at)
         return list((await self._session.execute(stmt)).all())
+
+    async def delete_all_replays(self) -> int:
+        result = await self._session.execute(delete(Replay))
+        return int(result.rowcount or 0)
 
     async def delete_replay_alias(self, raw_name: str) -> None:
         # raw_name은 kind와 무관하게 replay_aliases 테이블 전체에서 유일하므로, 이 한 번의

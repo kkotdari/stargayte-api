@@ -152,15 +152,20 @@ async def test_match_lifecycle_with_attachment(client):
             "team2": [{"memberId": "player02", "race": "저그"}],
             "result": "team1",
             "note": "테스트 경기",
-            "attachment": {"name": "replay.rep", "url": TINY_PNG_DATA_URL},
+            "replay": {
+                "originalName": "replay.rep",
+                "displayName": "replay.rep",
+                "url": TINY_PNG_DATA_URL,
+            },
         },
     )
     assert create_res.status_code == 200, create_res.text
     match = create_res.json()
-    assert match["attachment"]["name"] == "replay.rep"
-    assert match["attachment"]["url"].startswith("http://testserver/uploads/matches/")
+    assert match["replay"]["displayName"] == "replay.rep"
+    assert match["replay"]["originalName"] == "replay.rep"
+    assert match["replay"]["url"].startswith("http://testserver/uploads/replays/")
 
-    download_res = await client.get(f"/api/matches/{match['id']}/attachment", headers=headers)
+    download_res = await client.get(f"/api/matches/{match['id']}/replay", headers=headers)
     assert download_res.status_code == 200
     assert 'filename="replay.rep"' in download_res.headers["content-disposition"]
     assert len(download_res.content) > 0
@@ -178,13 +183,13 @@ async def test_match_lifecycle_with_attachment(client):
             "team2": [{"memberId": "player02", "race": "저그"}],
             "result": "team2",
             "note": "수정됨",
-            "attachment": None,
+            "replay": None,
         },
     )
     assert update_res.status_code == 200, update_res.text
     updated = update_res.json()
     assert updated["result"] == "team2"
-    assert updated["attachment"] is None
+    assert updated["replay"] is None
 
 
 async def test_manual_match_no_uses_match_date_not_registration_time(client):
@@ -273,7 +278,11 @@ async def test_match_attachment_rejects_non_rep_file(client):
             "team2": [{"memberId": "player02", "race": "저그"}],
             "result": "team1",
             "note": "",
-            "attachment": {"name": "screenshot.png", "url": TINY_PNG_DATA_URL},
+            "replay": {
+                "originalName": "screenshot.png",
+                "displayName": "screenshot.png",
+                "url": TINY_PNG_DATA_URL,
+            },
         },
     )
     assert res.status_code == 400

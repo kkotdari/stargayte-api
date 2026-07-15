@@ -316,21 +316,21 @@ async def delete_match(
     await MatchService(db, storage).delete_match(match_id, actor=current)
 
 
-@router.get("/{match_id}/attachment")
-async def download_attachment(
+@router.get("/{match_id}/replay")
+async def download_replay(
     match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> Response:
     match = await MatchService(db, storage).get_match(match_id)
-    if match.attachment is None:
-        raise NotFoundError("첨부파일이 없습니다.")
+    if match.replay is None:
+        raise NotFoundError("리플레이가 없습니다.")
 
-    content = await storage.read(match.attachment.file_path)
-    filename = match.attachment.file_name
+    content = await storage.read(match.replay.file_path)
+    filename = match.replay.display_name
     # 파일명에 한글이 섞여 있어도 안전하도록 ASCII fallback + RFC 5987 filename* 둘 다 넣는다.
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "replay.rep"
     disposition = f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
     return Response(
         content=content,
-        media_type=match.attachment.content_type or "application/octet-stream",
+        media_type=match.replay.content_type or "application/octet-stream",
         headers={"Content-Disposition": disposition},
     )
