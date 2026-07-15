@@ -42,13 +42,31 @@ def _status_of(challenge: Challenge) -> str:
     return "pending"
 
 
+# 응답(무응답거절) 마감 = 예정 시간 지정 여부와 무관하게 무조건 요청일(created_at)로부터
+# 1일이다(요청: "예정시간 지정이든 아니든 응답 마감시간은 무조건 요청일로부터 1일이야").
 def _response_deadline(challenge: Challenge) -> datetime:
-    """응답(무응답거절) 마감 시각 — 예정 일시가 지정돼 있으면 그 시각이 곧 마감이다(요청:
-    "예정 일시는 종료 시간으로 지정해줘"), 시간 미정이면 created_at + REAPPLY_EXPIRE(1일).
-    반환값은 비교용 UTC-naive다."""
-    if challenge.scheduled_at is not None:
-        return _to_utc_naive(challenge.scheduled_at)
     return _to_utc_naive(challenge.created_at) + REAPPLY_EXPIRE
+
+
+def _stamp_schedule_on_end(challenge: Challenge) -> None:
+    """도전장이 거절/무응답으로 끝나는 순간, 예정 일시가 없으면 요청일+1일로 확정한다
+    (요청: "응답 마감 기한 지나면 자동으로 백엔드 배치에 의해 스케쥴이 박힐거고 그게 아직
+    없다는건 응답 대기중이라는 거지" + "거절하는 순간 scheduled_at도 업데이트... 요청일시
+    +1일로 통일성있게"). 이 규칙 덕에 "scheduled_at이 없다 = 아직 응답 대기중"이 성립해
+    프론트는 마감 계산 없이 그걸로만 판단한다. 이미 시간이 정해진 도전장은 실제 매치
+    시각이라 건드리지 않는다."""
+    if challenge.scheduled_at is None:
+        challenge.scheduled_at = challenge.created_at + REAPPLY_EXPIRE
+
+
+def _is_auto_stamped(challenge: Challenge) -> bool:
+    """예정 일시가 위 _stamp_schedule_on_end로 찍힌 값(요청일+1일)인지 — 재신청 때 이
+    값을 새 도전장의 매치 시각으로 물려주면 안 되므로(무응답으로 박제된 값이지 실제로 잡은
+    시각이 아니다) 구분한다. 사용자가 '요청 시각 정확히 +24시간'을 고를 일은 사실상 없어
+    이 동치 비교로 충분하다."""
+    if challenge.scheduled_at is None:
+        return False
+    return _to_utc_naive(challenge.scheduled_at) == _to_utc_naive(challenge.created_at) + REAPPLY_EXPIRE
 
 
 def _is_expired(challenge: Challenge) -> bool:
@@ -181,7 +199,7 @@ class ChallengeService:
                 continue
             if _status_of(c) != "pending":
                 continue
-            # 마감 = 예정 일시(있으면) 또는 created_at + 1일(_response_deadline).
+            # 마감 = 요청일(created_at) + 1일(_response_deadline) — 예정 시간 지정 무관.
             if now <= _response_deadline(c):
                 continue
             for p in c.participants:
@@ -190,6 +208,9 @@ class ChallengeService:
                     p.response_message = None
                     p.responded_at = datetime.now(UTC)
                     changed = True
+            # 무응답거절로 끝났으니 예정 일시가 없었으면 요청일+1일로 확정한다 — "scheduled_at
+            # 없음 = 아직 응답 대기중"이 성립하도록(위 _stamp_schedule_on_end 주석 참고).
+            _stamp_schedule_on_end(c)
         if changed:
             await self._session.commit()
 
@@ -342,6 +363,11 @@ class ChallengeService:
         # 메시지 한명만 받기로 했는데 전원 다 받을수 있게 해줘") — 지목된 전원이 각자
         # 자기 한마디를 남긴다.
         target.response_message = reason
+        # 이 응답으로 도전장이 거절로 끝났고 예정 일시가 없었으면, 그 순간 예정 일시를
+        # 요청일+1일로 확정한다(요청: "거절하는 순간 scheduled_at도 업데이트") — 화면에서
+        # "일정 미정"이 아니라 그 날짜로 묶이게.
+        if _status_of(challenge) == "rejected":
+            _stamp_schedule_on_end(challenge)
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
@@ -387,9 +413,13 @@ class ChallengeService:
         if await self._repo.is_superseded(challenge.id):
             raise ValidationError("이미 이어진 도전장이 있습니다.")
 
+        # 시간/메모를 안 넘기면 원래 값을 물려받되, 예정 일시가 무응답거절로 자동 스탬프된
+        # 값(요청일+1일)이면 실제로 잡은 시각이 아니라 박제값이라 물려주지 않고 다시 미정으로
+        # 시작한다 — 안 그러면 새 도전장이 과거 시각으로 만들어져 만들자마자 만료된다.
+        inherited_schedule = None if _is_auto_stamped(challenge) else challenge.scheduled_at
         new_challenge = Challenge(
             match_type=challenge.match_type,
-            scheduled_at=scheduled_at if scheduled_at is not None else challenge.scheduled_at,
+            scheduled_at=scheduled_at if scheduled_at is not None else inherited_schedule,
             message=message if message is not None else challenge.message,
             created_by=actor.pk,
             updated_by=actor.pk,

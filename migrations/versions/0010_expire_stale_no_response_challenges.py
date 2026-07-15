@@ -33,30 +33,45 @@ _RESPONSE_EXPIRE = timedelta(days=1)
 def upgrade() -> None:
     now = datetime.now(UTC)
     day_ago = now - _RESPONSE_EXPIRE
-    # 상관 서브쿼리(UPDATE...FROM)는 방언마다 문법이 달라, IN + 서브쿼리로 Postgres/SQLite
-    # 양쪽에서 도는 형태를 쓴다. 파라미터로 시각을 넘겨(NOW()/INTERVAL 방언 차이 회피)
-    # 마감 판정을 한다.
-    op.execute(
+    bind = op.get_bind()
+    # 마감(요청일+1일)이 지난 pending 도전장을 찾는다 — canceled 아님, 거절자 없음, 미응답
+    # 지목자 있음(=아직 pending). 상관 UPDATE는 방언차가 커서 SELECT 후 행별로 처리한다.
+    rows = bind.execute(
         sa.text(
             """
-            UPDATE challenge_participants
-            SET response = 'rejected', response_message = NULL, responded_at = :now
-            WHERE side = 'target' AND response = 'pending'
-              AND challenge_id IN (
-                SELECT c.id FROM challenges c
-                WHERE c.canceled_at IS NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM challenge_participants r
-                    WHERE r.challenge_id = c.id AND r.side = 'target' AND r.response = 'rejected'
-                  )
-                  AND (
-                    (c.scheduled_at IS NOT NULL AND c.scheduled_at < :now)
-                    OR (c.scheduled_at IS NULL AND c.created_at < :day_ago)
-                  )
+            SELECT c.id, c.created_at, c.scheduled_at FROM challenges c
+            WHERE c.canceled_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM challenge_participants r
+                WHERE r.challenge_id = c.id AND r.side = 'target' AND r.response = 'rejected'
               )
+              AND EXISTS (
+                SELECT 1 FROM challenge_participants p
+                WHERE p.challenge_id = c.id AND p.side = 'target' AND p.response = 'pending'
+              )
+              AND c.created_at < :day_ago
             """
-        ).bindparams(now=now, day_ago=day_ago)
-    )
+        ).bindparams(day_ago=day_ago)
+    ).fetchall()
+
+    for row in rows:
+        cid, created_at, scheduled_at = row[0], row[1], row[2]
+        # 미응답 지목자 → 무응답거절(메시지 없음).
+        bind.execute(
+            sa.text(
+                "UPDATE challenge_participants SET response = 'rejected', "
+                "response_message = NULL, responded_at = :now "
+                "WHERE challenge_id = :cid AND side = 'target' AND response = 'pending'"
+            ).bindparams(now=now, cid=cid)
+        )
+        # 시간 미정이었으면 예정 일시를 요청일+1일로 스탬프한다("scheduled_at 없음 = 아직
+        # 응답 대기중"이 성립하도록 — 런타임 _stamp_schedule_on_end와 같은 처리).
+        if scheduled_at is None:
+            bind.execute(
+                sa.text("UPDATE challenges SET scheduled_at = :val WHERE id = :cid").bindparams(
+                    val=created_at + _RESPONSE_EXPIRE, cid=cid
+                )
+            )
 
 
 def downgrade() -> None:

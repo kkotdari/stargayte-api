@@ -861,10 +861,11 @@ async def test_pending_for_me_excludes_canceled_challenge(client):
 
 
 async def test_listing_expires_stale_pending_as_no_response_rejection(client, db_session):
-    """너나와 목록을 조회하면(GET /api/challenges) 응답 기한(시간 미정이면 1일)이 지난
-    pending 도전장의 미응답 지목자가 무응답거절로 확정된다 — 상태는 rejected가 되고
-    메시지는 없으며(요청: "무응답거절로 처리... 다루는 방식은 거절과 같아 대신 메시지는
-    없어"), 요청자는 거절과 똑같이 재신청할 수 있다."""
+    """너나와 목록을 조회하면(GET /api/challenges) 응답 기한(요청일+1일)이 지난 pending
+    도전장의 미응답 지목자가 무응답거절로 확정된다 — 상태는 rejected, 메시지는 없고,
+    시간 미정이었으면 예정 일시가 요청일+1일로 스탬프돼 더는 null이 아니다(요청:
+    "응답 마감 기한 지나면 자동으로 백엔드 배치에 의해 스케쥴이 박힐거고"). 요청자는
+    거절과 똑같이 재신청할 수 있고, 재신청 건은 스탬프값을 물려받지 않아 다시 미정이다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -881,45 +882,48 @@ async def test_listing_expires_stale_pending_as_no_response_rejection(client, db
     )
     await db_session.commit()
 
-    # 조회 → 배치가 무응답거절로 확정한다(상태 rejected, 메시지 없음).
+    # 조회 → 배치가 무응답거절로 확정(상태 rejected, 메시지 없음) + 예정 일시 스탬프.
     res = await client.get("/api/challenges", headers=headers_a)
     assert res.status_code == 200, res.text
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
     assert body["status"] == "rejected"
+    assert body["scheduledAt"] is not None  # 요청일+1일로 스탬프됨(더는 일정 미정 아님)
     bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
     assert bob_target["response"] == "rejected"
     assert bob_target["responseMessage"] is None
 
-    # 거절과 똑같이 재신청할 수 있다.
+    # 거절과 똑같이 재신청 — 스탬프된 예정 일시는 물려받지 않고 다시 미정으로 시작한다.
     res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
     assert res.status_code == 200, res.text
     assert res.json()["reappliedFromId"] == challenge_id
+    assert res.json()["scheduledAt"] is None
 
 
-async def test_scheduled_at_is_the_response_deadline(client, db_session):
-    """예정 일시가 지정된 도전장은 그 시각이 곧 응답 마감이다(요청: "예정 일시는 종료
-    시간으로 지정해줘") — created_at이 방금이어도 예정 일시가 지났으면 무응답거절로
-    확정되고, 예정 일시가 아직 미래면 created_at이 오래됐어도 그대로 pending이다."""
+async def test_response_deadline_is_always_one_day_from_request(client, db_session):
+    """응답 마감은 예정 시간 지정 여부와 무관하게 무조건 요청일+1일이다(요청: "예정시간
+    지정이든 아니든 응답 마감시간은 무조건 요청일로부터 1일이야") — 예정 일시가 과거여도
+    created_at이 방금이면 마감 전이라 대기, created_at이 하루 지났으면 예정 일시가 먼
+    미래여도 무응답거절된다(그리고 예정 일시는 지정값 그대로 유지)."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
     await _approve(client, a["accessToken"], "bob")
 
-    # 예정 일시가 이미 지난(2020년) 도전장 — created_at은 방금.
+    # 예정 일시는 과거(2020)지만 created_at은 방금 → 마감 전 → 대기.
     res = await client.post(
         "/api/challenges", headers=headers_a,
         json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
     )
-    past_id = res.json()["id"]
+    fresh_id = res.json()["id"]
 
-    # 예정 일시가 먼 미래(2099년)인 도전장 — created_at을 1주 전으로 되돌려도 마감 전.
+    # 예정 일시는 먼 미래(2099)지만 created_at을 1주 전으로 → 마감 지남 → 무응답거절.
     res = await client.post(
         "/api/challenges", headers=headers_a,
         json={"targetMemberIds": ["bob"], "scheduledAt": "2099-01-01T10:00:00Z"},
     )
-    future_id = res.json()["id"]
+    old_id = res.json()["id"]
     await db_session.execute(
-        update(Challenge).where(Challenge.id == future_id).values(
+        update(Challenge).where(Challenge.id == old_id).values(
             created_at=datetime.now(UTC) - timedelta(days=7)
         )
     )
@@ -927,7 +931,8 @@ async def test_scheduled_at_is_the_response_deadline(client, db_session):
 
     res = await client.get("/api/challenges", headers=headers_a)
     items = {c["id"]: c for c in res.json()["items"]}
-    # 예정 일시가 지난 건은 무응답거절.
-    assert items[past_id]["status"] == "rejected"
-    # 예정 일시가 미래인 건은 created_at이 오래돼도 그대로 대기.
-    assert items[future_id]["status"] == "pending"
+    # created_at이 방금인 건은 예정 일시가 과거여도 그대로 대기.
+    assert items[fresh_id]["status"] == "pending"
+    # created_at이 하루 지난 건은 예정 일시가 미래여도 무응답거절 — 예정 일시는 지정값 유지.
+    assert items[old_id]["status"] == "rejected"
+    assert items[old_id]["scheduledAt"].startswith("2099-01-01")
