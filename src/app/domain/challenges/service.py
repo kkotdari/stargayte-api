@@ -298,15 +298,11 @@ class ChallengeService:
         target.response = response
         target.responded_at = datetime.now(UTC)
         # 이제 수락에도 한마디를 받는다(요청: "편지지에 수락/거절 한줄 메시지 필수화")
-        # — 응답 종류와 무관하게 그대로 저장한다. 단, 팀전(지목된 쪽이 여러 명)에서는
-        # 한마디를 최초 응답자만 남길 수 있다(요청: "한마디는 최초응답자만 가능") —
-        # 이미 다른 지목자가 먼저 응답했으면 이번 응답의 메시지는 저장하지 않는다.
-        already_responded = any(
-            p.response != "pending"
-            for p in challenge.participants
-            if p.side == "target" and p.member_pk != actor.pk
-        )
-        target.response_message = None if already_responded else reason
+        # — 응답 종류와 무관하게 그대로 저장한다. 팀전에서 최초 응답자만 남길 수 있게
+        # 제한했던 적이 있는데(요청: "한마디는 최초응답자만 가능") 되돌렸다(요청: "수락시
+        # 메시지 한명만 받기로 했는데 전원 다 받을수 있게 해줘") — 지목된 전원이 각자
+        # 자기 한마디를 남긴다.
+        target.response_message = reason
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge, history=await self._history_chain(challenge))

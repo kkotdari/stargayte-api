@@ -562,9 +562,10 @@ async def test_reapply_blocked_when_already_chained(client):
     assert res.status_code == 400, res.text
 
 
-async def test_only_first_target_responder_can_leave_a_message(client):
-    """한마디는 최초응답자만 가능(요청) — 팀전에서 지목된 두 번째 사람이 응답하며
-    남긴 한마디는 저장되지 않는다."""
+async def test_every_target_responder_can_leave_a_message(client):
+    """팀전에서 지목된 전원이 각자 자기 한마디를 남길 수 있다 — 최초 응답자만 남길 수
+    있던 제한을 되돌렸다(요청: "수락시 메시지 한명만 받기로 했는데 전원 다 받을수
+    있게 해줘")."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     c = await _signup(client, "carol", "Carol#1003")
@@ -592,8 +593,12 @@ async def test_only_first_target_responder_can_leave_a_message(client):
         json={"response": "accepted", "reason": "저도 할래요"},
     )
     assert res.status_code == 200, res.text
-    carol_target = next(t for t in res.json()["targets"] if t["memberId"] == "carol")
-    assert carol_target["responseMessage"] is None
+    body = res.json()
+    carol_target = next(t for t in body["targets"] if t["memberId"] == "carol")
+    assert carol_target["responseMessage"] == "저도 할래요"
+    # 먼저 응답한 사람의 한마디도 그대로 남아 있다.
+    bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
+    assert bob_target["responseMessage"] == "제가 먼저 응답!"
 
 
 async def test_enter_result_blocked_before_confirmed_or_before_schedule_passes(client):
