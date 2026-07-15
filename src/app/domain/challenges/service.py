@@ -414,10 +414,10 @@ class ChallengeService:
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if challenge.created_by != actor.pk:
-            raise ForbiddenError("요청자만 재신청할 수 있습니다.")
+            raise ForbiddenError("요청자만 다시 신청할 수 있습니다.")
         status = _status_of(challenge)
         if status != "rejected" and not _is_expired(challenge):
-            raise ValidationError("거절되었거나 기한 내 무응답인 도전장만 재신청할 수 있습니다.")
+            raise ValidationError("거절되었거나 기한 내 무응답인 도전장만 다시 신청할 수 있습니다.")
         if await self._repo.is_superseded(challenge.id):
             raise ValidationError("이미 이어진 도전장이 있습니다.")
 
@@ -486,14 +486,14 @@ class ChallengeService:
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if challenge.result_winner_side is None:
-            raise ValidationError("결과가 입력된 대결만 설욕전을 신청할 수 있습니다.")
+            raise ValidationError("결과가 입력된 대결만 재대결을 신청할 수 있습니다.")
         losing_side = _losing_side(challenge)
         if losing_side is None:
-            # 무승부/미실시는 패자가 없어 설욕전 대상이 아니다(요청: "무승부나 미실시도 있게").
-            raise ValidationError("무승부/미실시 대결은 설욕전을 신청할 수 없습니다.")
+            # 무승부/미실시는 패자가 없어 재대결 대상이 아니다(요청: "무승부나 미실시도 있게").
+            raise ValidationError("무승부/미실시 대결은 재대결을 신청할 수 없습니다.")
         loser_pks = {p.member_pk for p in challenge.participants if p.side == losing_side}
         if actor.pk not in loser_pks:
-            raise ForbiddenError("패배한 쪽만 설욕전을 신청할 수 있습니다.")
+            raise ForbiddenError("패배한 쪽만 재대결을 신청할 수 있습니다.")
         if await self._repo.is_superseded(challenge.id):
             raise ValidationError("이미 이어진 도전장이 있습니다.")
 
