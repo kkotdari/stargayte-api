@@ -257,13 +257,21 @@ async def delete_replay_name_mapping(
 
 @router.get("/replays/archive")
 async def download_replay_archive(db: DbSession, storage: StorageDep, _admin: CurrentAdmin) -> Response:
-    """등록된 모든 리플레이(.rep)를 날짜별 폴더 zip으로 묶어 다운로드(운영자 전용)."""
+    """등록된 모든 리플레이(.rep)를 zip으로 묶어 다운로드(운영자 전용)."""
     data = await MatchService(db, storage).build_replay_archive()
     return Response(
         content=data,
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="replays.zip"'},
     )
+
+
+# "/all"은 "/{match_id}"(int)보다 먼저 선언해야 한다 — 뒤에 두면 match_id 파싱 실패로 422.
+@router.delete("/all")
+async def delete_all_matches(db: DbSession, storage: StorageDep, admin: CurrentAdmin) -> dict[str, int]:
+    """모든 경기기록 삭제(운영자 제어판). 첨부(.rep) 파일도 함께 지운다."""
+    count = await MatchService(db, storage).delete_all_matches(actor=admin)
+    return {"deleted": count}
 
 
 @router.post("", response_model=MatchOut)

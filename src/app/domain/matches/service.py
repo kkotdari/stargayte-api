@@ -861,9 +861,9 @@ class MatchService:
         return match
 
     async def build_replay_archive(self) -> bytes:
-        """등록된 모든 리플레이(.rep 첨부)를 날짜별 폴더로 묶은 zip 바이트를 만든다(운영자
-        제어판의 '리플레이 전체 다운로드'). 파일이 유실된 건은 조용히 건너뛴다. 같은
-        폴더에 파일명이 겹치면 " (2)"식으로 유일하게 만든다."""
+        """등록된 모든 리플레이(.rep 첨부)를 zip 바이트로 묶는다(운영자 제어판의 '리플레이
+        전체 다운로드'). 폴더 구분 없이 평평하게 담는다(요청). 파일이 유실된 건은 조용히
+        건너뛰고, 파일명이 겹치면 " (2)"식으로 유일하게 만든다."""
         rows = await self._repo.list_all_attachments()
         used: set[str] = set()
 
@@ -882,13 +882,12 @@ class MatchService:
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for match_date, _match_no, file_name, file_path in rows:
+            for _match_date, _match_no, file_name, file_path in rows:
                 try:
                     data = await self._storage.read(file_path)
                 except Exception:
                     continue
-                arcname = unique(f"{match_date.isoformat()}/{file_name}")
-                zf.writestr(arcname, data)
+                zf.writestr(unique(file_name), data)
         return buf.getvalue()
 
     async def alias_by_player_name(self) -> dict[str, ReplayAlias]:
@@ -984,6 +983,20 @@ class MatchService:
             await self._storage.delete(match.attachment.file_path)
         await self._repo.delete(match)
         await self._session.commit()
+
+    async def delete_all_matches(self, *, actor: Member) -> int:
+        """모든 경기기록을 삭제한다(운영자 제어판). 첨부(.rep) 파일도 스토리지에서 지운다.
+        경기 행 삭제는 FK CASCADE로 참가자/첨부/결과까지 한 번에 정리된다. 반환값은 삭제된
+        경기 수."""
+        self._ensure_can_delete(actor)
+        for _md, _mn, _fn, file_path in await self._repo.list_all_attachments():
+            try:
+                await self._storage.delete(file_path)
+            except Exception:
+                pass
+        count = await self._repo.delete_all_matches()
+        await self._session.commit()
+        return count
 
     async def update_memo(self, match_id: int, note: str, *, actor: Member) -> Match:
         """정식 수정(update_match)과 달리 작성자/운영자 제한 없이 회원 누구나 남길 수 있는

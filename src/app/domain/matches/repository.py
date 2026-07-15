@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Integer, Row, Select, and_, case, exists, func, or_, select
+from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -42,6 +42,11 @@ class MatchRepository:
 
     async def delete(self, match: Match) -> None:
         await self._session.delete(match)
+
+    async def delete_all_matches(self) -> int:
+        # 참가자/첨부/결과는 FK ondelete=CASCADE라 matches 한 방 삭제로 함께 지워진다.
+        result = await self._session.execute(delete(Match))
+        return int(result.rowcount or 0)
 
     async def flush(self) -> None:
         await self._session.flush()
