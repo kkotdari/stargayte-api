@@ -207,6 +207,7 @@ async def test_creator_can_cancel_pending_challenge(client):
 
 
 async def test_non_creator_cannot_cancel(client):
+    """취소는 생성자(요청자)만 가능하다(요청: "취소는 생성자만") — 지목된 상대는 막힌다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -223,8 +224,8 @@ async def test_non_creator_cannot_cancel(client):
 
 
 async def test_creator_can_cancel_confirmed_before_result_but_not_after(client):
-    """확정됐지만 아직 결과가 안 들어온 대결은 요청자가 취소할 수 있고(요청: "결과 입력
-    전 아이템에는 연기/취소 두 버튼이 보여야"), 결과가 입력된 뒤에는 취소할 수 없다."""
+    """확정됐지만 아직 결과가 안 들어온 대결은 요청자가 취소할 수 있고, 결과가 입력된
+    뒤에는 취소할 수 없다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -255,7 +256,7 @@ async def test_creator_can_cancel_confirmed_before_result_but_not_after(client):
 
 
 async def test_creator_can_cancel_confirmed_challenge(client):
-    """확정됐지만 결과가 안 들어온 대결을 요청자가 취소하면 목록에서 사라진다."""
+    """확정됐지만 결과가 안 들어온 대결을 요청자가 취소할 수 있다(취소된 건도 목록엔 남는다)."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -274,9 +275,34 @@ async def test_creator_can_cancel_confirmed_challenge(client):
 
     res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
     assert res.status_code == 200, res.text
+    assert res.json()["status"] == "canceled"
 
-    res = await client.get("/api/challenges", headers=headers_a)
-    assert challenge_id not in [c["id"] for c in res.json()["items"]]
+
+async def test_not_held_result_can_be_canceled(client):
+    """결과가 "미실시"(not_held)인 대결은 요청자가 취소할 수 있다(요청: "미실시 상태면
+    카드에 취소/연기 노출") — 승패가 난 결과만 취소 불가."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+    await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "not_held"},
+    )
+    # 미실시는 취소 가능.
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "canceled"
 
 
 async def test_reject_reason_is_visible_to_anyone(client):
@@ -425,6 +451,32 @@ async def test_only_creator_can_reapply_and_only_when_rejected(client):
     assert res.status_code == 403, res.text
 
 
+async def test_canceled_challenge_can_be_reapplied(client):
+    """취소된 도전장은 (다른 행으로 이어지지 않았다면) 요청자가 다시 신청할 수 있다(요청:
+    "superseded 아닌 취소된 건은 재신청 가능")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    original_id = res.json()["id"]
+    await client.post(f"/api/challenges/{original_id}/cancel", headers=headers_a)
+
+    res = await client.post(f"/api/challenges/{original_id}/reapply", headers=headers_a, json={})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["reappliedFromId"] == original_id
+    assert body["chainKind"] == "reapply"
+    # 원본(취소, 이제 이어짐=superseded)은 목록에서 빠지고 새 재신청 건만 남는다.
+    res = await client.get("/api/challenges", headers=headers_a)
+    ids = [c["id"] for c in res.json()["items"]]
+    assert original_id not in ids
+    assert body["id"] in ids
+
+
 async def test_own_team_members_are_included_and_marks_team_type(client):
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "dave", "Dave#1004")
@@ -529,9 +581,8 @@ async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client
     assert res.json()["scheduledAt"].startswith("2026-08-01")
 
 
-async def test_canceled_challenge_is_hidden_from_list(client):
-    """취소된 도전장은 디비엔 남지만(상태값만 취소) 목록엔 안 보인다(요청: "도전장
-    취소시 삭제(디비에 있지만 상태값을 삭제로). 화면에 미노출")."""
+async def test_canceled_challenge_is_shown_in_list(client):
+    """취소된 도전장도 이제 목록에 보인다(요청: "너 나와 목록에 취소된 도전장도 노출")."""
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -544,7 +595,7 @@ async def test_canceled_challenge_is_hidden_from_list(client):
 
     res = await client.get("/api/challenges", headers=headers_a)
     ids = [c["id"] for c in res.json()["items"]]
-    assert challenge_id not in ids
+    assert challenge_id in ids
 
 
 async def test_reapply_blocked_before_expiry_but_allowed_after(client, db_session):
