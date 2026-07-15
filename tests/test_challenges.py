@@ -834,3 +834,22 @@ async def test_result_pending_for_me_skips_future_schedule_and_entered_result(cl
     )
     res = await client.get("/api/challenges/result-pending-for-me", headers=headers_b)
     assert res.json()["items"] == []
+
+
+async def test_pending_for_me_excludes_canceled_challenge(client):
+    """상대가 초대 팝업을 보기 전에 요청자가 취소하면, 그 초대는 팝업 큐에 아예 안
+    잡힌다 — 수락을 눌러도 400만 나는 죽은 초대가 한 번 뜨던 문제의 회귀 테스트."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    challenge_id = res.json()["id"]
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
+    assert res.status_code == 200, res.text
+
+    res = await client.get("/api/challenges/pending-for-me", headers=headers_b)
+    assert res.status_code == 200, res.text
+    assert res.json()["items"] == []

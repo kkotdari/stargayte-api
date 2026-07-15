@@ -227,8 +227,14 @@ class ChallengeService:
         for p in pending:
             p.notified = True
             challenge = await self._repo.get(p.challenge_id)
-            if challenge is not None:
-                challenges.append(challenge)
+            if challenge is None:
+                continue
+            # 취소된 도전장의 초대는 띄우지 않는다 — 상대가 팝업을 보기 전에 요청자가
+            # 취소하면, 수락을 눌러도 400만 나는 죽은 초대가 한 번 뜨는 문제가 있었다.
+            # notified는 위에서 이미 표시했으므로 다음 조회에서 다시 잡히지도 않는다.
+            if challenge.canceled_at is not None:
+                continue
+            challenges.append(challenge)
         await self._session.commit()
         return [to_challenge_out(c) for c in challenges]
 
