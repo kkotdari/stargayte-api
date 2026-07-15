@@ -222,7 +222,40 @@ async def test_non_creator_cannot_cancel(client):
     assert res.status_code == 403, res.text
 
 
-async def test_cannot_cancel_after_confirmed(client):
+async def test_creator_can_cancel_confirmed_before_result_but_not_after(client):
+    """확정됐지만 아직 결과가 안 들어온 대결은 요청자가 취소할 수 있고(요청: "결과 입력
+    전 아이템에는 연기/취소 두 버튼이 보여야"), 결과가 입력된 뒤에는 취소할 수 없다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    # 이미 지난 예정 일시로 만들어(결과 입력이 가능하도록) 확정시킨다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "reason": "OK!"},
+    )
+
+    # 요청자가 아닌 사람은 취소할 수 없다.
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_b)
+    assert res.status_code == 403, res.text
+
+    # 결과 입력 뒤에는 취소할 수 없다.
+    await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+    )
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
+    assert res.status_code == 400, res.text
+
+
+async def test_creator_can_cancel_confirmed_challenge(client):
+    """확정됐지만 결과가 안 들어온 대결을 요청자가 취소하면 목록에서 사라진다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -240,7 +273,10 @@ async def test_cannot_cancel_after_confirmed(client):
     )
 
     res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
-    assert res.status_code == 400, res.text
+    assert res.status_code == 200, res.text
+
+    res = await client.get("/api/challenges", headers=headers_a)
+    assert challenge_id not in [c["id"] for c in res.json()["items"]]
 
 
 async def test_reject_reason_is_visible_to_anyone(client):

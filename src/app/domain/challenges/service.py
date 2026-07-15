@@ -378,15 +378,18 @@ class ChallengeService:
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def cancel_challenge(self, challenge_id: int, *, actor: Member) -> ChallengeOut:
-        """요청자(도전자)가 확정 전에 스스로 취소한다 — 이미 전원이 승락(confirmed)한
-        뒤에는 취소할 수 없다(경기가 이미 잡힌 것으로 본다)."""
+        """요청자(도전자)가 스스로 취소한다 — 응답 대기중(pending)뿐 아니라 확정됐지만
+        아직 결과가 안 들어온 대결도 취소할 수 있다(요청: "결과 입력 전 아이템에는 연기/취소
+        두 버튼이 보여야"). 결과가 이미 입력됐거나 거절/취소로 끝난 건은 취소할 수 없다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if challenge.created_by != actor.pk:
             raise ForbiddenError("요청자만 취소할 수 있습니다.")
-        if _status_of(challenge) != "pending":
-            raise ValidationError("확정되었거나 이미 처리된 도전장은 취소할 수 없습니다.")
+        status = _status_of(challenge)
+        # 결과 입력 전(pending 또는 결과 없는 confirmed)까지만 취소 가능하다.
+        if status not in ("pending", "confirmed") or challenge.result_winner_side is not None:
+            raise ValidationError("결과가 입력됐거나 이미 처리된 도전장은 취소할 수 없습니다.")
         challenge.canceled_at = datetime.now(UTC)
         challenge.updated_by = actor.pk
         await self._session.commit()
