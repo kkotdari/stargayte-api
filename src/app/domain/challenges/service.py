@@ -231,11 +231,9 @@ class ChallengeService:
         # 원래 행은 숨긴다. 체인이 길어도(재신청을 여러 번 거쳐도) 맨 끝(가장 최신)만
         # 자연히 남는다.
         superseded_ids = {c.reapplied_from_id for c in challenges if c.reapplied_from_id is not None}
-        # 취소된 도전장은 디비엔 남지만(상태값만 취소로) 화면엔 아예 안 보인다(요청:
-        # "도전장 취소시 삭제... 화면에 미노출").
-        visible = [
-            c for c in challenges if c.id not in superseded_ids and c.canceled_at is None
-        ]
+        # 취소된 도전장도 이제 목록에 보여준다(요청: "너 나와 목록에 취소된 도전장도 노출") —
+        # 재신청/설욕전으로 이어져 더 최신 행이 있는 것(superseded)만 숨긴다.
+        visible = [c for c in challenges if c.id not in superseded_ids]
         return [
             to_challenge_out(c, history=self._history_chain_from_map(c, by_id))
             for c in visible
@@ -378,19 +376,30 @@ class ChallengeService:
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def cancel_challenge(self, challenge_id: int, *, actor: Member) -> ChallengeOut:
-        """요청자(도전자)가 스스로 취소한다 — 응답 대기중(pending)뿐 아니라 확정됐지만
-        아직 결과가 안 들어온 대결도 취소할 수 있다(요청: "결과 입력 전 아이템에는 연기/취소
-        두 버튼이 보여야"). 결과가 이미 입력됐거나 거절/취소로 끝난 건은 취소할 수 없다."""
+        """요청자(도전자)만 취소할 수 있다(요청: "취소는 생성자만 가능") — 응답 대기중
+        (pending)뿐 아니라 확정됐지만 아직 결과가 안 들어온 대결도 취소할 수 있다. 결과가
+        이미 입력됐거나 거절/취소로 끝난 건은 취소할 수 없다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if challenge.created_by != actor.pk:
             raise ForbiddenError("요청자만 취소할 수 있습니다.")
         status = _status_of(challenge)
-        # 결과 입력 전(pending 또는 결과 없는 confirmed)까지만 취소 가능하다.
-        if status not in ("pending", "confirmed") or challenge.result_winner_side is not None:
+        # 결과 입력 전(pending/결과 없는 confirmed)이거나, 결과가 "미실시"(not_held)인 대결까지
+        # 취소할 수 있다(요청: "미실시 상태면 카드에 취소/연기 노출") — 승패가 난 결과만 취소
+        # 불가. 거절/취소로 끝난 건도 불가.
+        if status not in ("pending", "confirmed") or (
+            challenge.result_winner_side is not None and challenge.result_winner_side != "not_held"
+        ):
             raise ValidationError("결과가 입력됐거나 이미 처리된 도전장은 취소할 수 없습니다.")
         challenge.canceled_at = datetime.now(UTC)
+        # 미실시 결과를 취소하는 경우 잔여 결과값을 지워 "취소"로만 깔끔히 보이게 한다.
+        challenge.result_winner_side = None
+        challenge.result_entered_by = None
+        challenge.result_entered_at = None
+        # 취소된 건도 이제 목록에 보이므로(요청: "취소된 도전장도 노출), 일정 미정으로 뜨지
+        # 않게 예정 일시를 요청일+1일로 스탬프한다(거절/무응답과 같은 처리).
+        _stamp_schedule_on_end(challenge)
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
