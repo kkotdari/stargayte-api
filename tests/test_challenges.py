@@ -512,8 +512,8 @@ async def test_canceled_challenge_is_hidden_from_list(client):
 
 
 async def test_reapply_blocked_before_expiry_but_allowed_after(client, db_session):
-    """응답 없이 3일이 지나면(요청: "기한내 미응답시 재신청 가능") pending 상태 그대로도
-    재신청할 수 있다 — 3일이 안 지났으면 거절도 안 됐고 만료도 아니라 여전히 막힌다."""
+    """응답 없이 기한(1일)이 지나면(요청: "기한내 미응답시 재신청 가능") pending 상태
+    그대로도 재신청할 수 있다 — 기한이 안 지났으면 거절도 안 됐고 만료도 아니라 여전히 막힌다."""
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -526,10 +526,10 @@ async def test_reapply_blocked_before_expiry_but_allowed_after(client, db_sessio
     res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
     assert res.status_code == 400, res.text
 
-    # created_at을 3일 하고도 1시간 전으로 되돌려 "기한 내 무응답"을 재현한다.
+    # created_at을 기한(1일) 하고도 1시간 전으로 되돌려 "기한 내 무응답"을 재현한다.
     await db_session.execute(
         update(Challenge).where(Challenge.id == challenge_id).values(
-            created_at=datetime.now(UTC) - timedelta(days=3, hours=1)
+            created_at=datetime.now(UTC) - timedelta(days=1, hours=1)
         )
     )
     await db_session.commit()

@@ -17,8 +17,9 @@ from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
 # 응답 없이 이 기간이 지나면(pending 상태 그대로) "기한 내 미응답"으로 보고 재신청을
-# 허용한다 — 프론트의 화면 표시 기준(ChallengeScreen.tsx의 EXPIRE_MS)과 같은 3일이다.
-REAPPLY_EXPIRE = timedelta(days=3)
+# 허용한다 — 프론트의 화면 표시 기준(ChallengeScreen.tsx의 EXPIRE_MS)과 같은 1일이다
+# (처음엔 3일이었다가 줄였다 — 요청: "응답가능시간 1일로 축소").
+REAPPLY_EXPIRE = timedelta(days=1)
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -328,7 +329,7 @@ class ChallengeService:
         scheduled_at: datetime | None = None,
         message: str | None = None,
     ) -> ChallengeOut:
-        """거절됐거나 기한(3일) 내 무응답인 도전장을 재신청 — 원래 행은 그대로 두고
+        """거절됐거나 기한(1일) 내 무응답인 도전장을 재신청 — 원래 행은 그대로 두고
         같은 구성원으로 새 도전장을 만든다(요청: "재신청하면 원래건은 종료되고 새로운
         도전 행이 만들어져 새 아이디로... refer라던지 그런 느낌의 컬럼을 만들어서
         어디서 이어졌는지 저장해둬" + "기한내 미응답시 재신청 가능"). 시간/메모를
