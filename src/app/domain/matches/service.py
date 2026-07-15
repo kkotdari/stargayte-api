@@ -1,5 +1,7 @@
 import base64
 import calendar
+import io
+import zipfile
 from datetime import UTC, date, datetime, timedelta, timezone
 from functools import cmp_to_key
 
@@ -857,6 +859,37 @@ class MatchService:
         if match is None:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
         return match
+
+    async def build_replay_archive(self) -> bytes:
+        """등록된 모든 리플레이(.rep 첨부)를 날짜별 폴더로 묶은 zip 바이트를 만든다(운영자
+        제어판의 '리플레이 전체 다운로드'). 파일이 유실된 건은 조용히 건너뛴다. 같은
+        폴더에 파일명이 겹치면 " (2)"식으로 유일하게 만든다."""
+        rows = await self._repo.list_all_attachments()
+        used: set[str] = set()
+
+        def unique(name: str) -> str:
+            if name not in used:
+                used.add(name)
+                return name
+            stem, dot, ext = name.rpartition(".")
+            i = 2
+            while True:
+                cand = f"{stem} ({i}).{ext}" if dot else f"{name} ({i})"
+                if cand not in used:
+                    used.add(cand)
+                    return cand
+                i += 1
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for match_date, _match_no, file_name, file_path in rows:
+                try:
+                    data = await self._storage.read(file_path)
+                except Exception:
+                    continue
+                arcname = unique(f"{match_date.isoformat()}/{file_name}")
+                zf.writestr(arcname, data)
+        return buf.getvalue()
 
     async def alias_by_player_name(self) -> dict[str, ReplayAlias]:
         """to_match_out이 참가자의 회원/컴퓨터/비회원 여부를 판단할 때 쓰는 조회용 —

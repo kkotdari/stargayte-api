@@ -4,7 +4,7 @@ from sqlalchemy import Integer, Row, Select, and_, case, exists, func, or_, sele
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.domain.matches.models import Match, MatchParticipant, MatchResult
+from app.domain.matches.models import Match, MatchAttachment, MatchParticipant, MatchResult
 from app.domain.members.models import Member, ReplayAlias
 
 
@@ -495,6 +495,16 @@ class MatchRepository:
     async def list_all_replay_aliases(self) -> list[ReplayAlias]:
         stmt = select(ReplayAlias).options(selectinload(ReplayAlias.member))
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_all_attachments(self) -> list[Row]:
+        # 리플레이 전체 다운로드(운영자)용 — 첨부(.rep)가 있는 모든 경기의 날짜/고유번호/
+        # 파일명/저장경로를 날짜 오름차순으로. 날짜별 폴더로 zip을 묶는 데 쓴다.
+        stmt = (
+            select(Match.match_date, Match.match_no, MatchAttachment.file_name, MatchAttachment.file_path)
+            .join(MatchAttachment, MatchAttachment.match_id == Match.id)
+            .order_by(Match.match_date, Match.match_no)
+        )
+        return list((await self._session.execute(stmt)).all())
 
     async def delete_replay_alias(self, raw_name: str) -> None:
         # raw_name은 kind와 무관하게 replay_aliases 테이블 전체에서 유일하므로, 이 한 번의

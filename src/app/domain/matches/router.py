@@ -255,6 +255,17 @@ async def delete_replay_name_mapping(
     await MatchService(db, storage).delete_replay_name_mapping(raw_name)
 
 
+@router.get("/replays/archive")
+async def download_replay_archive(db: DbSession, storage: StorageDep, _admin: CurrentAdmin) -> Response:
+    """등록된 모든 리플레이(.rep)를 날짜별 폴더 zip으로 묶어 다운로드(운영자 전용)."""
+    data = await MatchService(db, storage).build_replay_archive()
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="replays.zip"'},
+    )
+
+
 @router.post("", response_model=MatchOut)
 async def create_match(
     payload: MatchWrite, db: DbSession, storage: StorageDep, current: CurrentMember
