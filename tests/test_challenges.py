@@ -858,3 +858,76 @@ async def test_pending_for_me_excludes_canceled_challenge(client):
     res = await client.get("/api/challenges/pending-for-me", headers=headers_b)
     assert res.status_code == 200, res.text
     assert res.json()["items"] == []
+
+
+async def test_listing_expires_stale_pending_as_no_response_rejection(client, db_session):
+    """너나와 목록을 조회하면(GET /api/challenges) 응답 기한(시간 미정이면 1일)이 지난
+    pending 도전장의 미응답 지목자가 무응답거절로 확정된다 — 상태는 rejected가 되고
+    메시지는 없으며(요청: "무응답거절로 처리... 다루는 방식은 거절과 같아 대신 메시지는
+    없어"), 요청자는 거절과 똑같이 재신청할 수 있다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    challenge_id = res.json()["id"]
+
+    # 시간 미정 도전장 — created_at을 1일 하고도 1시간 전으로 되돌려 "기한 내 무응답" 재현.
+    await db_session.execute(
+        update(Challenge).where(Challenge.id == challenge_id).values(
+            created_at=datetime.now(UTC) - timedelta(days=1, hours=1)
+        )
+    )
+    await db_session.commit()
+
+    # 조회 → 배치가 무응답거절로 확정한다(상태 rejected, 메시지 없음).
+    res = await client.get("/api/challenges", headers=headers_a)
+    assert res.status_code == 200, res.text
+    body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
+    assert body["status"] == "rejected"
+    bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
+    assert bob_target["response"] == "rejected"
+    assert bob_target["responseMessage"] is None
+
+    # 거절과 똑같이 재신청할 수 있다.
+    res = await client.post(f"/api/challenges/{challenge_id}/reapply", headers=headers_a, json={})
+    assert res.status_code == 200, res.text
+    assert res.json()["reappliedFromId"] == challenge_id
+
+
+async def test_scheduled_at_is_the_response_deadline(client, db_session):
+    """예정 일시가 지정된 도전장은 그 시각이 곧 응답 마감이다(요청: "예정 일시는 종료
+    시간으로 지정해줘") — created_at이 방금이어도 예정 일시가 지났으면 무응답거절로
+    확정되고, 예정 일시가 아직 미래면 created_at이 오래됐어도 그대로 pending이다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    # 예정 일시가 이미 지난(2020년) 도전장 — created_at은 방금.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+    )
+    past_id = res.json()["id"]
+
+    # 예정 일시가 먼 미래(2099년)인 도전장 — created_at을 1주 전으로 되돌려도 마감 전.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2099-01-01T10:00:00Z"},
+    )
+    future_id = res.json()["id"]
+    await db_session.execute(
+        update(Challenge).where(Challenge.id == future_id).values(
+            created_at=datetime.now(UTC) - timedelta(days=7)
+        )
+    )
+    await db_session.commit()
+
+    res = await client.get("/api/challenges", headers=headers_a)
+    items = {c["id"]: c for c in res.json()["items"]}
+    # 예정 일시가 지난 건은 무응답거절.
+    assert items[past_id]["status"] == "rejected"
+    # 예정 일시가 미래인 건은 created_at이 오래돼도 그대로 대기.
+    assert items[future_id]["status"] == "pending"

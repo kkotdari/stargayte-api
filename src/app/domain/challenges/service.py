@@ -42,11 +42,19 @@ def _status_of(challenge: Challenge) -> str:
     return "pending"
 
 
+def _response_deadline(challenge: Challenge) -> datetime:
+    """응답(무응답거절) 마감 시각 — 예정 일시가 지정돼 있으면 그 시각이 곧 마감이다(요청:
+    "예정 일시는 종료 시간으로 지정해줘"), 시간 미정이면 created_at + REAPPLY_EXPIRE(1일).
+    반환값은 비교용 UTC-naive다."""
+    if challenge.scheduled_at is not None:
+        return _to_utc_naive(challenge.scheduled_at)
+    return _to_utc_naive(challenge.created_at) + REAPPLY_EXPIRE
+
+
 def _is_expired(challenge: Challenge) -> bool:
     if _status_of(challenge) != "pending":
         return False
-    now = _to_utc_naive(datetime.now(UTC))
-    return now - _to_utc_naive(challenge.created_at) > REAPPLY_EXPIRE
+    return _to_utc_naive(datetime.now(UTC)) > _response_deadline(challenge)
 
 
 def _losing_side(challenge: Challenge) -> str | None:
@@ -157,8 +165,39 @@ class ChallengeService:
         chain.reverse()
         return chain
 
+    async def _expire_stale_challenges(self, challenges: list[Challenge]) -> None:
+        """응답 대기시간(REAPPLY_EXPIRE)이 지난 pending 도전장의 미응답 지목자를
+        '무응답거절'로 처리한다(요청: "너나와 화면을 조회하면 현재 상태 업데이트 배치가
+        실행돼... 응답 대기시간이 지난 건들은 무응답거절로 처리"). 다루는 방식은 거절과
+        똑같다 — 지목자의 response를 rejected로 바꿔 상태가 rejected가 되고, 요청자는
+        재신청할 수 있다. 다만 사람이 직접 거절한 게 아니라 무응답이라 한마디(message)는
+        남기지 않는다(요청: "대신 메시지는 없어"). 너나와 목록을 조회할 때마다 실행되는
+        가벼운 배치라, 이미 로드된 목록을 그대로 받아 메모리에서 처리하고 바뀐 게 있을
+        때만 한 번 커밋한다."""
+        now = _to_utc_naive(datetime.now(UTC))
+        changed = False
+        for c in challenges:
+            if c.canceled_at is not None:
+                continue
+            if _status_of(c) != "pending":
+                continue
+            # 마감 = 예정 일시(있으면) 또는 created_at + 1일(_response_deadline).
+            if now <= _response_deadline(c):
+                continue
+            for p in c.participants:
+                if p.side == "target" and p.response == "pending":
+                    p.response = "rejected"
+                    p.response_message = None
+                    p.responded_at = datetime.now(UTC)
+                    changed = True
+        if changed:
+            await self._session.commit()
+
     async def list_challenges(self, *, actor: Member) -> list[ChallengeOut]:
         challenges = await self._repo.list_all()
+        # 조회 시점에 응답 기한이 지난 건들을 무응답거절로 확정한다(위 배치) — 이 뒤로는
+        # 그 도전장의 _status_of가 rejected가 되어 아래 목록/정렬에 그대로 반영된다.
+        await self._expire_stale_challenges(challenges)
         by_id = {c.id: c for c in challenges}
         # 재신청으로 새 행이 생기면 원래 행은 화면에서 더 안 보여야 한다(요청: "최신 1건만
         # 목록에 나오고, 카드 안에서 좌우로 슬라이드해 이전 기록을 본다") — 어떤 행의 id를
