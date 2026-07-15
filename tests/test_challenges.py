@@ -451,6 +451,32 @@ async def test_only_creator_can_reapply_and_only_when_rejected(client):
     assert res.status_code == 403, res.text
 
 
+async def test_canceled_challenge_can_be_reapplied(client):
+    """취소된 도전장은 (다른 행으로 이어지지 않았다면) 요청자가 다시 신청할 수 있다(요청:
+    "superseded 아닌 취소된 건은 재신청 가능")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    original_id = res.json()["id"]
+    await client.post(f"/api/challenges/{original_id}/cancel", headers=headers_a)
+
+    res = await client.post(f"/api/challenges/{original_id}/reapply", headers=headers_a, json={})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["reappliedFromId"] == original_id
+    assert body["chainKind"] == "reapply"
+    # 원본(취소, 이제 이어짐=superseded)은 목록에서 빠지고 새 재신청 건만 남는다.
+    res = await client.get("/api/challenges", headers=headers_a)
+    ids = [c["id"] for c in res.json()["items"]]
+    assert original_id not in ids
+    assert body["id"] in ids
+
+
 async def test_own_team_members_are_included_and_marks_team_type(client):
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "dave", "Dave#1004")

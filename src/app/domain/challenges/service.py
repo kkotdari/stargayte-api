@@ -425,8 +425,14 @@ class ChallengeService:
         if challenge.created_by != actor.pk:
             raise ForbiddenError("요청자만 다시 신청할 수 있습니다.")
         status = _status_of(challenge)
-        if status != "rejected" and not _is_expired(challenge):
-            raise ValidationError("거절되었거나 기한 내 무응답인 도전장만 다시 신청할 수 있습니다.")
+        # 거절/무응답거절(rejected)뿐 아니라 취소(canceled)된 건도 다시 신청할 수 있다(요청:
+        # "취소된 건은 재신청 가능해야 하지 않나") — 아직 다른 행으로 이어지지 않았다면(아래
+        # is_superseded 체크). 미실시 "상태" 자체는 확정(confirmed)이라 여기 안 걸리고 재신청
+        # 불가지만, 취소하면 canceled가 되어 가능해진다.
+        if status not in ("rejected", "canceled") and not _is_expired(challenge):
+            raise ValidationError(
+                "거절/취소되었거나 기한 내 무응답인 도전장만 다시 신청할 수 있습니다."
+            )
         if await self._repo.is_superseded(challenge.id):
             raise ValidationError("이미 이어진 도전장이 있습니다.")
 
