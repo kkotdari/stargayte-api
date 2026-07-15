@@ -1061,28 +1061,35 @@ class MatchService:
             member.replay_aliases.append(ReplayAlias(raw_name=slot.player_name, kind="member"))
 
     async def _remember_placeholder_raw_names(self, payload: MatchWrite) -> None:
-        """리플레이에서 컴퓨터(AI)로 등록되는 슬롯의 분류만 replay_aliases에 남긴다.
+        """리플레이에서 컴퓨터(AI)/비회원으로 등록되는 슬롯의 분류를 replay_aliases에 남긴다.
 
-        비회원은 일부러 남기지 않는다. 여기에 kind='unregistered' 행을 만들어두면 다음
-        리플레이부터 그 이름이 "이미 분류가 끝난 이름"으로 취급돼(프론트의 applyKnownClassifications)
-        미매칭 목록에 아예 안 뜨고 자동으로 비회원 슬롯이 되어버린다 — 그러면 검토
-        화면에서 그 사람을 실제 회원으로 연결할 기회가 영영 사라진다(실제로 지적받은 문제).
-        아직 아무도 "이 이름은 비회원이다"라고 정한 적이 없는 상태로 남겨두는 게 맞다.
-
-        컴퓨터는 반대로 남겨야 한다 — 그래야 _to_match_slot이 컴퓨터로 그리고, 다음 리플레이에서
-        같은 이름을 또 물어보지 않는다. 회원 매칭 대상이 될 일도 없다.
+        새 게임아이디(rawName)는 저장 전에 반드시 회원/컴퓨터/비회원 중 하나로 확정되고,
+        미분류인 채로 저장되는 경로가 없다(요청: "매핑 안 하고 저장할 경로가 없으니 그
+        분류를 alias 테이블에 자동 등록하는 게 맞다"). 그래서 회원은 _associate_member_aliases가,
+        컴퓨터/비회원은 여기서 각각 kind='computer'/'unregistered'로 자동 등록해
+        replay_aliases를 모든 게임아이디의 단일 레지스트리로 유지한다 — 게임아이디 화면에
+        컴퓨터/비회원도 바로 뜨고, 다음 리플레이에서 같은 이름을 또 물어보지 않는다.
+        (예전엔 비회원을 일부러 안 남겼는데, 그 이름을 나중에 회원으로 연결할 기회를
+        지키려는 의도였다 — 이제 그 연결은 게임아이디 화면 재매핑으로 하면 되고,
+        set_replay_name_mapping이 기존 별칭을 지우고 회원으로 다시 건다.)
 
         이미 있는 매핑은 절대 건드리지 않는다 — 특히 kind='member'(누군가의 게임 아이디로
         이미 등록된 이름)를 덮어쓰면 그 회원의 과거 경기 매칭이 통째로 어긋난다."""
         for slot in payload.team1 + payload.team2:
-            if not is_computer_slot(slot.member_id) or not slot.player_name:
+            if not slot.player_name:
                 continue
             # 수기등록 슬롯이 쓰는 공용 예약값은 마이그레이션이 이미 심어둔 시스템 행이다.
             if slot.player_name in (MANUAL_COMPUTER_RAW_NAME, MANUAL_UNREGISTERED_RAW_NAME):
                 continue
+            if is_computer_slot(slot.member_id):
+                kind = "computer"
+            elif is_unregistered_slot(slot.member_id):
+                kind = "unregistered"
+            else:
+                continue
             if await self._repo.replay_alias_exists(slot.player_name):
                 continue
-            self._repo.add_replay_name_classification(ReplayAlias(raw_name=slot.player_name, kind="computer"))
+            self._repo.add_replay_name_classification(ReplayAlias(raw_name=slot.player_name, kind=kind))
 
     async def _ensure_no_duplicate_members(self, payload: MatchWrite) -> None:
         # 컴퓨터/비회원 슬롯은 실제 회원이 아니라 여러 개 있어도 "중복"이 아니므로 제외한다.

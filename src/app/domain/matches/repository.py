@@ -504,6 +504,12 @@ class MatchRepository:
         existing = (await self._session.execute(stmt)).scalar_one_or_none()
         if existing is not None:
             await self._session.delete(existing)
+            # 같은 트랜잭션에서 곧바로 같은 raw_name으로 새 별칭을 INSERT하는 경우
+            # (set_replay_name_mapping: 지우고 다른 대상으로 재매핑)를 위해 DELETE를 먼저
+            # 내보낸다 — flush가 없으면 SQLAlchemy 유닛오브워크가 INSERT를 DELETE보다 먼저
+            # 실행해 raw_name UNIQUE 제약을 위반할 수 있다(비회원도 자동 별칭 등록되면서
+            # 실제로 드러난 문제).
+            await self._session.flush()
 
     async def raw_name_has_any_participants(self, raw_name: str) -> bool:
         # 유저 매핑 관리 화면의 "삭제"(매핑 데이터 자체를 지우기)를 허용해도 되는지
