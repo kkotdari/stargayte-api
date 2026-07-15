@@ -197,20 +197,22 @@ class ChallengeService:
         for c in challenges:
             if c.canceled_at is not None:
                 continue
-            if _status_of(c) != "pending":
-                continue
-            # 마감 = 요청일(created_at) + 1일(_response_deadline) — 예정 시간 지정 무관.
-            if now <= _response_deadline(c):
-                continue
-            for p in c.participants:
-                if p.side == "target" and p.response == "pending":
-                    p.response = "rejected"
-                    p.response_message = None
-                    p.responded_at = datetime.now(UTC)
-                    changed = True
-            # 무응답거절로 끝났으니 예정 일시가 없었으면 요청일+1일로 확정한다 — "scheduled_at
-            # 없음 = 아직 응답 대기중"이 성립하도록(위 _stamp_schedule_on_end 주석 참고).
-            _stamp_schedule_on_end(c)
+            status = _status_of(c)
+            # 마감(요청일+1일)이 지난 pending → 미응답 지목자를 무응답거절로 확정.
+            if status == "pending" and now > _response_deadline(c):
+                for p in c.participants:
+                    if p.side == "target" and p.response == "pending":
+                        p.response = "rejected"
+                        p.response_message = None
+                        p.responded_at = datetime.now(UTC)
+                        changed = True
+                status = "rejected"
+            # 거절로 끝났는데 예정 일시가 없으면 요청일+1일로 확정한다 — 무응답거절이든 사람이
+            # 직접 누른 거절이든(과거 데이터 포함) 모두 스탬프해, "일정 미정"은 응답 대기중에만
+            # 남게 한다(요청: "왜 거절/무응답 거절 건중 아직도 일정미정이라고 뜨는게 있지").
+            if status == "rejected" and c.scheduled_at is None:
+                _stamp_schedule_on_end(c)
+                changed = True
         if changed:
             await self._session.commit()
 

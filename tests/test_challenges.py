@@ -936,3 +936,36 @@ async def test_response_deadline_is_always_one_day_from_request(client, db_sessi
     # created_at이 하루 지난 건은 예정 일시가 미래여도 무응답거절 — 예정 일시는 지정값 유지.
     assert items[old_id]["status"] == "rejected"
     assert items[old_id]["scheduledAt"].startswith("2099-01-01")
+
+
+async def test_explicit_rejection_stamps_schedule_and_list_self_heals(client, db_session):
+    """사람이 직접 거절한(무응답 아님) 시간 미정 도전장도 그 순간 예정 일시가 요청일+1일로
+    스탬프돼 "일정 미정"에서 빠진다. 혹시 스탬프가 안 된 과거 데이터가 있어도, 목록을
+    조회하면 배치가 rejected+예정없음을 발견해 스탬프한다(요청: "왜 거절/무응답 거절 건중
+    아직도 일정미정이라고 뜨는게 있지")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    challenge_id = res.json()["id"]
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "rejected", "reason": "다음에요"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "rejected"
+    assert res.json()["scheduledAt"] is not None  # 거절 순간 스탬프됨
+
+    # 스탬프 안 된 과거 데이터를 재현 — scheduled_at을 도로 null로 만든다.
+    await db_session.execute(
+        update(Challenge).where(Challenge.id == challenge_id).values(scheduled_at=None)
+    )
+    await db_session.commit()
+
+    # 목록 조회 → 배치가 self-heal로 다시 스탬프.
+    res = await client.get("/api/challenges", headers=headers_a)
+    body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
+    assert body["scheduledAt"] is not None
