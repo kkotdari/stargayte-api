@@ -67,7 +67,10 @@ class Challenge(AuditMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("chain_kind IN ('reapply','revenge')", name="ck_challenges_chain_kind"),
-        CheckConstraint("result_winner_side IN ('creator','target')", name="ck_challenges_result_winner_side"),
+        CheckConstraint(
+            "result_winner_side IN ('creator','target','draw','not_held')",
+            name="ck_challenges_result_winner_side",
+        ),
     )
 
 

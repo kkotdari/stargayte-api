@@ -76,9 +76,12 @@ def _is_expired(challenge: Challenge) -> bool:
 
 
 def _losing_side(challenge: Challenge) -> str | None:
-    if challenge.result_winner_side is None:
-        return None
-    return "target" if challenge.result_winner_side == "creator" else "creator"
+    # 승패가 갈린 경우에만 패자가 있다 — 무승부(draw)/미실시(not_held)/미입력(None)은 없다.
+    if challenge.result_winner_side == "creator":
+        return "target"
+    if challenge.result_winner_side == "target":
+        return "creator"
+    return None
 
 
 def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
@@ -197,20 +200,22 @@ class ChallengeService:
         for c in challenges:
             if c.canceled_at is not None:
                 continue
-            if _status_of(c) != "pending":
-                continue
-            # 마감 = 요청일(created_at) + 1일(_response_deadline) — 예정 시간 지정 무관.
-            if now <= _response_deadline(c):
-                continue
-            for p in c.participants:
-                if p.side == "target" and p.response == "pending":
-                    p.response = "rejected"
-                    p.response_message = None
-                    p.responded_at = datetime.now(UTC)
-                    changed = True
-            # 무응답거절로 끝났으니 예정 일시가 없었으면 요청일+1일로 확정한다 — "scheduled_at
-            # 없음 = 아직 응답 대기중"이 성립하도록(위 _stamp_schedule_on_end 주석 참고).
-            _stamp_schedule_on_end(c)
+            status = _status_of(c)
+            # 마감(요청일+1일)이 지난 pending → 미응답 지목자를 무응답거절로 확정.
+            if status == "pending" and now > _response_deadline(c):
+                for p in c.participants:
+                    if p.side == "target" and p.response == "pending":
+                        p.response = "rejected"
+                        p.response_message = None
+                        p.responded_at = datetime.now(UTC)
+                        changed = True
+                status = "rejected"
+            # 거절로 끝났는데 예정 일시가 없으면 요청일+1일로 확정한다 — 무응답거절이든 사람이
+            # 직접 누른 거절이든(과거 데이터 포함) 모두 스탬프해, "일정 미정"은 응답 대기중에만
+            # 남게 한다(요청: "왜 거절/무응답 거절 건중 아직도 일정미정이라고 뜨는게 있지").
+            if status == "rejected" and c.scheduled_at is None:
+                _stamp_schedule_on_end(c)
+                changed = True
         if changed:
             await self._session.commit()
 
@@ -373,15 +378,18 @@ class ChallengeService:
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def cancel_challenge(self, challenge_id: int, *, actor: Member) -> ChallengeOut:
-        """요청자(도전자)가 확정 전에 스스로 취소한다 — 이미 전원이 승락(confirmed)한
-        뒤에는 취소할 수 없다(경기가 이미 잡힌 것으로 본다)."""
+        """요청자(도전자)가 스스로 취소한다 — 응답 대기중(pending)뿐 아니라 확정됐지만
+        아직 결과가 안 들어온 대결도 취소할 수 있다(요청: "결과 입력 전 아이템에는 연기/취소
+        두 버튼이 보여야"). 결과가 이미 입력됐거나 거절/취소로 끝난 건은 취소할 수 없다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if challenge.created_by != actor.pk:
             raise ForbiddenError("요청자만 취소할 수 있습니다.")
-        if _status_of(challenge) != "pending":
-            raise ValidationError("확정되었거나 이미 처리된 도전장은 취소할 수 없습니다.")
+        status = _status_of(challenge)
+        # 결과 입력 전(pending 또는 결과 없는 confirmed)까지만 취소 가능하다.
+        if status not in ("pending", "confirmed") or challenge.result_winner_side is not None:
+            raise ValidationError("결과가 입력됐거나 이미 처리된 도전장은 취소할 수 없습니다.")
         challenge.canceled_at = datetime.now(UTC)
         challenge.updated_by = actor.pk
         await self._session.commit()
@@ -480,6 +488,9 @@ class ChallengeService:
         if challenge.result_winner_side is None:
             raise ValidationError("결과가 입력된 대결만 설욕전을 신청할 수 있습니다.")
         losing_side = _losing_side(challenge)
+        if losing_side is None:
+            # 무승부/미실시는 패자가 없어 설욕전 대상이 아니다(요청: "무승부나 미실시도 있게").
+            raise ValidationError("무승부/미실시 대결은 설욕전을 신청할 수 없습니다.")
         loser_pks = {p.member_pk for p in challenge.participants if p.side == losing_side}
         if actor.pk not in loser_pks:
             raise ForbiddenError("패배한 쪽만 설욕전을 신청할 수 있습니다.")
