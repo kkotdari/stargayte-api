@@ -76,9 +76,12 @@ def _is_expired(challenge: Challenge) -> bool:
 
 
 def _losing_side(challenge: Challenge) -> str | None:
-    if challenge.result_winner_side is None:
-        return None
-    return "target" if challenge.result_winner_side == "creator" else "creator"
+    # 승패가 갈린 경우에만 패자가 있다 — 무승부(draw)/미실시(not_held)/미입력(None)은 없다.
+    if challenge.result_winner_side == "creator":
+        return "target"
+    if challenge.result_winner_side == "target":
+        return "creator"
+    return None
 
 
 def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
@@ -482,6 +485,9 @@ class ChallengeService:
         if challenge.result_winner_side is None:
             raise ValidationError("결과가 입력된 대결만 설욕전을 신청할 수 있습니다.")
         losing_side = _losing_side(challenge)
+        if losing_side is None:
+            # 무승부/미실시는 패자가 없어 설욕전 대상이 아니다(요청: "무승부나 미실시도 있게").
+            raise ValidationError("무승부/미실시 대결은 설욕전을 신청할 수 없습니다.")
         loser_pks = {p.member_pk for p in challenge.participants if p.side == losing_side}
         if actor.pk not in loser_pks:
             raise ForbiddenError("패배한 쪽만 설욕전을 신청할 수 있습니다.")

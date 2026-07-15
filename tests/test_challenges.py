@@ -722,6 +722,44 @@ async def test_revenge_challenge_only_by_losing_side_and_links_chain(client):
     assert body["id"] in ids
 
 
+async def test_enter_result_draw_and_not_held_block_revenge(client):
+    """결과로 무승부(draw)/미실시(not_held)도 입력할 수 있고(요청: "무승부나 미실시도
+    있게 해주고"), 그 경우엔 패자가 없어 설욕전을 신청할 수 없다."""
+    # 첫 가입자가 관리자 — 이후 모든 계정 승인은 이 계정으로 한다.
+    admin = await _signup(client, "admin", "Admin#1000")
+    for winner in ("draw", "not_held"):
+        a = await _signup(client, f"alice_{winner}", f"Alice{winner}#1001")
+        b = await _signup(client, f"bob_{winner}", f"Bob{winner}#1002")
+        headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+        headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+        await _approve(client, admin["accessToken"], f"alice_{winner}")
+        await _approve(client, admin["accessToken"], f"bob_{winner}")
+
+        res = await client.post(
+            "/api/challenges", headers=headers_a,
+            json={"targetMemberIds": [f"bob_{winner}"], "scheduledAt": "2020-01-01T10:00:00Z"},
+        )
+        challenge_id = res.json()["id"]
+        await client.post(
+            f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+            json={"response": "accepted", "reason": "OK!"},
+        )
+
+        res = await client.post(
+            f"/api/challenges/{challenge_id}/result", headers=headers_a,
+            json={"winnerSide": winner},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["resultWinnerSide"] == winner
+
+        # 무승부/미실시는 패자가 없어 어느 쪽도 설욕전을 신청할 수 없다.
+        for headers in (headers_a, headers_b):
+            res = await client.post(
+                f"/api/challenges/{challenge_id}/revenge", headers=headers, json={},
+            )
+            assert res.status_code == 400, res.text
+
+
 async def test_postpone_confirmed_challenge_resets_result_and_allows_either_side(client):
     """수락된 대결은 도전자/상대 누구든 연기할 수 있고, 예정 일시가 지난 뒤에도
     가능하다(요청). 잘못 입력됐을 수 있는 기존 결과는 새 일정으로 초기화된다."""

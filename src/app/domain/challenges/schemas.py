@@ -7,8 +7,11 @@ TargetResponse = Literal["pending", "accepted", "rejected"]
 # 목록/폼 어디서도 회원이 직접 고르지 않는다 — 지목 인원수로 서버가 정한다(1명=1:1, 2명↑=팀전).
 ChallengeMatchType = Literal["0101", "0102"]
 ChallengeStatus = Literal["pending", "confirmed", "rejected", "canceled"]
-# 도전자 쪽/지목된 쪽 — 결과(누가 이겼는지)와 설욕전 신청 자격 판정에 쓰인다.
+# 도전자 쪽/지목된 쪽 — 설욕전 신청 자격 판정(패배한 쪽) 등에 쓰인다.
 ChallengeSide = Literal["creator", "target"]
+# 확정 대결의 결과 — 이긴 쪽(creator/target) 외에 무승부(draw)/미실시(not_held)도 있다
+# (요청: "무승부나 미실시도 있게 해주고"). draw/not_held는 승패가 없어 설욕전 대상이 아니다.
+ChallengeResult = Literal["creator", "target", "draw", "not_held"]
 # reapplied_from_id로 이어진 체인이 어떻게 생겼는지 — 거절/무응답만료 뒤 재신청인지,
 # 확정+결과 입력 뒤 패배한 쪽의 설욕전 신청인지.
 ChainKind = Literal["reapply", "revenge"]
@@ -54,7 +57,7 @@ class ChallengeHistoryEntry(BaseModel):
     status: ChallengeStatus
     targets: list[ChallengeTargetOut]
     created_at: datetime = Field(alias="createdAt")
-    result_winner_side: ChallengeSide | None = Field(default=None, alias="resultWinnerSide")
+    result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
     chain_kind: ChainKind | None = Field(default=None, alias="chainKind")
 
 
@@ -75,7 +78,7 @@ class ChallengeOut(BaseModel):
     # reapplied_from_id가 있을 때만 의미 있음 — 재신청("reapply")인지 설욕전("revenge")인지.
     chain_kind: ChainKind | None = Field(default=None, alias="chainKind")
     # 확정된 대결의 결과(이긴 쪽) — 아직 아무도 입력하지 않았으면 None.
-    result_winner_side: ChallengeSide | None = Field(default=None, alias="resultWinnerSide")
+    result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
     # 이 도전장보다 앞선 체인 기록(오래된 순) — 재신청/설욕전 이력이 없으면 빈 배열.
     history: list[ChallengeHistoryEntry] = Field(default_factory=list)
 
@@ -136,7 +139,7 @@ class ChallengeResultIn(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    winner_side: ChallengeSide = Field(alias="winnerSide")
+    winner_side: ChallengeResult = Field(alias="winnerSide")
 
 
 class ChallengePostponeIn(BaseModel):
