@@ -715,6 +715,34 @@ async def test_pending_for_me_excludes_discarded_challenge(client):
     assert res.json()["items"] == []
 
 
+async def test_pending_for_me_excludes_discarded_challenge_when_buried(client):
+    """팀전에서 한 명이 '버림'(discarded)으로 버려도 폐기 취급이라, 아직 응답 안 한 다른
+    지목자의 팝업엔 그 죽은 초대가 안 떠야 한다(요청: "버리기도 응답한걸로 쳐서 다른
+    사람들한테 안떠야됨")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    c = await _signup(client, "carol", "Carol#1003")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    headers_c = {"Authorization": f"Bearer {c['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+    await _approve(client, a["accessToken"], "carol")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+    # bob이 사유 없이 버린다 → 도전장 폐기.
+    await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "discarded"},
+    )
+    res = await client.get("/api/challenges/pending-for-me", headers=headers_c)
+    assert res.status_code == 200, res.text
+    assert res.json()["items"] == []
+
+
 async def test_result_pending_for_me_returns_once_then_marks_notified(client):
     headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_at="2020-01-01T10:00:00Z")
     # 예정 일시가 지난 확정(성사) 대결 + 결과 미입력 → 결과 입력 팝업 후보.
