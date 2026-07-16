@@ -325,35 +325,3 @@ class ReplayNameMappingWrite(BaseModel):
     kind: ReplayNameMappingKind
     # kind가 "member"일 때만 필요 — 대상 회원의 로그인 아이디(members.id).
     member_id: str | None = Field(default=None, alias="memberId")
-
-
-# ===== 리플레이 재연결 복구 도구(일회성) =====
-# 0013 마이그레이션이 기존 match_attachments를 백업 없이 드롭하면서, 스토리지에는 남아있는
-# 예전 리플레이 파일들이 DB 연결을 잃었다. 이 스키마들은 그 파일들을 다시 찾아 기존 경기에
-# 재연결하는 임시 관리자 도구 전용이라, 복구가 끝나면 지워도 된다.
-class OrphanedReplayFile(BaseModel):
-    """replays 테이블에 연결 안 된 채 스토리지에 남아있는 파일 하나."""
-
-    path: str  # 스토리지 저장 경로(key) — 재연결 요청 시 그대로 돌려보낸다.
-    url: str  # 프론트가 내용을 받아 파싱(gameStartedAt 추출)하는 데 쓰는 다운로드 URL.
-    size: int
-
-
-class OrphanedReplayListResponse(BaseModel):
-    files: list[OrphanedReplayFile]
-
-
-class ReplayRelinkRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    file_path: str = Field(alias="filePath")
-    # 프론트가 이 파일을 파싱해서 얻은 실제 시작시각(ISO) — 이 값과 정확히 일치하는
-    # game_started_at을 가진 기존 경기를 찾아 붙인다.
-    game_started_at: str = Field(alias="gameStartedAt")
-
-
-class ReplayRelinkResponse(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    match_id: int = Field(alias="matchId")
-    match_no: str = Field(alias="matchNo")
