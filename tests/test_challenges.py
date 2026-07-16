@@ -119,7 +119,10 @@ async def test_any_rejection_discards_challenge(client):
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
         json={"response": "rejected", "reason": "다음에 해요"},
     )
-    assert res.json()["status"] == "discarded"
+    body = res.json()
+    assert body["status"] == "discarded"
+    # 폐기된 도전장은 discardedAt(폐기 시각)을 내려준다 — 휴지통 "최근 버려진 순" 정렬용.
+    assert body["discardedAt"] is not None
 
     # 이미 폐기된 초대장엔 carol이 응답할 수 없다.
     res = await client.post(

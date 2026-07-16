@@ -142,6 +142,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
             for p in own_members
         ],
         createdAt=challenge.created_at,
+        discardedAt=challenge.discarded_at,
         reappliedFromId=challenge.reapplied_from_id,
         resultWinnerSide=challenge.result_winner_side,
         history=[_history_entry(c) for c in (history or [])],
