@@ -141,6 +141,9 @@ class MemberService:
             raise ConflictError("이미 존재하는 아이디입니다.")
         if await self._repo.get_by_battletag(battletag) is not None:
             raise ConflictError("이미 존재하는 배틀태그입니다.")
+        nickname = battletag.split("#")[0] or member_id
+        if await self._repo.get_by_nickname(nickname) is not None:
+            raise ConflictError("이미 존재하는 닉네임입니다.")
 
         # 클럽의 첫 번째 가입자는 자동으로 운영자로 지정하고, 승인 절차 없이 바로 active로
         # 시작한다 (그래야 다른 회원을 승인하고 운영자를 임명해줄 사람이 존재한다). 그 외
@@ -152,7 +155,7 @@ class MemberService:
         member = Member(
             id=member_id,
             password_hash=hash_password(password),
-            nickname=battletag.split("#")[0] or member_id,
+            nickname=nickname,
             battletag=battletag,
             replay_aliases=[ReplayAlias(raw_name=a, kind="member") for a in _dedupe_aliases(replay_aliases)],
             insta=insta,
@@ -185,12 +188,15 @@ class MemberService:
             raise ConflictError("이미 존재하는 아이디입니다.")
         if await self._repo.get_by_battletag(battletag) is not None:
             raise ConflictError("이미 존재하는 배틀태그입니다.")
+        nickname = battletag.split("#")[0] or member_id
+        if await self._repo.get_by_nickname(nickname) is not None:
+            raise ConflictError("이미 존재하는 닉네임입니다.")
 
         avatar_url = await self._store_avatar_if_needed(member_id, avatar)
         member = Member(
             id=member_id,
             password_hash=hash_password(password),
-            nickname=battletag.split("#")[0] or member_id,
+            nickname=nickname,
             battletag=battletag,
             replay_aliases=[ReplayAlias(raw_name=a, kind="member") for a in _dedupe_aliases(replay_aliases)],
             insta=insta,
@@ -222,7 +228,10 @@ class MemberService:
                 raise ConflictError("이미 존재하는 배틀태그입니다.")
             member.battletag = data["battletag"]
 
-        if "nickname" in data:
+        if "nickname" in data and data["nickname"] != member.nickname:
+            existing = await self._repo.get_by_nickname(data["nickname"])
+            if existing is not None and existing.pk != member.pk:
+                raise ConflictError("이미 존재하는 닉네임입니다.")
             member.nickname = data["nickname"]
         if "insta" in data:
             member.insta = data["insta"]
