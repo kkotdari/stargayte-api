@@ -20,16 +20,25 @@ class ChallengeRepository:
     async def list_all(self) -> list[Challenge]:
         # 최신 도전장이 위로 오도록 — 별도 게시판이라 페이지네이션 없이 전부 내려준다
         # (경기결과처럼 무한히 쌓이는 데이터가 아니라 실제로는 많지 않을 것으로 본다).
+        # 소프트 삭제(deleted_at)된 건은 아예 빼고 로드한다.
         result = await self._session.execute(
-            select(Challenge).order_by(Challenge.created_at.desc())
+            select(Challenge)
+            .where(Challenge.deleted_at.is_(None))
+            .order_by(Challenge.created_at.desc())
         )
         return list(result.scalars().unique().all())
 
     async def is_superseded(self, challenge_id: int) -> bool:
-        """다른 도전장이 이미 이 id를 reapplied_from_id로 가리키고 있으면(재신청이든
-        설욕전이든) True — 같은 원본에서 체인이 두 갈래로 갈라지는 것을 막는다."""
+        """다른 (살아있는) 도전장이 이미 이 id를 reapplied_from_id로 가리키고 있으면 True —
+        같은 원본에서 재대결 체인이 두 갈래로 갈라지는 것을 막는다. 단 그 자식이 폐기(휴지통)
+        됐거나 소프트삭제됐으면 세지 않는다 — 재대결이 버려지면 원래 완료 건이 다시 재대결
+        대상이 돼야 하기 때문(요청)."""
         result = await self._session.execute(
-            select(Challenge.id).where(Challenge.reapplied_from_id == challenge_id).limit(1)
+            select(Challenge.id).where(
+                Challenge.reapplied_from_id == challenge_id,
+                Challenge.discarded_at.is_(None),
+                Challenge.deleted_at.is_(None),
+            ).limit(1)
         )
         return result.scalar_one_or_none() is not None
 

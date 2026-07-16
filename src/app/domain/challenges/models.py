@@ -33,22 +33,22 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 미정이면 NULL.
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # 요청자(도전자)가 확정 전에 스스로 취소한 시각 — NULL이면 취소 안 됨. 확정된 뒤에는
-    # 취소할 수 없다(서비스 레이어에서 막는다).
-    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # 재신청(요청: "재신청하면 원래건은 종료되고 새로운 도전 행이 만들어져 새 아이디로...
-    # refer라던지 그런 느낌의 컬럼을 만들어서 어디서 이어졌는지 저장해둬") — 예전엔
-    # 재신청이 같은 행을 그대로 고쳐 썼는데(시간/메시지 갱신 + 응답 초기화), 이제는 원래
-    # 행은 손대지 않고(거절 상태 그대로 "종료") 새 행을 만들어 여기에 원래 행의 id를
-    # 남긴다. 체인(원래건 → 재신청건 → 또 재신청건...)을 얼마든지 이어갈 수 있다 —
-    # service.py가 이 컬럼을 따라 올라가며 이력(history)을 만든다.
+    # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
+    # 상대의 명시적 거절, 응답 마감(무응답 거절), 미실시(not_held) 결과 입력. 상태(_status_of)의
+    # 유일한 폐기 판정 근거이자, 휴지통 7일 자동 비움(deleted_at 소프트삭제)의 기준 시각이다.
+    # (예전의 취소/연기 기능은 제거됐다 — 취소는 폐기로 통합됐고 연기는 없앴다.)
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 소프트 삭제 — 폐기(discarded_at)된 지 7일이 지나면 목록 조회 시 배치가 이 값을 찍어
+    # 이후로는 어떤 조회에도 안 나온다(DB에서는 남겨둔다). NULL이면 살아있음.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 재대결(설욕전) 체인 — 완료된 대결에서 패배한 쪽이 같은 대진으로 다시 신청하면, 원래
+    # 행은 그대로 두고 새 행을 만들어 여기에 원래 행의 id를 남긴다. service.py가 이 컬럼을
+    # 따라 올라가며 이력(history)을 만든다. (예전엔 거절/취소 뒤 '재신청(reapply)'도 이
+    # 체인을 썼지만, 재신청 기능은 제거됐고 이제 체인은 재대결(revenge) 하나뿐이라 chain_kind
+    # 컬럼도 없앴다 — reapplied_from_id가 있으면 곧 재대결이다.)
     reapplied_from_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("challenges.id", ondelete="SET NULL"), nullable=True
     )
-    # reapplied_from_id가 이 도전장을 만든 방식 — 거절/무응답만료 뒤 같은 대진으로 다시
-    # 신청한 것("reapply")인지, 확정되고 결과까지 나온 뒤 패배한 쪽이 설욕전을 신청한
-    # 것("revenge")인지. reapplied_from_id가 NULL이면 이 값도 항상 NULL이다.
-    chain_kind: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # 확정된 대결의 승부 결과 — 이긴 쪽(side)만 기록한다. 예정 일시가 지난 뒤 참가자
     # 누구든 먼저 입력하는 쪽이 그대로 인정된다(요청: "먼저 입력하는 쪽 인정"). 아무도
     # 입력하지 않으면 계속 NULL로 남는다(요청: "그냥 결과 미정으로 계속 남음").
@@ -66,7 +66,6 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint("chain_kind IN ('reapply','revenge')", name="ck_challenges_chain_kind"),
         CheckConstraint(
             "result_winner_side IN ('creator','target','draw','not_held')",
             name="ck_challenges_result_winner_side",
