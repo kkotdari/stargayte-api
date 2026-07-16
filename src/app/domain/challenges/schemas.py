@@ -6,15 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 TargetResponse = Literal["pending", "accepted", "rejected"]
 # 목록/폼 어디서도 회원이 직접 고르지 않는다 — 지목 인원수로 서버가 정한다(1명=1:1, 2명↑=팀전).
 ChallengeMatchType = Literal["0101", "0102"]
-ChallengeStatus = Literal["pending", "confirmed", "rejected", "canceled"]
-# 도전자 쪽/지목된 쪽 — 설욕전 신청 자격 판정(패배한 쪽) 등에 쓰인다.
+# 4개 상태만 있다 — 응답대기(pending)/성사(confirmed, 대결 대기)/완료(done)/폐기(discarded,
+# 휴지통). 거절·무응답·미실시·(레거시)취소는 모두 폐기로 통합됐다.
+ChallengeStatus = Literal["pending", "confirmed", "done", "discarded"]
+# 도전자 쪽/지목된 쪽 — 재대결 신청 자격 판정(패배한 쪽) 등에 쓰인다.
 ChallengeSide = Literal["creator", "target"]
-# 확정 대결의 결과 — 이긴 쪽(creator/target) 외에 무승부(draw)/미실시(not_held)도 있다
-# (요청: "무승부나 미실시도 있게 해주고"). draw/not_held는 승패가 없어 설욕전 대상이 아니다.
+# 확정 대결의 결과 — 이긴 쪽(creator/target) 외에 무승부(draw)/미실시(not_held)도 있다.
+# not_held(미실시)는 완료가 아니라 폐기(휴지통)로 간다.
 ChallengeResult = Literal["creator", "target", "draw", "not_held"]
-# reapplied_from_id로 이어진 체인이 어떻게 생겼는지 — 거절/무응답만료 뒤 재신청인지,
-# 확정+결과 입력 뒤 패배한 쪽의 설욕전 신청인지.
-ChainKind = Literal["reapply", "revenge"]
 
 
 class ChallengeAuthor(BaseModel):
@@ -45,9 +44,8 @@ class ChallengeOwnMemberOut(BaseModel):
 
 
 class ChallengeHistoryEntry(BaseModel):
-    """재신청 체인에서 지금 이 도전장보다 앞선(더 예전) 기록 한 건 — 목록 화면 카드
-    안에서 좌우로 슬라이드해 볼 수 있게 넘겨준다. 도전자/팀 구성은 체인 내내 그대로라
-    (재신청이 손대는 건 시간/메시지/응답뿐) 따로 안 담는다."""
+    """재대결 체인에서 지금 이 도전장보다 앞선(더 예전) 기록 한 건 — 목록 화면 카드
+    안에서 좌우로 슬라이드해 볼 수 있게 넘겨준다."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -58,7 +56,6 @@ class ChallengeHistoryEntry(BaseModel):
     targets: list[ChallengeTargetOut]
     created_at: datetime = Field(alias="createdAt")
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
-    chain_kind: ChainKind | None = Field(default=None, alias="chainKind")
 
 
 class ChallengeOut(BaseModel):
@@ -73,13 +70,12 @@ class ChallengeOut(BaseModel):
     targets: list[ChallengeTargetOut]
     own_members: list[ChallengeOwnMemberOut] = Field(alias="ownMembers")
     created_at: datetime = Field(alias="createdAt")
-    # 재신청 체인 — 이 도전장이 재신청/설욕전으로 만들어졌으면 원래 도전장의 id, 아니면 None.
+    # 재대결 체인 — 이 도전장이 재대결(설욕전)로 만들어졌으면 원래 도전장의 id, 아니면 None.
+    # (값이 있으면 곧 재대결이다 — 재신청은 제거돼 chain_kind 구분이 필요 없어졌다.)
     reapplied_from_id: int | None = Field(default=None, alias="reappliedFromId")
-    # reapplied_from_id가 있을 때만 의미 있음 — 재신청("reapply")인지 설욕전("revenge")인지.
-    chain_kind: ChainKind | None = Field(default=None, alias="chainKind")
     # 확정된 대결의 결과(이긴 쪽) — 아직 아무도 입력하지 않았으면 None.
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
-    # 이 도전장보다 앞선 체인 기록(오래된 순) — 재신청/설욕전 이력이 없으면 빈 배열.
+    # 이 도전장보다 앞선 체인 기록(오래된 순) — 재대결 이력이 없으면 빈 배열.
     history: list[ChallengeHistoryEntry] = Field(default_factory=list)
 
 
@@ -123,9 +119,9 @@ class ChallengeRespondIn(BaseModel):
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
 
 
-class ChallengeReapplyIn(BaseModel):
-    """거절된 도전장을 재신청 — 원래 도전장은 손대지 않고(거절 상태 그대로 종료) 새
-    도전장을 만든다. 시간/메모를 비우면(None) 원래 도전장의 값을 그대로 물려받는다."""
+class ChallengeRevengeIn(BaseModel):
+    """완료된 대결에서 패배한 쪽이 같은 대진으로 재대결(설욕전)을 신청 — 원래 도전장은
+    손대지 않고 새 도전장을 만든다. 시간/메모는 비워서 보낼 수 있다."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -140,15 +136,6 @@ class ChallengeResultIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     winner_side: ChallengeResult = Field(alias="winnerSide")
-
-
-class ChallengePostponeIn(BaseModel):
-    """확정된 대결을 연기 — 도전자/상대 누구든 가능하고, 예정 일시가 이미 지난
-    뒤에도 새 일시로 바꿀 수 있다(요청: "예정 일시 지난 뒤에도 연기 가능")."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    scheduled_at: datetime = Field(alias="scheduledAt")
 
 
 class ChallengeListOut(BaseModel):

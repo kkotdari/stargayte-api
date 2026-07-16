@@ -5,10 +5,9 @@ from app.domain.challenges.schemas import (
     ChallengeCreate,
     ChallengeListOut,
     ChallengeOut,
-    ChallengePostponeIn,
-    ChallengeReapplyIn,
     ChallengeRespondIn,
     ChallengeResultIn,
+    ChallengeRevengeIn,
 )
 from app.domain.challenges.service import ChallengeService
 
@@ -50,22 +49,6 @@ async def respond_to_challenge(
     )
 
 
-@router.post("/{challenge_id}/cancel", response_model=ChallengeOut)
-async def cancel_challenge(
-    challenge_id: int, db: DbSession, current: CurrentMember
-) -> ChallengeOut:
-    return await ChallengeService(db).cancel_challenge(challenge_id, actor=current)
-
-
-@router.post("/{challenge_id}/reapply", response_model=ChallengeOut)
-async def reapply_challenge(
-    challenge_id: int, payload: ChallengeReapplyIn, db: DbSession, current: CurrentMember
-) -> ChallengeOut:
-    return await ChallengeService(db).reapply_challenge(
-        challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
-    )
-
-
 @router.post("/{challenge_id}/result", response_model=ChallengeOut)
 async def enter_challenge_result(
     challenge_id: int, payload: ChallengeResultIn, db: DbSession, current: CurrentMember
@@ -75,19 +58,12 @@ async def enter_challenge_result(
     )
 
 
+# 완료된 대결에서 패배한 쪽의 재대결(설욕전). 취소/연기/재신청 엔드포인트는 제거됐다 —
+# 취소/미실시/거절은 모두 폐기(휴지통)로 통합됐고, 재신청은 없앴다.
 @router.post("/{challenge_id}/revenge", response_model=ChallengeOut)
 async def revenge_challenge(
-    challenge_id: int, payload: ChallengeReapplyIn, db: DbSession, current: CurrentMember
+    challenge_id: int, payload: ChallengeRevengeIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
     return await ChallengeService(db).revenge_challenge(
         challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
-    )
-
-
-@router.post("/{challenge_id}/postpone", response_model=ChallengeOut)
-async def postpone_challenge(
-    challenge_id: int, payload: ChallengePostponeIn, db: DbSession, current: CurrentMember
-) -> ChallengeOut:
-    return await ChallengeService(db).postpone_challenge(
-        challenge_id, payload.scheduled_at, actor=current
     )
