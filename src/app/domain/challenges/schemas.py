@@ -3,7 +3,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-TargetResponse = Literal["pending", "accepted", "rejected"]
+# "discarded" = 지목된 상대가 편지봉투를 열지 않고 사유 없이 "버림"(휴지통행) — 사유가 있는
+# 명시적 "rejected"(거절)와 구분한다.
+TargetResponse = Literal["pending", "accepted", "rejected", "discarded"]
 # 목록/폼 어디서도 회원이 직접 고르지 않는다 — 지목 인원수로 서버가 정한다(1명=1:1, 2명↑=팀전).
 ChallengeMatchType = Literal["0101", "0102"]
 # 4개 상태만 있다 — 응답대기(pending)/성사(confirmed, 대결 대기)/완료(done)/폐기(discarded,
@@ -107,7 +109,8 @@ class ChallengeCreate(BaseModel):
 class ChallengeRespondIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    response: Literal["accepted", "rejected"]
+    # discarded = 사유 없이 버림(휴지통행) — 편지봉투의 "버리기"에서 온다.
+    response: Literal["accepted", "rejected", "discarded"]
     # 응답 한마디 — API 자체는 선택으로 둔다(경기결과 화면 목록의 빠른 승락/거절
     # 버튼은 메시지 없이 한 번에 응답하는 흐름을 그대로 유지해야 한다). "필수화" 요청은
     # 인박스(편지지) 화면에서만 적용되고, 그쪽은 프론트에서 빈 값이면 제출 버튼 자체를

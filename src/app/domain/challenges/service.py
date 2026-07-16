@@ -357,10 +357,12 @@ class ChallengeService:
         # 제한했던 적이 있는데(요청: "한마디는 최초응답자만 가능") 되돌렸다(요청: "수락시
         # 메시지 한명만 받기로 했는데 전원 다 받을수 있게 해줘") — 지목된 전원이 각자
         # 자기 한마디를 남긴다.
-        target.response_message = reason
-        # 명시적 거절이면 그 즉시 도전장을 폐기(휴지통)로 넘긴다 — 팀전이라도 한 명이
-        # 거절하면 그 대결은 끝이다. discarded_at을 찍고 날짜 그루핑용 스탬프까지 한다.
-        if response == "rejected":
+        # 사유 없이 버리면(discarded) 한마디는 남기지 않는다 — 그 외(수락/거절)는 reason을 저장.
+        target.response_message = None if response == "discarded" else reason
+        # 명시적 거절(사유 있음)이든 버림(discarded, 사유 없음)이든 그 즉시 도전장을 폐기
+        # (휴지통)로 넘긴다 — 팀전이라도 한 명이 거절/버리면 그 대결은 끝이다. discarded_at을
+        # 찍고 날짜 그루핑용 스탬프까지 한다.
+        if response in ("rejected", "discarded"):
             _discard(challenge, datetime.now(UTC))
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
