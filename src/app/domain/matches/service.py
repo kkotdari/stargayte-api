@@ -872,11 +872,17 @@ class MatchService:
     # 복구가 끝나면 이 둘과 관련 라우터/스키마를 지워도 된다.
     async def list_orphaned_replay_files(self) -> list[tuple[str, str, int]]:
         """replays 테이블에 연결 안 된 채 스토리지에만 남아있는 파일 목록 —
-        (저장 경로, 다운로드 URL, 바이트 크기)."""
+        (저장 경로, 다운로드 URL, 바이트 크기).
+
+        "replays" 서브디렉토리(현재 저장 위치)뿐 아니라 "matches"도 함께 뒤진다 —
+        18518b0 커밋 전까지는 리플레이를 subdir="matches"로 저장했어서, 그 이전에
+        등록된 파일들은 여전히 그 이름 아래 남아있다(실제로 지적받은 문제 — 스캔이
+        "replays"만 봐서 예전 파일 88개를 못 찾았다). 두 폴더 다 순수 조회만 하고 아무것도
+        옮기거나 지우지 않는다."""
         if not isinstance(self._storage, LocalFileStorage):
             raise ValidationError("이 복구 도구는 로컬 스토리지에서만 지원돼요.")
         linked = await self._repo.list_all_replay_file_paths()
-        all_files = await self._storage.list_files("replays")
+        all_files = await self._storage.list_files("replays") + await self._storage.list_files("matches")
         return [
             (path, self._storage.url_for(path), size)
             for path, size in all_files
