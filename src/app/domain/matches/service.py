@@ -35,6 +35,7 @@ from app.domain.members.models import Member, ReplayAlias
 from app.domain.members.repository import MemberRepository
 from app.storage.base import FileStorage
 from app.storage.data_url import decode_data_url, guess_extension, is_data_url
+from app.storage.local import LocalFileStorage
 
 # 실제 경기결과에 저장되는 종족(슬롯 등록 시 "랜덤"은 막혀 있다) — 종족별 통계 병기 기준.
 BASE_RACES = ("테란", "프로토스", "저그")
@@ -862,6 +863,74 @@ class MatchService:
         match = await self._repo.get(match_id)
         if match is None:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
+        return match
+
+    # ===== 리플레이 재연결 복구 도구(일회성) =====
+    # 0013 마이그레이션이 match_attachments를 백업 없이 드롭해서, 스토리지엔 남아있지만
+    # DB 연결이 끊긴 예전 리플레이 파일들이 생겼다. 아래 두 메서드는 그 파일들을 찾아
+    # (list_orphaned_replay_files) 기존 경기에 다시 붙이는(relink_replay) 임시 도구용이라,
+    # 복구가 끝나면 이 둘과 관련 라우터/스키마를 지워도 된다.
+    async def list_orphaned_replay_files(self) -> list[tuple[str, str, int]]:
+        """replays 테이블에 연결 안 된 채 스토리지에만 남아있는 파일 목록 —
+        (저장 경로, 다운로드 URL, 바이트 크기)."""
+        if not isinstance(self._storage, LocalFileStorage):
+            raise ValidationError("이 복구 도구는 로컬 스토리지에서만 지원돼요.")
+        linked = await self._repo.list_all_replay_file_paths()
+        all_files = await self._storage.list_files("replays")
+        return [
+            (path, self._storage.url_for(path), size)
+            for path, size in all_files
+            if path not in linked
+        ]
+
+    async def relink_replay(self, file_path: str, game_started_at_raw: str, *, actor_pk: int) -> Match:
+        """스토리지에 있는 orphan 파일 하나를, 프론트가 그 파일을 파싱해 알아낸
+        game_started_at과 정확히 일치하는 기존 경기에 재연결한다 — 새 경기를 만들지
+        않는다. 이미 리플레이가 붙어있는 경기, 여러 경기가 같은 시각을 공유하는 경우(수동
+        확인 필요), 일치하는 경기가 없는 경우는 전부 에러로 되돌려 재실행해도 안전하게 한다."""
+        if not isinstance(self._storage, LocalFileStorage):
+            raise ValidationError("이 복구 도구는 로컬 스토리지에서만 지원돼요.")
+        try:
+            target = _to_utc_naive(datetime.fromisoformat(game_started_at_raw.replace("Z", "+00:00")))
+        except ValueError as e:
+            raise ValidationError("gameStartedAt 형식이 올바르지 않습니다.") from e
+
+        rows = await self._repo.list_match_results_for_relink()
+        matched = [
+            (mid, replay_id) for mid, dt, replay_id in rows
+            if dt is not None and _to_utc_naive(dt) == target
+        ]
+        if not matched:
+            raise NotFoundError("이 시작시각과 일치하는 경기를 찾지 못했어요.")
+        if len(matched) > 1:
+            raise ValidationError(
+                f"같은 시작시각을 가진 경기가 {len(matched)}개예요 — 수동으로 확인해 주세요."
+            )
+        match_id, existing_replay_id = matched[0]
+        if existing_replay_id is not None:
+            raise ValidationError("이 경기엔 이미 리플레이가 연결돼 있어요.")
+
+        match = await self._repo.get(match_id)
+        if match is None:
+            raise NotFoundError("경기를 찾을 수 없습니다.")
+
+        full_path = self._storage.root / file_path
+        if not full_path.is_file():
+            raise ValidationError("스토리지에서 해당 파일을 찾지 못했어요.")
+
+        match.replay = Replay(
+            original_name=full_path.name,
+            display_name=full_path.name,
+            file_path=file_path,
+            content_type="application/octet-stream",
+            file_size=full_path.stat().st_size,
+            game_started_at=match.result_row.game_started_at if match.result_row else None,
+            map_name=match.result_row.map_name if match.result_row else None,
+            created_by=actor_pk,
+            updated_by=actor_pk,
+        )
+        await self._session.commit()
+        await self._session.refresh(match)
         return match
 
     async def build_replay_archive(self) -> bytes:
