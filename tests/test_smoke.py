@@ -44,6 +44,12 @@ async def test_signup_first_member_becomes_admin(client):
     assert body["accessToken"]
 
 
+async def test_login_ignores_id_case(client):
+    await _signup(client, "player01", "Shadow#1001")
+    login_res = await client.post("/api/auth/login", json={"id": "PLAYER01", "password": "pass1234"})
+    assert login_res.status_code == 200, login_res.text
+
+
 async def test_second_signup_is_pending_and_cannot_login(client):
     await _signup(client, "player01", "Shadow#1001")
     second = await _signup(client, "player02", "Mist#1002")
