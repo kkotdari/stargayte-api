@@ -67,38 +67,50 @@ async def test_rank_order_puts_head_to_head_winner_first(client):
     assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
 
 
-async def test_rank_order_ties_when_no_basis_even_if_win_counts_differ(client):
-    """맞대결도 공통상대도 없으면 전체 승수가 달라도 동급이다(요청: "간접비교 할게 없으면
-    공동순위 무조건") — 예전의 ③전체 승수 기준을 없앴다. p1은 2승(p3 상대 2-0), p2는 1승
-    (p4 상대 1-0)으로 승수가 다르지만, 둘은 서로도 공통상대도 없어 가를 근거가 없다."""
-    headers = await _signup_many(client, 4)
+async def test_rank_order_falls_back_to_points_when_no_common_opponent(client):
+    """맞대결도 공통상대도 없으면 승점(승-패)으로 가른다(요청: "간접비교 대상 없을시 승점까지").
+    p1은 2전 2승(p3 상대, 승점 +2), p2는 2전 1승 1패(p4·p5 상대, 승점 0)로 공통상대가 없지만
+    승점이 달라 p1이 위다."""
+    headers = await _signup_many(client, 5)
     await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
-    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3 (2승)
-    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4 (1승)
+    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3 (승점 +2)
+    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4
+    await _match(client, headers, ["player05"], ["player02"], "team1", TODAY)  # p5 > p2 (p2 승점 0)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["overall"]["wins"] == 2
-    assert by_id["player02"]["overall"]["wins"] == 1
-    # 승수가 2 대 1로 달라도, 가를 근거(맞대결·공통상대)가 없으니 같은 tieGroup(공동순위)다.
+    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
+    assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
+
+
+async def test_rank_order_ties_when_points_also_equal(client):
+    """맞대결·공통상대가 없고 승점(승-패)까지 같으면 진짜 동급이다. p1(1승1패, 승점 0)과
+    p2(1승1패, 승점 0)는 겹치는 상대가 전혀 없다."""
+    headers = await _signup_many(client, 6)
+    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
+    await _match(client, headers, ["player04"], ["player01"], "team1", TODAY)  # p4 > p1 (p1 승점 0)
+    await _match(client, headers, ["player02"], ["player05"], "team1", TODAY)  # p2 > p5
+    await _match(client, headers, ["player06"], ["player02"], "team1", TODAY)  # p6 > p2 (p2 승점 0)
+
+    by_id = await _stats(client, headers)
     assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
 
 
-async def test_win_count_does_not_lift_over_unplayed_opponents(client):
-    """요청 시나리오 — 한 명(p1=타센 역할)이 p2(팍규 역할)만 상대로 3승 1패이고 나머지와는
-    전적이 없다. 예전엔 전체 승수(3승)로 p1이 안 붙어본 사람들 위(2위)로 올라갔지만, 이제
-    승수 기준이 없어 p1은 '아무에게도 안 진' 최상위 공동순위이고 p2만 그 아래다."""
+async def test_points_fallback_ranks_isolated_pair_by_points(client):
+    """요청 시나리오 — p1(타센)은 p2(팍규)만 3승 1패(승점 +2)이고, p3는 p4를 이겨 승점 +1.
+    맞대결·공통상대가 없으니 승점으로 가른다: p1(+2) > p3(+1), 그리고 p1은 p2를 이겨 위다."""
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2
     await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2
     await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2 (3승)
-    await _match(client, headers, ["player02"], ["player01"], "team1", TODAY)  # p2 1승 (그래도 순 열세)
-    await _match(client, headers, ["player03"], ["player04"], "team1", TODAY)  # p3 > p4 (타센/팍규와 무관)
+    await _match(client, headers, ["player02"], ["player01"], "team1", TODAY)  # p2 1승 (p1 승점 +2)
+    await _match(client, headers, ["player03"], ["player04"], "team1", TODAY)  # p3 > p4 (승점 +1)
 
     by_id = await _stats(client, headers)
-    # p1은 p2를 승자승으로 이겨 위, p2는 아래.
+    # p1 승점 +2 > p3 승점 +1 → 공통상대 없어도 승점으로 p1이 위.
+    assert by_id["player01"]["sortOrder"] < by_id["player03"]["sortOrder"]
+    assert by_id["player01"]["tieGroup"] != by_id["player03"]["tieGroup"]
+    # p1은 p2를 승자승으로 이겨 위.
     assert by_id["player01"]["tieGroup"] < by_id["player02"]["tieGroup"]
-    # p1은 나머지(p3)와 가를 근거가 없다 → 둘 다 '안 진' 최상위 동급.
-    assert by_id["player01"]["tieGroup"] == by_id["player03"]["tieGroup"]
 
 
 async def test_rank_order_falls_back_to_common_opponents(client):

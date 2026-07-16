@@ -513,14 +513,15 @@ class MatchService:
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
-        승률도, 승점(승-패)도, 전체 승수도 기준이 아니다. 둘의 우열은 다음 두 단계로만 가른다.
+        승률도, 전체 승수도 기준이 아니다. 둘의 우열은 다음 세 단계로만 가른다.
 
           ① 승자승 — 그 둘이 직접 붙은 전적. 이긴 쪽이 무조건 위다(1전 1승도 100전 99승을 이긴다).
           ② 간접비교 — 둘 다 붙어본 적 있는 "공통상대"에 대한 각자의 승점(승 +1, 무 0, 패 -1).
+          ③ 승점 — 자기 전적의 승-패(승 +1, 무 0, 패 -1). 공통상대가 없어 ②로 못 가를 때의 최후
+             기준이다(요청: "간접비교 대상 없을시 승점까지 보고"). 승률과 결이 비슷하다.
 
-        ①②로 가를 근거가 없으면 그냥 동급이다(요청: "간접비교 할게 없으면 공동순위 무조건").
-        예전엔 여기에 ③전체 승수 기준이 있었지만, 약한 상대 한 명만 이겨도 승수로 안 붙어본
-        사람들 위로 올라가는 게 부자연스러워 없앴다.
+        ①②③ 모두 같으면 진짜 동급이다. 예전엔 ③가 '전체 승수'였는데, 승률과 무관하게 많이
+        이긴 사람을 올려서(20승18패 > 3승0패) 승점으로 바꿨다.
 
         ①②는 상대가 누구냐에 따라 값이 달라지는 쌍(pair) 비교라 회원별 점수 하나로 미리 뽑을
         수 없다 — 그래서 우열(a가 b보다 위인가)을 간선으로 하는 방향그래프로 순위를 매긴다.
@@ -552,22 +553,33 @@ class MatchService:
                 plays=row.plays, wins=row.wins, draws=row.draws,
             )
 
-        # 두 사람의 우열은 ①승자승 → ②간접비교 두 단계로만 가른다(요청: "간접비교 할게 없으면
-        # 공동순위 무조건"). 예전의 ③전체 승수 기준은 없앴다 — 한 명만 이겨도 승수로 안 붙어본
-        # 사람들 위로 올라가는 게 부자연스러웠다(예: 약한 상대 한 명만 이긴 사람이 2위로).
+        # 두 사람의 우열은 ①승자승 → ②간접비교 → ③승점(승 +1, 무 0, 패 -1) 순으로 가른다.
+        # ③은 "간접비교할 공통상대가 없을 때"의 최후 기준이다(요청: "간접비교 대상 없을시
+        # 승점까지 보고"). 예전의 '전체 승수'는 승률과 무관하게 많이 이긴 사람을 올려서 뺐고,
+        # 대신 승률과 결이 비슷한 승점을 쓴다(20승18패보다 3승0패가 위로 오게).
+        entry_by_pk = {m.pk: e for e, m in rankable}
+
+        def _points_total(member: Member) -> int:
+            overall = entry_by_pk[member.pk].overall
+            return overall.wins - overall.losses
+
         def _is_above(a_member: Member, b_member: Member) -> bool:
-            """a가 b보다 '무조건 위'면 True — 가를 근거가 없으면(동급) False."""
+            """a가 b보다 '무조건 위'면 True — 세 기준 모두 못 가르면(동급) False."""
             # ① 승자승 — 서로 붙은 전적만.
             head = _points_against(h2h, a_member.pk, {b_member.pk})
             if head != 0:
                 return head > 0
             # ② 간접비교 — 둘 다 붙어본 공통상대에 대한 각자의 승점. 공통상대가 없거나
-            # 같으면 못 가른다(동급) → False.
+            # 같으면 다음(③)으로 넘어간다.
             common = (set(h2h.get(a_member.pk, {})) & set(h2h.get(b_member.pk, {}))) - {a_member.pk, b_member.pk}
             a_common = _points_against(h2h, a_member.pk, common)
             b_common = _points_against(h2h, b_member.pk, common)
             if a_common != b_common:
                 return a_common > b_common
+            # ③ 승점(승-패) — 이것마저 같으면 진짜 동급(False).
+            a_pt, b_pt = _points_total(a_member), _points_total(b_member)
+            if a_pt != b_pt:
+                return a_pt > b_pt
             return False
 
         # ①② 우열을 간선으로 하는 방향그래프에서 순위를 매긴다. 우열이 안 서는 쌍은
