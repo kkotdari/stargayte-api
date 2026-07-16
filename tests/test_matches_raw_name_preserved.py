@@ -53,12 +53,13 @@ async def test_unregistered_slot_keeps_its_replay_player_name(client):
     assert match["team2"][0]["memberId"].startswith(UNREGISTERED_PREFIX)
 
 
-async def test_unregistered_player_name_is_not_auto_classified(client):
-    """비회원으로 들어온 이름은 분류(replay_aliases)로 기억하지 않는다.
+async def test_unregistered_player_name_is_auto_classified(client):
+    """비회원으로 들어온 이름도 저장 시 replay_aliases에 kind='unregistered'로 자동 등록된다.
 
-    기억해두면 다음 리플레이부터 그 이름이 "이미 분류가 끝난 이름"으로 취급돼 미매칭 목록에
-    아예 안 뜨고 자동으로 비회원 슬롯이 되어버린다 — 검토 화면에서 그 사람을 실제 회원으로
-    연결할 기회가 영영 사라진다. 분류가 없어도 to_match_out이 비회원으로 그려준다."""
+    새 게임아이디는 저장 전에 반드시 회원/컴퓨터/비회원 중 하나로 확정되므로(미분류 저장
+    경로 없음), 그 분류를 alias 테이블에 그대로 남겨 모든 게임아이디의 단일 레지스트리로
+    유지한다 — 게임아이디 화면에 비회원도 바로 뜨고, 나중에 실제 회원으로 연결하려면
+    게임아이디 화면에서 재매핑하면 된다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
@@ -73,9 +74,9 @@ async def test_unregistered_player_name_is_not_auto_classified(client):
         headers=headers,
         json={"rawNames": ["GhostPlayer"]},
     )
-    assert res.json()["classifications"] == []
+    assert res.json()["classifications"] == [{"rawName": "GhostPlayer", "kind": "unregistered"}]
 
-    # 그래도 경기결과에서는 컴퓨터가 아니라 비회원으로 보여야 한다.
+    # 경기결과에서도 컴퓨터가 아니라 비회원으로 보여야 한다.
     match = (await client.get("/api/matches", headers=headers)).json()["items"][0]
     assert match["team2"][0]["memberId"].startswith(UNREGISTERED_PREFIX)
 

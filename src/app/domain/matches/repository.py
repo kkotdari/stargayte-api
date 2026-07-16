@@ -1,10 +1,10 @@
 from datetime import date
 
-from sqlalchemy import Integer, Row, Select, and_, case, exists, func, or_, select
+from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.domain.matches.models import Match, MatchParticipant, MatchResult
+from app.domain.matches.models import Match, MatchParticipant, MatchResult, Replay
 from app.domain.members.models import Member, ReplayAlias
 
 
@@ -15,7 +15,7 @@ class MatchRepository:
     def _base_query(self) -> Select[tuple[Match]]:
         return select(Match).options(
             selectinload(Match.participants),
-            selectinload(Match.attachment),
+            selectinload(Match.replay),
             selectinload(Match.result_row),
             selectinload(Match.creator),
         )
@@ -42,6 +42,11 @@ class MatchRepository:
 
     async def delete(self, match: Match) -> None:
         await self._session.delete(match)
+
+    async def delete_all_matches(self) -> int:
+        # 참가자/첨부/결과는 FK ondelete=CASCADE라 matches 한 방 삭제로 함께 지워진다.
+        result = await self._session.execute(delete(Match))
+        return int(result.rowcount or 0)
 
     async def flush(self) -> None:
         await self._session.flush()
@@ -496,6 +501,16 @@ class MatchRepository:
         stmt = select(ReplayAlias).options(selectinload(ReplayAlias.member))
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def list_all_replays(self) -> list[Row]:
+        # 리플레이 전체 다운로드(운영자) + 전체 삭제 시 파일 정리용 — 저장 파일명(display_name)과
+        # 저장 경로를 등록 순으로.
+        stmt = select(Replay.display_name, Replay.file_path).order_by(Replay.created_at)
+        return list((await self._session.execute(stmt)).all())
+
+    async def delete_all_replays(self) -> int:
+        result = await self._session.execute(delete(Replay))
+        return int(result.rowcount or 0)
+
     async def delete_replay_alias(self, raw_name: str) -> None:
         # raw_name은 kind와 무관하게 replay_aliases 테이블 전체에서 유일하므로, 이 한 번의
         # 삭제로 예전에 회원 별칭으로 등록돼 있었든 컴퓨터/비회원으로 분류돼 있었든 깨끗이
@@ -504,6 +519,12 @@ class MatchRepository:
         existing = (await self._session.execute(stmt)).scalar_one_or_none()
         if existing is not None:
             await self._session.delete(existing)
+            # 같은 트랜잭션에서 곧바로 같은 raw_name으로 새 별칭을 INSERT하는 경우
+            # (set_replay_name_mapping: 지우고 다른 대상으로 재매핑)를 위해 DELETE를 먼저
+            # 내보낸다 — flush가 없으면 SQLAlchemy 유닛오브워크가 INSERT를 DELETE보다 먼저
+            # 실행해 raw_name UNIQUE 제약을 위반할 수 있다(비회원도 자동 별칭 등록되면서
+            # 실제로 드러난 문제).
+            await self._session.flush()
 
     async def raw_name_has_any_participants(self, raw_name: str) -> bool:
         # 유저 매핑 관리 화면의 "삭제"(매핑 데이터 자체를 지우기)를 허용해도 되는지

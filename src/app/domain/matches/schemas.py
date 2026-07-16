@@ -65,11 +65,25 @@ class MatchSlot(BaseModel):
     effective_cmd_count: int | None = Field(default=None, alias="effectiveCmdCount")
 
 
-class MatchAttachmentPayload(BaseModel):
-    """경기 첨부파일. 요청 시 url 은 data URL(신규 업로드) 또는 기존 서버 URL(변경 없음)이고,
-    응답 시에는 항상 서버에 저장된 절대 URL이다."""
+class ReplayUpload(BaseModel):
+    """리플레이 업로드 payload. url은 data URL(신규 업로드) 또는 기존 서버 URL(변경 없음).
+    original_name은 원본 파일명, display_name은 프론트가 만든 알아보기 쉬운 파일명이다."""
 
-    name: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    original_name: str = Field(alias="originalName")
+    display_name: str = Field(alias="displayName")
+    url: str
+
+
+class ReplayOut(BaseModel):
+    """응답용 리플레이 정보 — url은 항상 서버에 저장된 다운로드 URL."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    original_name: str = Field(alias="originalName")
+    display_name: str = Field(alias="displayName")
     url: str
 
 
@@ -87,7 +101,7 @@ class MatchWrite(BaseModel):
     result: MatchResult
     match_type: MatchType = Field(default="0101", alias="matchType")
     note: str = ""
-    attachment: MatchAttachmentPayload | None = None
+    replay: ReplayUpload | None = None
     # 아래 3개는 리플레이 파싱으로만 채워진다 (수동 등록/수정 시 비워두면 그대로 None).
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
@@ -120,7 +134,7 @@ class MatchOut(BaseModel):
     result: MatchResult
     match_type: MatchType = Field(alias="matchType")
     note: str
-    attachment: MatchAttachmentPayload | None
+    replay: ReplayOut | None
     created_by: MatchAuthor | None = Field(alias="createdBy")
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")

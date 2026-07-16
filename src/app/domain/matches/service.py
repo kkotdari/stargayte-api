@@ -1,23 +1,26 @@
 import base64
 import calendar
+import io
+import zipfile
 from datetime import UTC, date, datetime, timedelta, timezone
 from functools import cmp_to_key
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.matches.models import Match, MatchAttachment, MatchParticipant, MatchResult
+from app.domain.matches.models import Match, MatchParticipant, MatchResult, Replay
 from app.domain.matches.repository import MatchRepository
 from app.domain.matches.schemas import (
     COMPUTER_ID_PREFIX,
     MANUAL_COMPUTER_RAW_NAME,
     MANUAL_UNREGISTERED_RAW_NAME,
     UNREGISTERED_ID_PREFIX,
-    MatchAttachmentPayload,
     MatchAuthor,
     MatchOut,
     MatchSlot,
     MatchWrite,
+    ReplayOut,
+    ReplayUpload,
     MemberStatsEntry,
     MemberStatsMonthEntry,
     RaceStatsEntry,
@@ -285,10 +288,13 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
 def to_match_out(match: Match, storage: FileStorage, alias_by_player_name: dict[str, ReplayAlias]) -> MatchOut:
     team1 = [_to_match_slot(p, alias_by_player_name) for p in match.participants if p.team == "team1"]
     team2 = [_to_match_slot(p, alias_by_player_name) for p in match.participants if p.team == "team2"]
-    attachment = None
-    if match.attachment is not None:
-        attachment = MatchAttachmentPayload(
-            name=match.attachment.file_name, url=storage.url_for(match.attachment.file_path)
+    replay = None
+    if match.replay is not None:
+        replay = ReplayOut(
+            id=match.replay.id,
+            original_name=match.replay.original_name,
+            display_name=match.replay.display_name,
+            url=storage.url_for(match.replay.file_path),
         )
     author = None
     if match.creator is not None:
@@ -306,7 +312,7 @@ def to_match_out(match: Match, storage: FileStorage, alias_by_player_name: dict[
         result=result_row.result,
         match_type=match.match_type,
         note=match.note,
-        attachment=attachment,
+        replay=replay,
         created_by=author,
         map_name=result_row.map_name,
         game_started_at=result_row.game_started_at,
@@ -858,6 +864,37 @@ class MatchService:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
         return match
 
+    async def build_replay_archive(self) -> bytes:
+        """등록된 모든 리플레이(.rep 첨부)를 zip 바이트로 묶는다(운영자 제어판의 '리플레이
+        전체 다운로드'). 폴더 구분 없이 평평하게 담는다(요청). 파일이 유실된 건은 조용히
+        건너뛰고, 파일명이 겹치면 " (2)"식으로 유일하게 만든다."""
+        rows = await self._repo.list_all_replays()
+        used: set[str] = set()
+
+        def unique(name: str) -> str:
+            if name not in used:
+                used.add(name)
+                return name
+            stem, dot, ext = name.rpartition(".")
+            i = 2
+            while True:
+                cand = f"{stem} ({i}).{ext}" if dot else f"{name} ({i})"
+                if cand not in used:
+                    used.add(cand)
+                    return cand
+                i += 1
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for display_name, file_path in rows:
+                file_name = display_name
+                try:
+                    data = await self._storage.read(file_path)
+                except Exception:
+                    continue
+                zf.writestr(unique(file_name), data)
+        return buf.getvalue()
+
     async def alias_by_player_name(self) -> dict[str, ReplayAlias]:
         """to_match_out이 참가자의 회원/컴퓨터/비회원 여부를 판단할 때 쓰는 조회용 —
         라우터에서 한 번만 가져와 여러 경기를 직렬화하는 동안 재사용한다."""
@@ -874,13 +911,13 @@ class MatchService:
         match_no_base = _match_no_base(match_date, payload.game_started_at)
         match_no_suffix = await self._repo.next_match_no_suffix(match_no_base)
 
-        # attachment=None 을 명시해 flush 이후 접근 시 비동기 lazy-load가 걸리지 않게 한다.
+        # replay=None 을 명시해 flush 이후 접근 시 비동기 lazy-load가 걸리지 않게 한다.
         match = Match(
             match_no=f"{match_no_base}{match_no_suffix:02d}",
             match_date=match_date,
             match_type=payload.match_type,
             note=payload.note,
-            attachment=None,
+            replay=None,
             result_row=MatchResult(
                 result=payload.result,
                 map_name=payload.map_name,
@@ -896,8 +933,8 @@ class MatchService:
         self._repo.add(match)
         await self._repo.flush()
 
-        if payload.attachment is not None:
-            await self._apply_attachment(match, payload.attachment, actor_pk=actor.pk)
+        if payload.replay is not None:
+            await self._apply_replay(match, payload.replay, actor_pk=actor.pk)
 
         await self._session.commit()
         return await self._repo.refresh(match)
@@ -934,12 +971,12 @@ class MatchService:
             self._build_participants(payload.team1, payload.team2, members_by_id, actor_pk=actor.pk)
         )
 
-        if payload.attachment is None:
-            if match.attachment is not None:
-                await self._storage.delete(match.attachment.file_path)
-                match.attachment = None
+        if payload.replay is None:
+            if match.replay is not None:
+                await self._storage.delete(match.replay.file_path)
+                match.replay = None  # single_parent+delete-orphan이라 행도 함께 삭제된다
         else:
-            await self._apply_attachment(match, payload.attachment, actor_pk=actor.pk)
+            await self._apply_replay(match, payload.replay, actor_pk=actor.pk)
 
         await self._session.commit()
         return await self._repo.refresh(match)
@@ -947,10 +984,28 @@ class MatchService:
     async def delete_match(self, match_id: int, *, actor: Member) -> None:
         match = await self.get_match(match_id)
         self._ensure_can_delete(actor)
-        if match.attachment is not None:
-            await self._storage.delete(match.attachment.file_path)
+        if match.replay is not None:
+            await self._storage.delete(match.replay.file_path)
+        # 경기를 지우면 delete-orphan으로 replay 행도 함께 삭제된다(파일은 위에서 이미 삭제).
         await self._repo.delete(match)
         await self._session.commit()
+
+    async def delete_all_matches(self, *, actor: Member) -> int:
+        """모든 경기기록을 삭제한다(운영자 제어판). 리플레이(.rep) 파일과 replays 행도 함께
+        지운다. 반환값은 삭제된 경기 수.
+
+        matches.replay_id → replays.id라, 경기(matches)를 먼저 지운 뒤 replays를 지운다
+        (반대로 하면 FK 참조 때문에 막힌다). 참가자/결과는 matches의 FK CASCADE로 정리된다."""
+        self._ensure_can_delete(actor)
+        for _display_name, file_path in await self._repo.list_all_replays():
+            try:
+                await self._storage.delete(file_path)
+            except Exception:
+                pass
+        count = await self._repo.delete_all_matches()
+        await self._repo.delete_all_replays()
+        await self._session.commit()
+        return count
 
     async def update_memo(self, match_id: int, note: str, *, actor: Member) -> Match:
         """정식 수정(update_match)과 달리 작성자/운영자 제한 없이 회원 누구나 남길 수 있는
@@ -1061,28 +1116,35 @@ class MatchService:
             member.replay_aliases.append(ReplayAlias(raw_name=slot.player_name, kind="member"))
 
     async def _remember_placeholder_raw_names(self, payload: MatchWrite) -> None:
-        """리플레이에서 컴퓨터(AI)로 등록되는 슬롯의 분류만 replay_aliases에 남긴다.
+        """리플레이에서 컴퓨터(AI)/비회원으로 등록되는 슬롯의 분류를 replay_aliases에 남긴다.
 
-        비회원은 일부러 남기지 않는다. 여기에 kind='unregistered' 행을 만들어두면 다음
-        리플레이부터 그 이름이 "이미 분류가 끝난 이름"으로 취급돼(프론트의 applyKnownClassifications)
-        미매칭 목록에 아예 안 뜨고 자동으로 비회원 슬롯이 되어버린다 — 그러면 검토
-        화면에서 그 사람을 실제 회원으로 연결할 기회가 영영 사라진다(실제로 지적받은 문제).
-        아직 아무도 "이 이름은 비회원이다"라고 정한 적이 없는 상태로 남겨두는 게 맞다.
-
-        컴퓨터는 반대로 남겨야 한다 — 그래야 _to_match_slot이 컴퓨터로 그리고, 다음 리플레이에서
-        같은 이름을 또 물어보지 않는다. 회원 매칭 대상이 될 일도 없다.
+        새 게임아이디(rawName)는 저장 전에 반드시 회원/컴퓨터/비회원 중 하나로 확정되고,
+        미분류인 채로 저장되는 경로가 없다(요청: "매핑 안 하고 저장할 경로가 없으니 그
+        분류를 alias 테이블에 자동 등록하는 게 맞다"). 그래서 회원은 _associate_member_aliases가,
+        컴퓨터/비회원은 여기서 각각 kind='computer'/'unregistered'로 자동 등록해
+        replay_aliases를 모든 게임아이디의 단일 레지스트리로 유지한다 — 게임아이디 화면에
+        컴퓨터/비회원도 바로 뜨고, 다음 리플레이에서 같은 이름을 또 물어보지 않는다.
+        (예전엔 비회원을 일부러 안 남겼는데, 그 이름을 나중에 회원으로 연결할 기회를
+        지키려는 의도였다 — 이제 그 연결은 게임아이디 화면 재매핑으로 하면 되고,
+        set_replay_name_mapping이 기존 별칭을 지우고 회원으로 다시 건다.)
 
         이미 있는 매핑은 절대 건드리지 않는다 — 특히 kind='member'(누군가의 게임 아이디로
         이미 등록된 이름)를 덮어쓰면 그 회원의 과거 경기 매칭이 통째로 어긋난다."""
         for slot in payload.team1 + payload.team2:
-            if not is_computer_slot(slot.member_id) or not slot.player_name:
+            if not slot.player_name:
                 continue
             # 수기등록 슬롯이 쓰는 공용 예약값은 마이그레이션이 이미 심어둔 시스템 행이다.
             if slot.player_name in (MANUAL_COMPUTER_RAW_NAME, MANUAL_UNREGISTERED_RAW_NAME):
                 continue
+            if is_computer_slot(slot.member_id):
+                kind = "computer"
+            elif is_unregistered_slot(slot.member_id):
+                kind = "unregistered"
+            else:
+                continue
             if await self._repo.replay_alias_exists(slot.player_name):
                 continue
-            self._repo.add_replay_name_classification(ReplayAlias(raw_name=slot.player_name, kind="computer"))
+            self._repo.add_replay_name_classification(ReplayAlias(raw_name=slot.player_name, kind=kind))
 
     async def _ensure_no_duplicate_members(self, payload: MatchWrite) -> None:
         # 컴퓨터/비회원 슬롯은 실제 회원이 아니라 여러 개 있어도 "중복"이 아니므로 제외한다.
@@ -1103,36 +1165,44 @@ class MatchService:
             members_by_id[member_id] = member
         return members_by_id
 
-    async def _apply_attachment(
-        self, match: Match, payload: MatchAttachmentPayload, *, actor_pk: int
-    ) -> None:
+    async def _apply_replay(self, match: Match, payload: ReplayUpload, *, actor_pk: int) -> None:
         if not is_data_url(payload.url):
-            return  # 기존에 저장된 첨부파일 URL 그대로 유지 (변경 없음)
+            return  # 기존에 저장된 리플레이 그대로 유지 (변경 없음)
 
-        if not payload.name.lower().endswith(".rep"):
+        if not payload.original_name.lower().endswith(".rep"):
             raise ValidationError("스타크래프트 리플레이 파일(.rep)만 첨부할 수 있습니다.")
 
         content, content_type = decode_data_url(payload.url)
-        ext = guess_extension(content_type, payload.name)
+        ext = guess_extension(content_type, payload.original_name)
+        # 저장 파일명은 알아보기 쉬운 생성 이름(display_name)으로 — 다운로드 시 그대로 쓰인다.
         stored = await self._storage.save(
-            subdir="matches",
-            filename=payload.name or f"attachment{ext}",
+            subdir="replays",
+            filename=payload.display_name or payload.original_name or f"replay{ext}",
             content=content,
             content_type=content_type,
         )
-        if match.attachment is not None:
-            await self._storage.delete(match.attachment.file_path)
-            match.attachment.file_name = payload.name
-            match.attachment.file_path = stored.path
-            match.attachment.content_type = content_type
-            match.attachment.file_size = len(content)
-            match.attachment.updated_by = actor_pk
+        # 시작시각/맵은 result_row에 이미 반영돼 있으니 그 값을 replay 메타에도 함께 보존한다.
+        game_started_at = match.result_row.game_started_at if match.result_row else None
+        map_name = match.result_row.map_name if match.result_row else None
+        if match.replay is not None:
+            await self._storage.delete(match.replay.file_path)
+            match.replay.original_name = payload.original_name
+            match.replay.display_name = payload.display_name
+            match.replay.file_path = stored.path
+            match.replay.content_type = content_type
+            match.replay.file_size = len(content)
+            match.replay.game_started_at = game_started_at
+            match.replay.map_name = map_name
+            match.replay.updated_by = actor_pk
         else:
-            match.attachment = MatchAttachment(
-                file_name=payload.name,
+            match.replay = Replay(
+                original_name=payload.original_name,
+                display_name=payload.display_name,
                 file_path=stored.path,
                 content_type=content_type,
                 file_size=len(content),
+                game_started_at=game_started_at,
+                map_name=map_name,
                 created_by=actor_pk,
                 updated_by=actor_pk,
             )

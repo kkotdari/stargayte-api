@@ -255,6 +255,25 @@ async def delete_replay_name_mapping(
     await MatchService(db, storage).delete_replay_name_mapping(raw_name)
 
 
+@router.get("/replays/archive")
+async def download_replay_archive(db: DbSession, storage: StorageDep, _admin: CurrentAdmin) -> Response:
+    """등록된 모든 리플레이(.rep)를 zip으로 묶어 다운로드(운영자 전용)."""
+    data = await MatchService(db, storage).build_replay_archive()
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="replays.zip"'},
+    )
+
+
+# "/all"은 "/{match_id}"(int)보다 먼저 선언해야 한다 — 뒤에 두면 match_id 파싱 실패로 422.
+@router.delete("/all")
+async def delete_all_matches(db: DbSession, storage: StorageDep, admin: CurrentAdmin) -> dict[str, int]:
+    """모든 경기기록 삭제(운영자 제어판). 첨부(.rep) 파일도 함께 지운다."""
+    count = await MatchService(db, storage).delete_all_matches(actor=admin)
+    return {"deleted": count}
+
+
 @router.post("", response_model=MatchOut)
 async def create_match(
     payload: MatchWrite, db: DbSession, storage: StorageDep, current: CurrentMember
@@ -297,21 +316,21 @@ async def delete_match(
     await MatchService(db, storage).delete_match(match_id, actor=current)
 
 
-@router.get("/{match_id}/attachment")
-async def download_attachment(
+@router.get("/{match_id}/replay")
+async def download_replay(
     match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> Response:
     match = await MatchService(db, storage).get_match(match_id)
-    if match.attachment is None:
-        raise NotFoundError("첨부파일이 없습니다.")
+    if match.replay is None:
+        raise NotFoundError("리플레이가 없습니다.")
 
-    content = await storage.read(match.attachment.file_path)
-    filename = match.attachment.file_name
+    content = await storage.read(match.replay.file_path)
+    filename = match.replay.display_name
     # 파일명에 한글이 섞여 있어도 안전하도록 ASCII fallback + RFC 5987 filename* 둘 다 넣는다.
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "replay.rep"
     disposition = f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
     return Response(
         content=content,
-        media_type=match.attachment.content_type or "application/octet-stream",
+        media_type=match.replay.content_type or "application/octet-stream",
         headers={"Content-Disposition": disposition},
     )
