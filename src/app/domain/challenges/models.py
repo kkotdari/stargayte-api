@@ -85,7 +85,8 @@ class ChallengeParticipant(Base):
         UniqueConstraint("challenge_id", "member_pk", name="uq_challenge_participants_challenge_member"),
         CheckConstraint("side IN ('creator','target')", name="ck_challenge_participants_side"),
         CheckConstraint(
-            "response IN ('pending','accepted','rejected')", name="ck_challenge_participants_response"
+            "response IN ('pending','accepted','rejected','discarded')",
+            name="ck_challenge_participants_response",
         ),
     )
 

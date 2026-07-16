@@ -132,6 +132,36 @@ async def test_any_rejection_discards_challenge(client):
     assert res.status_code == 400, res.text
 
 
+async def test_discard_without_reason_marks_discarded_response(client):
+    """편지봉투에서 '버리기' → 사유 없이 폐기(휴지통)로 가고, 응답은 거절(rejected)과
+    구분되는 'discarded'(버림)로 기록된다(요청: "완전히 휴지통행이고 사유 없음, 버림으로
+    상태 표시(거절하고 다른 응답)")."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+    )
+    challenge_id = res.json()["id"]
+
+    # 사유 없이 버림.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "discarded"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "discarded"
+    assert body["discardedAt"] is not None
+    bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
+    assert bob_target["response"] == "discarded"  # 거절이 아니라 '버림'
+    assert bob_target["responseMessage"] is None  # 사유 없음
+
+
 async def test_cannot_respond_twice(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
