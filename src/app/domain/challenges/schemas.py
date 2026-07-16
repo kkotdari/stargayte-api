@@ -70,6 +70,9 @@ class ChallengeOut(BaseModel):
     targets: list[ChallengeTargetOut]
     own_members: list[ChallengeOwnMemberOut] = Field(alias="ownMembers")
     created_at: datetime = Field(alias="createdAt")
+    # 폐기(휴지통)된 시각 — 폐기 상태가 아니면 None. 휴지통 목록을 "최근 버려진 순"으로
+    # 정렬하는 데 쓴다(프론트 요청: "최근 버려진게 위에 오게").
+    discarded_at: datetime | None = Field(default=None, alias="discardedAt")
     # 재대결 체인 — 이 도전장이 재대결(설욕전)로 만들어졌으면 원래 도전장의 id, 아니면 None.
     # (값이 있으면 곧 재대결이다 — 재신청은 제거돼 chain_kind 구분이 필요 없어졌다.)
     reapplied_from_id: int | None = Field(default=None, alias="reappliedFromId")
