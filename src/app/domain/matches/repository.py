@@ -15,8 +15,7 @@ class MatchRepository:
     def _base_query(self) -> Select[tuple[Match]]:
         return select(Match).options(
             selectinload(Match.participants),
-            selectinload(Match.replay),
-            selectinload(Match.result_row),
+            selectinload(Match.result_row).selectinload(MatchResult.replay),
             selectinload(Match.creator),
         )
 
@@ -510,23 +509,6 @@ class MatchRepository:
     async def delete_all_replays(self) -> int:
         result = await self._session.execute(delete(Replay))
         return int(result.rowcount or 0)
-
-    async def list_all_replay_file_paths(self) -> set[str]:
-        # 재연결 복구 도구 전용(일회성) — 이미 replays 테이블에 연결된 파일 경로 집합.
-        # 스토리지에서 찾은 파일 중 여기 없는 것만 "orphan"으로 취급한다.
-        stmt = select(Replay.file_path)
-        return set((await self._session.execute(stmt)).scalars().all())
-
-    async def list_match_results_for_relink(self) -> list[Row]:
-        # 재연결 복구 도구 전용(일회성) — game_started_at별로 match_id와 그 경기에 이미
-        # 리플레이가 붙어있는지(replay_id)를 함께 가져온다. list_game_started_ats와 달리
-        # match_id/replay_id까지 필요해서 별도로 둔다.
-        stmt = (
-            select(MatchResult.match_id, MatchResult.game_started_at, Match.replay_id)
-            .join(Match, Match.id == MatchResult.match_id)
-            .where(MatchResult.game_started_at.is_not(None))
-        )
-        return list((await self._session.execute(stmt)).all())
 
     async def delete_replay_alias(self, raw_name: str) -> None:
         # raw_name은 kind와 무관하게 replay_aliases 테이블 전체에서 유일하므로, 이 한 번의

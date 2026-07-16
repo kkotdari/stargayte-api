@@ -42,17 +42,10 @@ class Match(AuditMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="MatchParticipant.position",
     )
-    # 리플레이(.rep) — 별도 replays 테이블에 풀 메타데이터로 저장하고, 경기는 replay_id로
-    # 그 파일에 매핑한다(요청). single_parent+delete-orphan이라 경기를 지우면 리플레이 행도
-    # 함께 지워진다(파일 삭제는 서비스에서 처리). 수기 경기는 리플레이가 없어 nullable.
-    replay_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("replays.id"), unique=True, nullable=True
-    )
-    replay: Mapped["Replay | None"] = relationship(
-        foreign_keys=[replay_id], single_parent=True, cascade="all, delete-orphan",
-    )
     # 결과(승패/맵/시작시각/경기시간) — 얇은 사이드 테이블로 분리해 관리한다(모든 경기가
-    # 등록과 동시에 결과를 함께 저장하므로 실질적으로 항상 1:1로 존재한다).
+    # 등록과 동시에 결과를 함께 저장하므로 실질적으로 항상 1:1로 존재한다). 리플레이(.rep)도
+    # "실제로 어떻게 끝났는가"에 속하는 정보라 여기(MatchResult.replay)에 매달린다 —
+    # Match 자신은 리플레이를 직접 참조하지 않는다.
     result_row: Mapped["MatchResult | None"] = relationship(
         back_populates="match",
         cascade="all, delete-orphan",
@@ -95,9 +88,9 @@ class MatchParticipant(AuditMixin, Base):
 
 
 class Replay(AuditMixin, TimestampMixin, Base):
-    """업로드된 리플레이(.rep) 파일 한 건. 경기(matches.replay_id)가 이 행을 가리키며 실제
-    파일과 매핑된다. 원본 파일명과 알아보기 쉬운 생성 파일명, 시작시각/맵 등 풀 메타데이터를
-    보존한다(요청)."""
+    """업로드된 리플레이(.rep) 파일 한 건. 경기 결과(match_results.replay_id)가 이 행을
+    가리키며 실제 파일과 매핑된다. 원본 파일명과 알아보기 쉬운 생성 파일명, 시작시각/맵 등
+    풀 메타데이터를 보존한다(요청)."""
 
     __tablename__ = "replays"
 
@@ -131,6 +124,15 @@ class MatchResult(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # 리플레이(.rep) — 별도 replays 테이블에 풀 메타데이터로 저장하고, 결과는 replay_id로
+    # 그 파일에 매핑한다. single_parent+delete-orphan이라 결과 행을 지우면 리플레이 행도
+    # 함께 지워진다(파일 삭제는 서비스에서 처리). 수기 경기는 리플레이가 없어 nullable.
+    replay_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("replays.id"), unique=True, nullable=True
+    )
+    replay: Mapped["Replay | None"] = relationship(
+        foreign_keys=[replay_id], single_parent=True, cascade="all, delete-orphan",
     )
 
     match: Mapped[Match] = relationship(back_populates="result_row")
