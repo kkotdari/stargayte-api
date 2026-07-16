@@ -3,7 +3,6 @@ import calendar
 import io
 import zipfile
 from datetime import UTC, date, datetime, timedelta, timezone
-from functools import cmp_to_key
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -514,26 +513,21 @@ class MatchService:
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
-        승률도, 승점(승-패)도 기준이 아니다. 둘을 견줄 때 다음 순서로만 가른다.
+        승률도, 승점(승-패)도, 전체 승수도 기준이 아니다. 둘의 우열은 다음 두 단계로만 가른다.
 
           ① 승자승 — 그 둘이 직접 붙은 전적. 이긴 쪽이 무조건 위다(1전 1승도 100전 99승을 이긴다).
           ② 간접비교 — 둘 다 붙어본 적 있는 "공통상대"에 대한 각자의 승점(승 +1, 무 0, 패 -1).
-             공통상대가 하나도 없으면(0 대 0으로 같으니) 이 기준으로는 못 가르고 그대로 다음
-             기준으로 넘어간다 — 비교 대상이 없다는 건 가를 근거가 없다는 뜻이지 우열이 있다는
-             뜻이 아니다.
-          ③ 전체 승수.
 
-        여기까지 전부 같으면 진짜 동률이다 — 그 이하로는 절대 가르지 않는다(예전엔 여기에
-        "승점" 기준이 하나 더 있었지만, 승-패만으로 매기는 승점은 사실상 승수와 거의 같은
-        얘기를 두 번 하는 셈이라 없앴다).
+        ①②로 가를 근거가 없으면 그냥 동급이다(요청: "간접비교 할게 없으면 공동순위 무조건").
+        예전엔 여기에 ③전체 승수 기준이 있었지만, 약한 상대 한 명만 이겨도 승수로 안 붙어본
+        사람들 위로 올라가는 게 부자연스러워 없앴다.
 
-        ①은 상대가 누구냐에 따라 값이 달라지는 쌍(pair) 비교라, 회원별 점수 하나로 미리 뽑아
-        정렬 키로 쓸 수가 없다 — 그래서 비교 함수(cmp)로 정렬한다. 그 대가로 "A가 B를 이기고,
-        B가 C를 이기고, C가 A를 이긴" 순환이 생기면 셋 사이의 순서는 원리적으로 정할 수 없다.
-        그때는 아래 ②~③이 대신 가르고, 그마저 같으면(=진짜 동률) 정렬 자체는 끝나야 하니
-        로그인 아이디로 순서만 고정한다(같은 입력이면 항상 같은 결과가 나오게). 다만 이
-        아이디 비교는 정렬 안정성만을 위한 내부 장치일 뿐 "공동순위인지"에는 반영하지
-        않는다 — tie_group은 ①~③만으로 판단한다(_rank_key 참고).
+        ①②는 상대가 누구냐에 따라 값이 달라지는 쌍(pair) 비교라 회원별 점수 하나로 미리 뽑을
+        수 없다 — 그래서 우열(a가 b보다 위인가)을 간선으로 하는 방향그래프로 순위를 매긴다.
+        "A>B>C>A"처럼 물고 물리는 순환은 순서를 정할 수 없으니 강결합성분(SCC)으로 한 덩어리
+        동급 처리하고, 성분끼리의 축약 그래프(항상 비순환)에서 "위에서부터 가장 긴 경로 깊이"를
+        순위(tie_group)로 쓴다. 같은 깊이면 서로 못 가르는 동급이고, sort_order는 (깊이, 로그인
+        아이디)로 고정해 같은 입력이면 항상 같은 결과가 나온다.
 
         여기서만 정렬을 하고 entries 자체의 순서(=회원 목록 순서)는 바꾸지 않는다 — 이 응답은
         랭킹 말고 전적통계/상세 모달도 함께 쓰기 때문이다."""
@@ -558,53 +552,80 @@ class MatchService:
                 plays=row.plays, wins=row.wins, draws=row.draws,
             )
 
-        def _rank_key(a_entry: MemberStatsEntry, a_member: Member, b_entry: MemberStatsEntry, b_member: Member) -> int:
-            """①~③ 세 기준만으로 가른다 — 0이면 그 이하로는 절대 안 가르는 진짜 동률."""
-            # ① 승자승 — 서로 붙은 전적만 본다(안 붙었으면 0이라 다음 기준으로 넘어간다).
+        # 두 사람의 우열은 ①승자승 → ②간접비교 두 단계로만 가른다(요청: "간접비교 할게 없으면
+        # 공동순위 무조건"). 예전의 ③전체 승수 기준은 없앴다 — 한 명만 이겨도 승수로 안 붙어본
+        # 사람들 위로 올라가는 게 부자연스러웠다(예: 약한 상대 한 명만 이긴 사람이 2위로).
+        def _is_above(a_member: Member, b_member: Member) -> bool:
+            """a가 b보다 '무조건 위'면 True — 가를 근거가 없으면(동급) False."""
+            # ① 승자승 — 서로 붙은 전적만.
             head = _points_against(h2h, a_member.pk, {b_member.pk})
             if head != 0:
-                return -1 if head > 0 else 1
-
-            # ② 간접비교 — 둘 다 붙어본 적 있는 상대에 대한 각자의 승점. 서로는 ①에서 이미
-            # 봤으니 상대 후보에서 뺀다. 공통상대가 하나도 없으면 둘 다 0점이라 그대로
-            # 다음 기준으로 넘어간다(가를 근거가 없는 것이지 우열이 있는 게 아니다).
+                return head > 0
+            # ② 간접비교 — 둘 다 붙어본 공통상대에 대한 각자의 승점. 공통상대가 없거나
+            # 같으면 못 가른다(동급) → False.
             common = (set(h2h.get(a_member.pk, {})) & set(h2h.get(b_member.pk, {}))) - {a_member.pk, b_member.pk}
             a_common = _points_against(h2h, a_member.pk, common)
             b_common = _points_against(h2h, b_member.pk, common)
             if a_common != b_common:
-                return -1 if a_common > b_common else 1
+                return a_common > b_common
+            return False
 
-            # ③ 전체 승수.
-            if a_entry.overall.wins != b_entry.overall.wins:
-                return -1 if a_entry.overall.wins > b_entry.overall.wins else 1
-            return 0
+        # ①② 우열을 간선으로 하는 방향그래프에서 순위를 매긴다. 우열이 안 서는 쌍은
+        # 간선이 없다(=동급 후보). "A>B>C>A"처럼 물고 물리는 순환은 순서를 정할 수 없으니
+        # 한 덩어리(강결합성분)로 묶어 통째로 동급 처리하고, 성분끼리의 축약 그래프(항상
+        # 비순환)에서 "위에서부터 가장 긴 경로 깊이(level)"를 순위로 쓴다 — 나를 이긴 성분이
+        # 하나도 없으면 level 0(최상위 공동순위)이다.
+        member_list = [m for _, m in rankable]
+        n = len(member_list)
+        above = [[i != j and _is_above(member_list[i], member_list[j]) for j in range(n)] for i in range(n)]
 
-        def _compare(a: tuple, b: tuple) -> int:
-            (a_entry, a_member), (b_entry, b_member) = a, b
-            ranked = _rank_key(a_entry, a_member, b_entry, b_member)
-            if ranked != 0:
-                return ranked
-            # ①~③까지 전부 같으면(진짜 동률) 정렬 자체는 끝나야 하니 로그인 아이디로
-            # 순서만 고정한다 — 이건 정렬 안정성을 위한 내부 장치일 뿐 "공동순위인지"에는
-            # 반영하지 않는다(tie_group 계산은 아래에서 _rank_key만 다시 쓴다).
-            return -1 if a_member.id < b_member.id else (1 if a_member.id > b_member.id else 0)
+        # 도달성(추이 폐포) — Floyd-Warshall.
+        reach = [row[:] for row in above]
+        for k in range(n):
+            rk = reach[k]
+            for i in range(n):
+                if reach[i][k]:
+                    ri = reach[i]
+                    for j in range(n):
+                        if rk[j]:
+                            ri[j] = True
 
-        # 순환이 있을 때도 매 요청 같은 결과가 나오도록 먼저 아이디로 고정해두고 정렬한다.
-        rankable.sort(key=lambda x: x[1].id)
-        rankable.sort(key=cmp_to_key(_compare))
+        # 강결합성분(SCC) — 서로 도달하면 같은 성분(순환).
+        comp = [-1] * n
+        comp_count = 0
+        for i in range(n):
+            if comp[i] != -1:
+                continue
+            comp[i] = comp_count
+            for j in range(i + 1, n):
+                if comp[j] == -1 and reach[i][j] and reach[j][i]:
+                    comp[j] = comp_count
+            comp_count += 1
 
-        # 공동순위는 "①~③ 세 기준이 모두 같아 _rank_key가 0을 돌려준 사이"다 — _compare의
-        # 로그인 아이디 fallback까지 같이 쓰면 서로 다른 두 회원의 아이디 문자열은 절대
-        # 같을 수 없어 tie_group이 사실상 sort_order와 항상 같아지는(=아무도 공동순위가
-        # 안 되는) 버그가 생긴다(실제로 있었던 문제) — 그래서 여기서는 _rank_key만 쓴다.
-        tie_group = 0
-        for i, (entry, member) in enumerate(rankable):
-            if i > 0:
-                prev_entry, prev_member = rankable[i - 1]
-                if _rank_key(prev_entry, prev_member, entry, member) != 0:
-                    tie_group = i
-            entry.sort_order = i
-            entry.tie_group = tie_group
+        # 성분 간 우열 + 레벨(가장 긴 경로 깊이). 축약 그래프는 비순환이라 재귀가 끝난다.
+        comp_above = [[False] * comp_count for _ in range(comp_count)]
+        for i in range(n):
+            for j in range(n):
+                if above[i][j] and comp[i] != comp[j]:
+                    comp_above[comp[i]][comp[j]] = True
+        level: list[int | None] = [None] * comp_count
+
+        def _level(c: int) -> int:
+            cached = level[c]
+            if cached is not None:
+                return cached
+            preds = [a for a in range(comp_count) if comp_above[a][c]]
+            resolved = 0 if not preds else 1 + max(_level(a) for a in preds)
+            level[c] = resolved
+            return resolved
+
+        # tie_group = 소속 성분의 level(같으면 서로 못 가르는 동급). sort_order는
+        # (level, 로그인 아이디)로 고정해 같은 입력이면 항상 같은 결과가 나오게 한다.
+        order = sorted(range(n), key=lambda i: (_level(comp[i]), member_list[i].id))
+        for pos, i in enumerate(order):
+            entry = rankable[i][0]
+            entry.sort_order = pos
+            entry.tie_group = _level(comp[i])
 
     async def get_main_race(
         self,
