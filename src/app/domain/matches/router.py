@@ -19,6 +19,8 @@ from app.domain.matches.schemas import (
     MatchWrite,
     MonthlyMatchStatsResponse,
     MonthlyTeamRankingResponse,
+    OrphanedReplayFile,
+    OrphanedReplayListResponse,
     ReplayNameClassificationEntry,
     ReplayNameClassificationLookupRequest,
     ReplayNameClassificationLookupResponse,
@@ -27,6 +29,8 @@ from app.domain.matches.schemas import (
     ReplayNameMappingListResponse,
     ReplayNameMappingMember,
     ReplayNameMappingWrite,
+    ReplayRelinkRequest,
+    ReplayRelinkResponse,
     TeamRankingResponse,
 )
 from app.domain.matches.service import MatchService, to_match_out
@@ -264,6 +268,24 @@ async def download_replay_archive(db: DbSession, storage: StorageDep, _admin: Cu
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="replays.zip"'},
     )
+
+
+# ===== 리플레이 재연결 복구 도구(일회성) — 0013 마이그레이션으로 끊긴 기존 파일 재연결.
+# 복구가 끝나면 이 두 엔드포인트는 지워도 된다. =====
+@router.get("/replays/orphaned", response_model=OrphanedReplayListResponse)
+async def list_orphaned_replays(db: DbSession, storage: StorageDep, _admin: CurrentAdmin) -> OrphanedReplayListResponse:
+    files = await MatchService(db, storage).list_orphaned_replay_files()
+    return OrphanedReplayListResponse(files=[OrphanedReplayFile(path=p, url=u, size=s) for p, u, s in files])
+
+
+@router.post("/replays/relink", response_model=ReplayRelinkResponse)
+async def relink_replay(
+    payload: ReplayRelinkRequest, db: DbSession, storage: StorageDep, admin: CurrentAdmin
+) -> ReplayRelinkResponse:
+    match = await MatchService(db, storage).relink_replay(
+        payload.file_path, payload.game_started_at, actor_pk=admin.pk,
+    )
+    return ReplayRelinkResponse(match_id=match.id, match_no=match.match_no)
 
 
 # "/all"은 "/{match_id}"(int)보다 먼저 선언해야 한다 — 뒤에 두면 match_id 파싱 실패로 422.
