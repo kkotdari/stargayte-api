@@ -580,12 +580,11 @@ class MatchService:
             date_to=date_to,
             match_type=match_type,
         )
-        # match_id -> {team -> [(member_pk, 그 경기 종족)]}, match_id -> 이긴 팀(=result 값).
-        match_lineups: dict[int, dict[str, list[tuple[int, str]]]] = {}
+        # match_id -> {team -> [(member_pk|None, 그 경기 종족)]}, match_id -> 이긴 팀(=result 값).
+        # 컴퓨터/비회원(member_pk=None)도 담는다 — 팀원수(n)를 라인업 전체 인원으로 세야 한다.
+        match_lineups: dict[int, dict[str, list[tuple[int | None, str]]]] = {}
         match_winner: dict[int, str] = {}
         for row in scoring_rows:
-            if row.member_pk not in pks:
-                continue
             match_lineups.setdefault(row.match_id, {}).setdefault(row.team, []).append(
                 (row.member_pk, row.race)
             )
@@ -600,29 +599,35 @@ class MatchService:
             loser_team = next((t for t in teams if t != result), None)
             winners = teams.get(result, [])
             losers = teams.get(loser_team, []) if loser_team is not None else []
-            if not winners or not losers:
+            # 팀원수(n)는 라인업 전체 인원(컴퓨터/비회원 포함, 요청). 점수·강함은 회원만 잡는다.
+            n_winner = len(winners)
+            n_loser = len(losers)
+            win_members = [(pk, r) for pk, r in winners if pk in pks]
+            lose_members = [(pk, r) for pk, r in losers if pk in pks]
+            if not win_members or not lose_members:
                 continue  # 한쪽에 랭킹 대상 회원이 없으면 점수를 매길 수 없다.
-            # 팀 강함/약함 합은 라인업 전원(종족 필터와 무관) 기준 — 팀 자체의 세기다.
-            winner_str = sum(strength[pk] for pk, _ in winners)
-            loser_str = sum(strength[pk] for pk, _ in losers)
-            winner_weak = sum(weakness[pk] for pk, _ in winners)
-            # 어느 한쪽이라도 랭킹 대상 2명 이상이면 팀전으로 보고 비율을 곱한다. 개인전은 f=1.
-            is_team = len(winners) >= TEAM_MIN_SIZE or len(losers) >= TEAM_MIN_SIZE
+            # 팀 강함/약함 합은 회원 라인업(종족 필터와 무관) 기준 — 팀 자체의 세기다.
+            winner_str = sum(strength[pk] for pk, _ in win_members)
+            loser_str = sum(strength[pk] for pk, _ in lose_members)
+            winner_weak = sum(weakness[pk] for pk, _ in win_members)
+            # 어느 한쪽이라도 라인업 2명 이상이면 팀전 — 강함 비율(f)을 곱하고, 각자 점수를
+            # 팀원수(n)로 나눈다(요청: 팀전은 영향도가 1/n). 개인전(1:1)은 f=1·n=1로 그대로.
+            is_team = n_winner >= TEAM_MIN_SIZE or n_loser >= TEAM_MIN_SIZE
             total_str = winner_str + loser_str
             factor = (loser_str / total_str) if (is_team and total_str > 0) else 1.0
-            # 이긴 사람: 상대팀 전원의 강함 합(=loser_str) × f. 진 사람: 이긴팀 전원의 약함
-            # 합(=winner_weak) × f 만큼 잃는다. 종족 필터가 있으면 '그 경기에 그 종족으로 뛴'
-            # 사람 점수만 센다(head_to_head의 self-종족 필터와 같은 의미).
-            for pk, p_race in winners:
+            # 이긴 사람: 상대팀 회원 강함 합(=loser_str) × f ÷ 팀원수. 진 사람: 이긴팀 회원
+            # 약함 합(=winner_weak) × f ÷ 팀원수 만큼 잃는다. 종족 필터가 있으면 '그 경기에
+            # 그 종족으로 뛴' 사람 점수만 센다(head_to_head의 self-종족 필터와 같은 의미).
+            for pk, p_race in win_members:
                 if race_active and p_race != race:
                     continue
-                score[pk] += loser_str * factor
-            for pk, p_race in losers:
+                score[pk] += loser_str * factor / n_winner
+            for pk, p_race in lose_members:
                 if race_active and p_race != race:
                     continue
-                score[pk] += -winner_weak * factor
+                score[pk] += -winner_weak * factor / n_loser
 
-        # 팀 강함 비율 때문에 생긴 소수는 첫째 자리에서 반올림(요청) — 동률 판정도 이 값으로.
+        # 팀 강함 비율·팀원수 나눗셈으로 생긴 소수는 첫째 자리에서 반올림(요청) — 동률 판정도 이 값으로.
         score = {pk: round(v, 1) for pk, v in score.items()}
 
         # 참가 우선 — 1경기라도 뛴 사람(plays>0)은 점수가 아무리 낮아도(음수여도) 0경기 회원보다
