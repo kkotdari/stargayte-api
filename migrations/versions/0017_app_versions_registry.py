@@ -45,6 +45,11 @@ def upgrade() -> None:
     )
     versions = sa.table("app_versions", sa.column("number", sa.String))
     op.bulk_insert(versions, [{"number": n} for n in _SEED_VERSIONS])
+    # 운영 DB에는 active_version 형식(v+정수)을 강제하던 CHECK 제약이 있다
+    # (ck_app_version_state_version). 숫자로 바꾸면 이 제약에 걸리므로 먼저 없앤다 —
+    # 이제 형식 검증은 앱(pydantic)에서 한다. 마이그레이션 파일엔 없던 제약이라(초기
+    # 스키마 밖에서 추가됨) 이름으로 IF EXISTS 방어 삭제한다.
+    op.execute("ALTER TABLE app_version_state DROP CONSTRAINT IF EXISTS ck_app_version_state_version")
     # 기존 active_version "vN" → "N" (앞의 'v' 제거). SQL의 LIKE 'v%'/substr을 그대로 쓰면
     # 드라이버(psycopg2 등 pyformat)에서 리터럴 '%'가 파라미터 자리로 오인돼 깨진다 —
     # 값을 읽어와 파이썬에서 변환한 뒤 바인드 파라미터로 되쓴다(드라이버 무관하게 안전).
@@ -52,8 +57,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # active_version을 다시 "vN"으로 되돌린다(숫자로 저장된 값 앞에 'v'를 붙인다).
+    # active_version을 다시 "vN"으로 되돌린 뒤(숫자 앞에 'v' 부착), 예전 형식 CHECK 제약을
+    # 복구한다. 이미 있으면(부분 롤백 등) 먼저 지워 중복 생성을 피한다.
     _convert_active_version(strip_v=False)
+    op.execute("ALTER TABLE app_version_state DROP CONSTRAINT IF EXISTS ck_app_version_state_version")
+    op.execute(
+        "ALTER TABLE app_version_state ADD CONSTRAINT ck_app_version_state_version "
+        "CHECK (active_version ~ '^v[1-9][0-9]*$')"
+    )
     op.drop_table("app_versions")
 
 
