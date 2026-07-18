@@ -95,6 +95,22 @@ async def test_rank_order_ties_when_points_also_equal(client):
     assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
 
 
+async def test_tied_players_ordered_by_points_then_nickname(client):
+    """동위(같은 순위)끼리는 순위를 못 가르지만, 나열 순서는 승점(승-패, 높은 순) → 닉네임
+    순으로 정한다(요청). p1(p3에게 3승 0패, 승점 +3)과 p2(p4에게 1승 0패, 승점 +1)는 각자
+    다른 한 명에게만 우세라 사람점수가 +1로 같아 동위지만, 승점이 높은 p1이 앞선다."""
+    headers = await _signup_many(client, 4)
+    for _ in range(3):
+        await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 3승 0패 (+3)
+    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 1승 0패 (+1)
+
+    by_id = await _stats(client, headers)
+    # 둘은 동위(같은 tieGroup).
+    assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
+    # 승점 높은 p1(+3)이 p2(+1)보다 앞.
+    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
+
+
 async def test_isolated_single_win_players_tie_by_person_score(client):
     """사람단위 합산점수 — "팍규만 여러 번 이긴 사람(타센)"이라고 많이 이겨서 위로 가지
     않는다. p1(타센)은 p2(팍규)를 3승 1패로 이겼지만 사람 수로는 "한 명에게 우세"라 +1,

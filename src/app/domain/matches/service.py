@@ -639,9 +639,18 @@ class MatchService:
             level[c] = resolved
             return resolved
 
-        # tie_group = 소속 성분의 level(같으면 서로 못 가르는 동급). sort_order는
-        # (level, 로그인 아이디)로 고정해 같은 입력이면 항상 같은 결과가 나오게 한다.
-        order = sorted(range(n), key=lambda i: (_level(comp[i]), member_list[i].id))
+        # tie_group = 소속 성분의 level(같으면 서로 못 가르는 동급, 화면 순위는 공동). 동위끼리는
+        # 순위를 못 가르지만 나열 순서는 정해야 하니, 그 안에서 승점(승-패, 높은 순) → 닉네임
+        # 순으로 세운다(요청). 마지막에 로그인 아이디까지 넣어 완전 동률·동명이인도 항상 같은 결과.
+        order = sorted(
+            range(n),
+            key=lambda i: (
+                _level(comp[i]),
+                -(rankable[i][0].overall.wins - rankable[i][0].overall.losses),
+                member_list[i].nickname,
+                member_list[i].id,
+            ),
+        )
         for pos, i in enumerate(order):
             entry = rankable[i][0]
             entry.sort_order = pos
