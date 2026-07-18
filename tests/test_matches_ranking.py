@@ -136,18 +136,18 @@ async def test_rank_draw_scores_zero(client):
 
 async def test_team_match_ranks_as_individual_cross_product(client):
     """팀전(0102) 개인 랭킹 — A팀[p1,p2]이 B팀[p3,p4]을 이기면 각 A가 각 B를 한 번씩 이긴
-    것으로 풀리되(요청: "팀전도 개인 환산"), 팀전 점수엔 '팀 강함 비율' f=(진 팀 강함 합) ÷
-    (양 팀 강함 합)을 곱한다(0~1). 이 한 경기로 A팀은 순우열 +2씩(강함 3), B팀은 -2씩(강함 1)
-    이라 이긴 팀 강함합 6, 진 팀 강함합 2 → f=2/(6+2)=0.25. p1·p2는 상대 강함합(2)×0.25=0.5,
-    p3·p4는 이긴 팀 약함합(2)×0.25=-0.5(강한 팀으로 이기면 적게). matchType=0102로 조회했을 때만 잡힌다."""
+    것으로 풀리되(요청: "팀전도 개인 환산"), 팀전 점수엔 강함 비율 f=(진 팀 강함÷양 팀 강함)과
+    ÷팀원수(라인업 전체 인원)를 함께 적용한다. 이 한 경기로 A팀은 순우열 +2씩(강함 3), B팀은
+    -2씩(강함 1) → 이긴 팀 강함합 6, 진 팀 강함합 2, f=2/8=0.25, 양 팀 팀원수 2.
+    p1·p2 = 상대 강함합2 × 0.25 ÷ 2 = 0.25→반올림 0.2, p3·p4 = -0.25→-0.2. matchType=0102에서만 잡힌다."""
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
 
     team = await _stats(client, headers, match_type="0102")
-    assert team["player01"]["rankScore"] == 0.5    # 상대 강함합2 × f(2/8) = 0.5
-    assert team["player02"]["rankScore"] == 0.5
-    assert team["player03"]["rankScore"] == -0.5   # 이긴팀 약함합2 × f(2/8) = -0.5
-    assert team["player04"]["rankScore"] == -0.5
+    assert team["player01"]["rankScore"] == 0.2    # 2 × 0.25 ÷ 2 = 0.25 → 0.2
+    assert team["player02"]["rankScore"] == 0.2
+    assert team["player03"]["rankScore"] == -0.2
+    assert team["player04"]["rankScore"] == -0.2
     # 승패 기록은 경기 단위(2:2 한 판이면 1승/1패), 우열 인원은 상대별.
     assert team["player01"]["overall"]["plays"] == 1
     assert team["player01"]["overall"]["wins"] == 1
@@ -159,28 +159,22 @@ async def test_team_match_ranks_as_individual_cross_product(client):
     assert solo["player03"]["overall"]["plays"] == 0
 
 
-async def test_team_strength_ratio_is_bounded_0_to_1(client):
-    """팀 강함 비율 f = (진 팀 강함 합) ÷ (양 팀 강함 합) — 항상 0~1(요청: 스케일 조임). 대등한
-    경기는 0.5, 강한 팀이 약한 팀을 이기면 0에 가깝다. 두 팀경기(둘 다 0102): M1 [p1,p2]>[p3,p4],
-    M2 [p5,p6]>[p1,p2]. 전체로 보면 p5·p6은 강함6(순우열+2씩), p1·p2는 순우열0(강함2·약함2),
-    p3·p4는 순우열-2(강함1·약함3).
-    · M1: 이긴 p1·p2 강함합2 = 진 p3·p4 강함합2 → f=2/(2+2)=0.5(대등). p1·p2는 상대 강함합2×0.5=+1,
-      p3·p4는 이긴팀 약함합2×0.5=-1.
-    · M2: 이긴 p5·p6 강함합6, 진 p1·p2 강함합2 → f=2/(6+2)=0.25(강팀이 약팀 이김). p5·p6은 상대
-      강함합2×0.25=+0.5, p1·p2는 이긴팀 약함합2×0.25=-0.5.
-    → p1=+1-0.5=0.5, p3=-1, p5=0.5. 예전(상한없는 상대÷우리)과 달리 어떤 이변에서도 f≤1이라
-    점수가 원점수를 넘지 않는다."""
+async def test_team_score_applies_ratio_and_divides_by_team_size(client):
+    """팀전 점수 = (상대별 기준점수 합) × 강함 비율 f × (1/팀원수)(요청). 두 팀경기(둘 다 0102):
+    M1 [p1,p2]>[p3,p4], M2 [p5,p6]>[p1,p2]. 전체로 보면 p5·p6은 강함6, p1·p2 순우열0(강함2·약함2),
+    p3·p4 순우열-2(강함1·약함3). 팀원수는 모두 2.
+    · M1: f=2/(2+2)=0.5. p1 += 상대강함합2 × 0.5 ÷ 2 = 0.5, p3 += -약함합2 × 0.5 ÷ 2 = -0.5.
+    · M2: f=2/(6+2)=0.25. p5 += 2 × 0.25 ÷ 2 = 0.25, p1 += -2 × 0.25 ÷ 2 = -0.25.
+    → p1 = 0.5-0.25 = 0.25→0.2, p3 = -0.5, p5 = 0.25→0.2. 팀원수로 나눠 편차가 줄었다."""
     headers = await _signup_many(client, 6)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
     await _match(client, headers, ["player01", "player02"], ["player05", "player06"], "team2", TODAY)
 
     by_id = await _stats(client, headers)  # 필터 없이 전체
-    assert by_id["player05"]["rankScore"] == 0.5   # 강팀이 약팀 이김: f=0.25 → 0.5
-    assert by_id["player06"]["rankScore"] == 0.5
-    assert by_id["player01"]["rankScore"] == 0.5   # M1 +1(f=0.5), M2 -0.5(f=0.25)
-    assert by_id["player03"]["rankScore"] == -1.0  # 대등 경기 패: f=0.5 → -1
-    # f≤1이라 이긴 사람 점수는 절대 상대 강함합(원점수 2)을 넘지 않는다.
-    assert by_id["player05"]["rankScore"] <= 2
+    assert by_id["player05"]["rankScore"] == 0.2
+    assert by_id["player06"]["rankScore"] == 0.2
+    assert by_id["player01"]["rankScore"] == 0.2
+    assert by_id["player03"]["rankScore"] == -0.5
 
 
 async def test_team_ranking_aggregates_actual_team_lineups(client):
