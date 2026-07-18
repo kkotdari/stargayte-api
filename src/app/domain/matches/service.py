@@ -509,15 +509,18 @@ class MatchService:
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
-        승률도, 전체 승수도 기준이 아니다. 둘의 우열은 다음 세 단계로만 가른다.
+        승률도, 경기 승점도, 간접비교도 기준이 아니다. 둘의 우열은 다음 두 단계로만 가른다.
 
-          ① 승자승 — 그 둘이 직접 붙은 전적. 이긴 쪽이 무조건 위다(1전 1승도 100전 99승을 이긴다).
-          ② 간접비교 — 둘 다 붙어본 적 있는 "공통상대"에 대한 각자의 승점(승 +1, 무 0, 패 -1).
-          ③ 승점 — 자기 전적의 승-패(승 +1, 무 0, 패 -1). 공통상대가 없어 ②로 못 가를 때의 최후
-             기준이다(요청: "간접비교 대상 없을시 승점까지 보고"). 승률과 결이 비슷하다.
+          ① 승자승 — 그 둘이 직접 붙은 전적. 이긴 쪽이 무조건 위다(1전 1승도 100전 99승을
+             이긴다). 재미요소라 이 원칙은 절대 유지한다.
+          ② 사람단위 합산점수 — 경기 수·점수차는 무시하고, 붙어본 상대 한 명 한 명에 대해
+             직접 전적이 우세면 +1 / 동등(무 포함)이면 0 / 열세면 -1을 매겨 합산한다(요청:
+             "몇 명에게 우세·동등·열세인지를 승점처럼 합산"). 맞대결이 없어 ①로 못 가를 때
+             이 점수로 곧장 비교한다.
 
-        ①②③ 모두 같으면 진짜 동급이다. 예전엔 ③가 '전체 승수'였는데, 승률과 무관하게 많이
-        이긴 사람을 올려서(20승18패 > 3승0패) 승점으로 바꿨다.
+        ①② 모두 같으면 진짜 동급(동률로 표시)이다. 예전엔 ②가 간접비교 → 경기 승점이었는데,
+        "많은 경기·큰 점수차"에 휘둘리지 않게 사람 수 기반 합산으로 바꿨다(팍규만 여러 번
+        이겨도 사람 수로는 +1이라 한 명 farming이 부풀지 않는다).
 
         ①②는 상대가 누구냐에 따라 값이 달라지는 쌍(pair) 비교라 회원별 점수 하나로 미리 뽑을
         수 없다 — 그래서 우열(a가 b보다 위인가)을 간선으로 하는 방향그래프로 순위를 매긴다.
@@ -533,6 +536,8 @@ class MatchService:
             if rankable:
                 rankable[0][0].sort_order = 0
                 rankable[0][0].tie_group = 0
+                # 랭킹 대상이 한 명뿐이면 비교할 상대가 없으니 사람단위 점수는 0.
+                rankable[0][0].person_score = 0
             return
 
         # 승자승이 1순위라 맞대결 전적은 항상 필요하다(예전엔 승률 동률일 때만 조회했다).
@@ -549,34 +554,35 @@ class MatchService:
                 plays=row.plays, wins=row.wins, draws=row.draws,
             )
 
-        # 두 사람의 우열은 ①승자승 → ②간접비교 → ③승점(승 +1, 무 0, 패 -1) 순으로 가른다.
-        # ③은 "간접비교할 공통상대가 없을 때"의 최후 기준이다(요청: "간접비교 대상 없을시
-        # 승점까지 보고"). 예전의 '전체 승수'는 승률과 무관하게 많이 이긴 사람을 올려서 뺐고,
-        # 대신 승률과 결이 비슷한 승점을 쓴다(20승18패보다 3승0패가 위로 오게).
-        entry_by_pk = {m.pk: e for e, m in rankable}
+        # 두 사람의 우열은 ①승자승 → ②사람단위 합산점수(우세 +1 / 동등 0 / 열세 -1) 순으로만
+        # 가른다. 간접비교(공통상대)·경기 승점은 더 이상 쓰지 않는다.
+        pks = {m.pk for _, m in rankable}
 
-        def _points_total(member: Member) -> int:
-            overall = entry_by_pk[member.pk].overall
-            return overall.wins - overall.losses
+        def _copeland(pk: int) -> int:
+            """붙어본 상대(랭킹 대상 회원)를 한 명씩 보고, 그 사람과의 직접 전적이 우세면 +1,
+            열세면 -1, 동등(무 포함)이면 0을 매겨 합산한다 — 경기 수·점수차는 안 본다(팍규만
+            10번 이겨도 '한 명 우세'라 +1)."""
+            score = 0
+            for opp_pk, rec in h2h.get(pk, {}).items():
+                if opp_pk not in pks:
+                    continue
+                losses = rec.plays - rec.wins - rec.draws
+                if rec.wins > losses:
+                    score += 1
+                elif rec.wins < losses:
+                    score -= 1
+            return score
+
+        cope = {m.pk: _copeland(m.pk) for _, m in rankable}
 
         def _is_above(a_member: Member, b_member: Member) -> bool:
-            """a가 b보다 '무조건 위'면 True — 세 기준 모두 못 가르면(동급) False."""
-            # ① 승자승 — 서로 붙은 전적만.
+            """a가 b보다 '무조건 위'면 True — 둘 다 못 가르면(동급) False."""
+            # ① 승자승 — 맞대결에서 이긴 쪽이 무조건 위(절대 우선, 재미요소).
             head = _points_against(h2h, a_member.pk, {b_member.pk})
             if head != 0:
                 return head > 0
-            # ② 간접비교 — 둘 다 붙어본 공통상대에 대한 각자의 승점. 공통상대가 없거나
-            # 같으면 다음(③)으로 넘어간다.
-            common = (set(h2h.get(a_member.pk, {})) & set(h2h.get(b_member.pk, {}))) - {a_member.pk, b_member.pk}
-            a_common = _points_against(h2h, a_member.pk, common)
-            b_common = _points_against(h2h, b_member.pk, common)
-            if a_common != b_common:
-                return a_common > b_common
-            # ③ 승점(승-패) — 이것마저 같으면 진짜 동급(False).
-            a_pt, b_pt = _points_total(a_member), _points_total(b_member)
-            if a_pt != b_pt:
-                return a_pt > b_pt
-            return False
+            # ② 사람단위 합산점수가 높은 쪽. 같으면 동급(False).
+            return cope[a_member.pk] > cope[b_member.pk]
 
         # ①② 우열을 간선으로 하는 방향그래프에서 순위를 매긴다. 우열이 안 서는 쌍은
         # 간선이 없다(=동급 후보). "A>B>C>A"처럼 물고 물리는 순환은 순서를 정할 수 없으니
@@ -634,6 +640,8 @@ class MatchService:
             entry = rankable[i][0]
             entry.sort_order = pos
             entry.tie_group = _level(comp[i])
+            # 카드에 보여줄 사람단위 점수(우세-열세)도 함께 실어 보낸다.
+            entry.person_score = cope[member_list[i].pk]
 
     async def get_main_race(
         self,
