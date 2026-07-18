@@ -511,10 +511,12 @@ class MatchService:
 
         순위는 '경기마다 가중 합산한 점수'로 가른다(요청):
 
-          점수 = 각 경기(1v1)마다 이기면 +2·강함(상대) / 비기면 +1·강함 / 지면 -1·약함(상대).
-            강함(X) = 1 + X의 우세수(이긴 사람 수), 약함(X) = 1 + X의 열세수(진 사람 수).
-            → 센 상대를 이길수록·약한 상대에게 질수록 크게 움직인다. 같은 사람 여러 번 이기면
-            그만큼 누적(경기 수를 본다). 점수는 음수도 가능하다.
+          점수 = 각 경기(1v1)마다 이기면 +강함(상대) / 지면 -약함(상대) / 비기면 0.
+            강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면이다 — 강함(X) = 이기기
+            힘든 정도 = 1 + max(0, 순우열), 약함(X) = 이기기 쉬운 정도 = 1 + max(0, −순우열).
+            → 순 승자(우열≥0)에게 지면 약함 1(최소, -1점), 순 패자를 이기면 강함 1(최소, +1점).
+            센 상대를 이길수록 크게 얻고 약한 상대에게 질수록 크게 잃는다. 같은 사람 여러 번
+            이기면 그만큼 누적(경기 수를 본다). 점수는 음수도 가능하다.
           참가 우선 — 1경기라도 뛴 사람은 점수가 아무리 낮아도(음수여도) 0경기 회원보다 무조건
             위다(요청). 그다음 점수(높은 순) → 닉네임 → 로그인 아이디.
 
@@ -558,20 +560,21 @@ class MatchService:
             return sup, eq, inf
 
         person = {m.pk: _person_record(m.pk) for _, m in pairs}
-        # 상대의 강함/약함 — 강함 = 1 + 그 사람의 우세수, 약함 = 1 + 그 사람의 열세수(요청).
-        strength = {pk: 1 + s for pk, (s, e, i) in person.items()}
-        weakness = {pk: 1 + i for pk, (s, e, i) in person.items()}
+        # 강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면이다(요청). 강함 = 이기기
+        # 힘든 정도 = 1 + max(0, 순우열), 약함 = 이기기 쉬운 정도 = 1 + max(0, −순우열).
+        net = {pk: s - i for pk, (s, e, i) in person.items()}
+        strength = {pk: 1 + max(0, n) for pk, n in net.items()}
+        weakness = {pk: 1 + max(0, -n) for pk, n in net.items()}
 
         def _score(pk: int) -> int:
-            """경기마다(per game) 합산 — 이기면 +2·강함(상대), 비기면 +1·강함, 지면 -1·약함(상대).
+            """경기마다(per game) 합산 — 이기면 +강함(상대), 지면 -약함(상대), 비기면 0(요청).
             같은 사람을 여러 번 이기면 그만큼 누적된다(경기 수를 본다). 점수는 음수도 가능."""
             total = 0
             for opp_pk, rec in h2h.get(pk, {}).items():
                 if opp_pk not in pks:
                     continue
                 losses = rec.plays - rec.wins - rec.draws
-                total += rec.wins * 2 * strength[opp_pk]
-                total += rec.draws * 1 * strength[opp_pk]
+                total += rec.wins * strength[opp_pk]
                 total += losses * (-1) * weakness[opp_pk]
             return total
 
