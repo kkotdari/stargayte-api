@@ -103,22 +103,22 @@ async def test_computer_slot_from_replay_keeps_player_name_and_kind(client):
     assert res.json()["classifications"] == [{"rawName": "Computer", "kind": "computer"}]
 
 
-async def test_manual_member_slot_without_player_name_falls_back_to_latest_alias(client):
-    """player_name은 절대 비어있을 수 없다 — 실제 회원 슬롯에서 프론트가 아직 이름을
-    보내지 않으면(수기등록 화면이 선택 UI로 바뀌기 전) 그 회원이 등록해둔 가장 최근
-    게임 아이디로 서버가 대신 채운다. 비회원 슬롯은 예전처럼 공용 예약값을 그대로 쓴다."""
+async def test_member_slot_without_player_name_falls_back_to_latest_alias(client):
+    """player_name은 절대 비어있을 수 없다 — 회원 슬롯에서 이름이 안 오면(방어적으로) 그
+    회원이 등록해둔 가장 최근 게임 아이디로 서버가 대신 채운다. 비회원 슬롯은 리플레이가
+    파싱한 실제 이름을 그대로 보존한다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     await _create_match(
         client, headers,
         team1=[{"memberId": "player01", "race": "테란"}],
-        team2=[{"memberId": f"{UNREGISTERED_PREFIX}1", "race": "저그"}],
+        team2=[{"memberId": f"{UNREGISTERED_PREFIX}1", "race": "저그", "playerName": "GhostGuy"}],
     )
 
     match = (await client.get("/api/matches", headers=headers)).json()["items"][0]
     assert match["team1"][0]["playerName"] == "player01"
-    assert match["team2"][0]["playerName"] == UNREGISTERED_PREFIX
+    assert match["team2"][0]["playerName"] == "GhostGuy"
     assert match["team2"][0]["memberId"].startswith(UNREGISTERED_PREFIX)
 
 

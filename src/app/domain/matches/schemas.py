@@ -15,19 +15,9 @@ MatchType = Literal["0101", "0102"]
 COMPUTER_ID_PREFIX = "__computer__"
 # 아직 가입하지 않은 실제 사람 — 컴퓨터와 마찬가지로 실제 회원 없이 슬롯을 채우되, 나중에
 # 그 사람이 가입하면(또는 인게임 아이디를 알게 되면) 회원과 수동으로 연결할 수 있다는 점만
-# 다르다. DB 처리 방식(회원 없음/position 기반 재생성)은 컴퓨터와 동일 — raw_name(아래
-# MANUAL_*_RAW_NAME)으로만 둘을 구분한다.
+# 다르다. DB 처리 방식(회원 없음/position 기반 재생성)은 컴퓨터와 동일 — 리플레이가 파싱한
+# 실제 이름(player_name)을 그대로 저장하고, replay_aliases.kind 조회로 분류한다.
 UNREGISTERED_ID_PREFIX = "__unregistered__"
-
-# 수기등록(리플레이 없이 직접 입력) 컴퓨터/비회원 슬롯은 실제 게임 아이디가 없다 —
-# 그래도 리플레이 파싱 경로와 똑같이 "raw_name → replay_aliases.kind 조회"로 분류를
-# 하나로 통일하기 위해, 이 두 슬롯 종류 전용으로 공용 예약 raw_name을 부여한다(진짜
-# 게임 아이디와 절대 안 겹치도록 위 memberId 접두사와 같은 문자열을 그대로 재사용).
-# replay_aliases 테이블에 이 두 값이 각각 kind="computer"/"unregistered"로 항상
-# 존재하도록 마이그레이션에서 미리 심어둔다(유저 매핑 관리 화면에는 시스템 예약값이라
-# 노출/편집 대상에서 제외한다).
-MANUAL_COMPUTER_RAW_NAME = "__computer__"
-MANUAL_UNREGISTERED_RAW_NAME = "__unregistered__"
 
 
 def is_computer_slot(member_id: str) -> bool:
@@ -312,6 +302,9 @@ class ReplayNameMappingEntry(BaseModel):
     # 이 이름이 마지막으로 등장한 경기 날짜 — 미해결 항목을 최근 순으로 보여주는 데 쓴다.
     # 단건 저장 응답(set)에서는 다시 조회하지 않아 항상 None.
     last_seen: date | None = Field(default=None, alias="lastSeen")
+    # 이 게임아이디로 등록된 경기가 하나라도 있는지 — 있으면 휴지통(완전 삭제)이 막힌다
+    # (화면에서 경고를 띄우고 삭제 버튼을 못 누르게 한다). 단건 저장 응답에서는 False.
+    has_matches: bool = Field(default=False, alias="hasMatches")
 
 
 class ReplayNameMappingListResponse(BaseModel):

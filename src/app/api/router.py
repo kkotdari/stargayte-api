@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.domain.app_version.router import registry_router as app_versions_router
 from app.domain.app_version.router import router as app_version_router
 from app.domain.auth.router import router as auth_router
 from app.domain.challenges.router import router as challenges_router
@@ -14,5 +15,6 @@ api_router.include_router(members_router)
 api_router.include_router(matches_router)
 api_router.include_router(settings_router)
 api_router.include_router(app_version_router)
+api_router.include_router(app_versions_router)
 api_router.include_router(challenges_router)
 api_router.include_router(env_vars_router)

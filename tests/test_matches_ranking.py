@@ -210,7 +210,7 @@ async def test_team_ranking_excludes_sides_with_a_placeholder_slot(client):
                 "team1": [
                     {"memberId": "player01", "race": "테란"},
                     {"memberId": "player02", "race": "테란"},
-                    {"memberId": "__unregistered__x", "race": "저그"},
+                    {"memberId": "__unregistered__x", "race": "저그", "playerName": "GhostX"},
                 ],
                 "team2": [
                     {"memberId": "player03", "race": "테란"},
