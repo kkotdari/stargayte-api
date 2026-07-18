@@ -93,6 +93,34 @@ async def test_team_filter_requires_every_member(client):
     assert [m["matchNo"] for m in body["items"]] == [duo]
 
 
+async def test_single_member_filter_returns_matches_of_any_side_size(client):
+    """한 명만 넘기면 편 인원수와 무관하게 그 회원이 참가한 경기 전체가 나온다 — 개인 랭킹
+    상세가 그 회원의 팀경기 이력을 부를 때 2:2·3:3가 통째로 빠지던 버그 방지. 개인전/팀전
+    구분은 편 인원수 조건이 아니라 matchType 필터가 맡는다."""
+    headers = await _signup_many(client, 6)
+    solo = await _match(client, headers, ["player01"], ["player02"], "2026-07-01")  # 0101
+    duo = await _match(client, headers, ["player01", "player03"], ["player04", "player05"], "2026-07-02")  # 0102
+    trio = await _match(
+        client, headers, ["player01", "player03", "player05"], ["player02", "player04", "player06"], "2026-07-03",
+    )  # 0102
+
+    # matchType 없이 한 명 → 참가한 경기 전부.
+    body = await _list(client, headers, "player01")
+    assert {m["matchNo"] for m in body["items"]} == {solo, duo, trio}
+
+    # 팀전만(0102) → 2:2·3:3 둘.
+    team = await client.get(
+        "/api/matches", headers=headers, params={"teamMemberIds": "player01", "matchType": "0102"}
+    )
+    assert {m["matchNo"] for m in team.json()["items"]} == {duo, trio}
+
+    # 개인전만(0101) → 1:1 하나.
+    one = await client.get(
+        "/api/matches", headers=headers, params={"teamMemberIds": "player01", "matchType": "0101"}
+    )
+    assert [m["matchNo"] for m in one.json()["items"]] == [solo]
+
+
 async def test_team_filter_with_unknown_member_returns_nothing(client):
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "2026-07-01")
