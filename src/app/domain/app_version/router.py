@@ -1,8 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, status
 
 from app.api.deps import CurrentAdmin, CurrentMember, DbSession
 from app.domain.app_version.schemas import (
     AppVersion,
+    AppVersionAddIn,
     AppVersionInfoOut,
     AppVersionNotesIn,
     AppVersionSetIn,
@@ -37,6 +38,20 @@ async def set_app_version(
 @registry_router.get("", response_model=list[AppVersionInfoOut])
 async def list_app_versions(db: DbSession, _member: CurrentMember) -> list[AppVersionInfoOut]:
     return await AppVersionService(db).list_versions()
+
+
+# 새 버전 등록 — 관리자만. 버전 관리 모달에서 자유 숫자 입력으로 추가한다(중복/형식은 서버 검증).
+@registry_router.post("", response_model=AppVersionInfoOut, status_code=status.HTTP_201_CREATED)
+async def add_app_version(
+    payload: AppVersionAddIn, db: DbSession, _admin: CurrentAdmin
+) -> AppVersionInfoOut:
+    return await AppVersionService(db).add_version(payload.number)
+
+
+# 등록된 버전 삭제 — 관리자만. 활성 버전/마지막 한 개는 지울 수 없다(서버에서 막는다).
+@registry_router.delete("/{number}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_app_version(number: AppVersion, db: DbSession, _admin: CurrentAdmin) -> None:
+    await AppVersionService(db).delete_version(number)
 
 
 # 버전 안내 표시 여부(전역 토글) — 관리자 패널의 "버전 안내 설정"에서 켜고 끈다.

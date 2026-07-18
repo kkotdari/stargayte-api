@@ -63,6 +63,41 @@ class AppVersionService:
         await self._session.commit()
         return VersionNoticeSettingsOut(enabled=enabled)
 
+    async def add_version(self, number: AppVersion) -> AppVersionInfoOut:
+        # 형식(숫자/소수 한 단계)은 스키마(AppVersion 패턴)가 이미 걸렀다. 여기서는 중복만 막는다.
+        if await self._repo.version_registered(number):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="이미 등록된 버전이에요.",
+            )
+        entry = await self._repo.add_version(number)
+        await self._session.commit()
+        return _entry_out(entry)
+
+    async def delete_version(self, number: AppVersion) -> None:
+        entry = await self._repo.get_entry(number)
+        if entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="등록되지 않은 버전이에요.",
+            )
+        # 지금 서비스가 그 버전으로 돌아가는 중이면(활성 버전) 지울 수 없다 — 지우면 아무도
+        # 없는 버전을 가리키게 된다. 먼저 다른 버전으로 '현재 버전 설정'을 바꾼 뒤 지워야 한다.
+        state = await self._repo.get_state()
+        if state.active_version == number:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="현재 활성 버전은 삭제할 수 없어요.",
+            )
+        # 마지막 한 개는 남긴다 — 고를 수 있는 버전이 하나도 없으면 배포 자체가 불가능해진다.
+        if await self._repo.count_versions() <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="최소 한 개의 버전은 남겨야 해요.",
+            )
+        await self._repo.delete_version(entry)
+        await self._session.commit()
+
     async def set_notes(self, number: AppVersion, notes: str) -> AppVersionInfoOut:
         entry = await self._repo.get_entry(number)
         if entry is None:

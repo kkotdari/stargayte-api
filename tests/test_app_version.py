@@ -126,3 +126,78 @@ async def test_non_admin_cannot_edit_notes_or_toggle(client):
     assert (await client.put(
         "/api/app-versions/notice-settings", headers=headers, json={"enabled": False}
     )).status_code in (401, 403)
+
+
+async def test_admin_adds_new_version(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.post("/api/app-versions", headers=headers, json={"number": "4"})
+    assert res.status_code == 201, res.text
+    assert res.json() == {"number": "4", "notes": ""}
+    # 목록에 오름차순으로 끼워진다.
+    listed = [v["number"] for v in (await client.get("/api/app-versions", headers=headers)).json()]
+    assert listed == ["1", "2", "3", "4"]
+
+
+async def test_add_duplicate_version_is_409(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.post("/api/app-versions", headers=headers, json={"number": "3"})
+    assert res.status_code == 409, res.text
+
+
+async def test_add_version_rejects_bad_format(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.post("/api/app-versions", headers=headers, json={"number": "v4"})
+    assert res.status_code == 422, res.text
+
+
+async def test_admin_deletes_registered_version(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.delete("/api/app-versions/3", headers=headers)
+    assert res.status_code == 204, res.text
+    listed = [v["number"] for v in (await client.get("/api/app-versions", headers=headers)).json()]
+    assert listed == ["1", "2"]
+
+
+async def test_cannot_delete_active_version(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    await client.put("/api/app-version", headers=headers, json={"activeVersion": "3"})
+    res = await client.delete("/api/app-versions/3", headers=headers)
+    assert res.status_code == 409, res.text
+    # 그대로 남아 있어야 한다.
+    listed = [v["number"] for v in (await client.get("/api/app-versions", headers=headers)).json()]
+    assert "3" in listed
+
+
+async def test_delete_unregistered_version_is_404(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.delete("/api/app-versions/9", headers=headers)
+    assert res.status_code == 404, res.text
+
+
+async def test_cannot_delete_last_remaining_version(client):
+    token = await _signup_admin(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    # 활성은 기본 "1" — 2·3을 지우고 나면 1만 남는데, 그 1은 활성이라 어차피 못 지운다.
+    # 그래서 활성을 3으로 옮긴 뒤 1·2를 지워 "3"만 남긴 상태에서 마지막 한 개 가드를 확인한다.
+    await client.put("/api/app-version", headers=headers, json={"activeVersion": "3"})
+    await client.delete("/api/app-versions/1", headers=headers)
+    await client.delete("/api/app-versions/2", headers=headers)
+    res = await client.delete("/api/app-versions/3", headers=headers)
+    # 마지막 한 개는 활성이기도 하니 활성 가드(409)에 먼저 걸린다 — 어느 쪽이든 409.
+    assert res.status_code == 409, res.text
+
+
+async def test_non_admin_cannot_add_or_delete(client):
+    await _signup_admin(client)
+    member_token = await _signup_member(client, "player02")
+    headers = {"Authorization": f"Bearer {member_token}"}
+    assert (await client.post(
+        "/api/app-versions", headers=headers, json={"number": "4"}
+    )).status_code in (401, 403)
+    assert (await client.delete("/api/app-versions/3", headers=headers)).status_code in (401, 403)
