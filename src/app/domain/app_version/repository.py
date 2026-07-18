@@ -28,11 +28,14 @@ class AppVersionRepository:
         return entries
 
     async def version_registered(self, number: str) -> bool:
+        return await self.get_entry(number) is not None
+
+    async def get_entry(self, number: str) -> AppVersionEntry | None:
         await self._ensure_seeded()
         result = await self._session.execute(
             select(AppVersionEntry).where(AppVersionEntry.number == number)
         )
-        return result.scalar_one_or_none() is not None
+        return result.scalar_one_or_none()
 
     async def _ensure_seeded(self) -> None:
         existing = await self._session.execute(select(AppVersionEntry.id).limit(1))

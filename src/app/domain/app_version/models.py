@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, SmallInteger, String, func
+from sqlalchemy import BigInteger, DateTime, Integer, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -37,6 +37,12 @@ class AppVersionEntry(Base):
         BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
     )
     number: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
+    # 이 버전이 배포된 뒤 처음 접속하는 회원에게 한 번 보여줄 "업데이트 안내" 내용 —
+    # 한 줄에 한 항목(줄바꿈으로 구분)으로 관리자 패널의 "버전 안내 설정"에서 편집한다.
+    # 예전엔 프론트 상수(APP_UPDATE_NOTES) 한 벌을 전 버전 공용으로 썼는데, 버전별로
+    # 달리 쓰고 코드 배포 없이 바꿀 수 있게 DB(버전 행)로 옮겼다. 비어 있으면 그 버전은
+    # 안내를 띄우지 않는다.
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
