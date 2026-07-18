@@ -430,6 +430,44 @@ class MatchRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
+    async def rank_scoring_rows(
+        self,
+        *,
+        member_pks: list[int],
+        date_from: date | None,
+        date_to: date | None,
+        match_type: str | None,
+    ) -> list[Row]:
+        """랭킹 점수를 '경기 단위'로 매기기 위한 원본 — 각 경기의 (match_id, team,
+        member_pk, race, result). 팀전 점수에 '팀 강함 비율'(진 팀 강함 ÷ 이긴 팀 강함)을
+        경기마다 곱하려면 head_to_head처럼 상대 쌍으로 미리 뭉친 값이 아니라 경기별 라인업
+        전체가 필요하다. 랭킹 대상(member_pks)에 든 회원행만 준다 — 컴퓨터/비회원(member_pk
+        NULL)은 강함 지표가 없어 점수·팀 강함 어디에도 안 들어간다. race 필터는 여기서 걸지
+        않는다: 팀 강함엔 그 경기 라인업 전원이 필요하고, '누구 점수를 세느냐'만 서비스에서
+        그 경기 본인 종족으로 거른다(head_to_head의 self-종족 필터와 같은 의미)."""
+        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        stmt = (
+            select(
+                MatchParticipant.match_id,
+                MatchParticipant.team,
+                member_alias.member_pk,
+                MatchParticipant.race,
+                MatchResult.result,
+            )
+            .select_from(MatchParticipant)
+            .join(Match, Match.id == MatchParticipant.match_id)
+            .join(MatchResult, MatchResult.match_id == Match.id)
+            .join(member_alias, member_condition)
+            .where(
+                member_alias.member_pk.in_(member_pks),
+                MatchResult.result != "not_held",
+            )
+        )
+        stmt = self._apply_common_match_filters(
+            stmt, date_from=date_from, date_to=date_to, match_type=match_type,
+        )
+        return list((await self._session.execute(stmt)).all())
+
     async def team_participant_rows(
         self, *, date_from: date | None = None, date_to: date | None = None,
     ) -> list[Row]:

@@ -187,9 +187,10 @@ class MemberStatsEntry(BaseModel):
     superior_count: int | None = Field(default=None, alias="superiorCount")
     equal_count: int | None = Field(default=None, alias="equalCount")
     inferior_count: int | None = Field(default=None, alias="inferiorCount")
-    # 랭킹 총점 — 경기마다 (이김 +2·강함 / 비김 +1·강함 / 짐 -1·약함)을 합산한 값. 카드에
-    # 이 숫자만 보여주고 세부는 상세 화면에서 본다(요청). 음수 가능. 순위 대상이 아니면 None.
-    rank_score: int | None = Field(default=None, alias="rankScore")
+    # 랭킹 총점 — 경기마다 (이김 +강함(상대) / 비김 0 / 짐 −약함(상대))을 합산하되, 팀전은
+    # 팀 강함 비율(진 팀÷이긴 팀 강함 합)을 곱한다. 카드에 이 숫자만 보여주고 세부는 상세에서
+    # 본다(요청). 팀 강함 비율 때문에 소수(첫째 자리 반올림) 가능·음수 가능. 순위 대상 아니면 None.
+    rank_score: float | None = Field(default=None, alias="rankScore")
 
 
 class MatchStatsResponse(BaseModel):
