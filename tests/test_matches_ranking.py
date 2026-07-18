@@ -44,8 +44,9 @@ async def _match(client, headers, team1: list[str], team2: list[str], result: st
     assert res.status_code == 200, res.text
 
 
-async def _stats(client, headers) -> dict:
-    res = await client.get("/api/matches/stats", headers=headers)
+async def _stats(client, headers, match_type: str | None = None) -> dict:
+    params = {"matchType": match_type} if match_type else None
+    res = await client.get("/api/matches/stats", headers=headers, params=params)
     assert res.status_code == 200, res.text
     return {m["memberId"]: m for m in res.json()["members"]}
 
@@ -119,6 +120,29 @@ async def test_rank_ties_ordered_by_nickname(client):
     assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
     # 동률 안에서는 닉네임 순(Tag01 < Tag02) → p1이 앞.
     assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
+
+
+async def test_team_match_ranks_as_individual_cross_product(client):
+    """팀전(0102) 개인 랭킹 — A팀[p1,p2]이 B팀[p3,p4]을 이기면 각 A가 각 B를 한 번씩 이긴
+    것으로 풀린다(요청: "팀전도 개인 환산"). p1·p2는 두 명을 각각 이겨(강함 각 1) +4,
+    p3·p4는 두 명에게 각각 져(약함 각 1) -2. matchType=0102로 조회했을 때만 잡힌다."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+
+    team = await _stats(client, headers, match_type="0102")
+    assert team["player01"]["rankScore"] == 4    # p3·p4 각각 이김: 2×1 + 2×1
+    assert team["player02"]["rankScore"] == 4
+    assert team["player03"]["rankScore"] == -2   # p1·p2에게 각각 짐: -1×1 + -1×1
+    assert team["player04"]["rankScore"] == -2
+    # 승패 기록은 경기 단위(2:2 한 판이면 1승/1패), 우열 인원은 상대별.
+    assert team["player01"]["overall"]["plays"] == 1
+    assert team["player01"]["overall"]["wins"] == 1
+    assert team["player01"]["superiorCount"] == 2
+
+    # 개인전(0101)으로 조회하면 이 팀경기는 안 잡혀 아무도 뛰지 않은 것으로 나온다.
+    solo = await _stats(client, headers, match_type="0101")
+    assert solo["player01"]["overall"]["plays"] == 0
+    assert solo["player03"]["overall"]["plays"] == 0
 
 
 async def test_team_ranking_aggregates_actual_team_lineups(client):
