@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.app_version.models import SEED_VERSIONS, AppVersionEntry, AppVersionState
@@ -29,6 +29,22 @@ class AppVersionRepository:
 
     async def version_registered(self, number: str) -> bool:
         return await self.get_entry(number) is not None
+
+    async def add_version(self, number: str) -> AppVersionEntry:
+        # 호출부(service)에서 중복/형식을 이미 걸렀다고 보고 그대로 넣는다.
+        entry = AppVersionEntry(number=number)
+        self._session.add(entry)
+        await self._session.flush()
+        return entry
+
+    async def delete_version(self, entry: AppVersionEntry) -> None:
+        await self._session.delete(entry)
+        await self._session.flush()
+
+    async def count_versions(self) -> int:
+        await self._ensure_seeded()
+        result = await self._session.execute(select(func.count()).select_from(AppVersionEntry))
+        return int(result.scalar_one())
 
     async def get_entry(self, number: str) -> AppVersionEntry | None:
         await self._ensure_seeded()

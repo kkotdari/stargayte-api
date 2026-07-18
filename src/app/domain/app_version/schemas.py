@@ -35,6 +35,14 @@ class AppVersionSetIn(BaseModel):
     active_version: AppVersion = Field(alias="activeVersion")
 
 
+class AppVersionAddIn(BaseModel):
+    """새 버전 등록 — 관리자만. 숫자(정수/소수 한 단계) 형식은 AppVersion 패턴이 검증한다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    number: AppVersion
+
+
 class VersionNoticeToggleIn(BaseModel):
     """버전 안내 표시 여부(전역) 설정 — 관리자만."""
 
