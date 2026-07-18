@@ -129,13 +129,20 @@ class MatchRepository:
                     )
                 )
             )
-        side_size = aliased(MatchParticipant)
-        conditions.append(
-            select(func.count())
-            .select_from(side_size)
-            .where(side_size.match_id == anchor.match_id, side_size.team == anchor.team)
-            .scalar_subquery() == len(member_pks)
-        )
+        # 편 인원수 정확히 일치 조건은 여러 명(특정 라인업)을 조회할 때만 필요하다 — 3인
+        # 라인업 조회에 그 셋을 포함한 4인 편이 딸려오지 않게 막는 용도다. 한 명만 넘길
+        # 때는(개인 랭킹 상세가 그 회원의 팀경기 이력 전체를 부를 때) 편 인원수를 따지면
+        # 안 된다 — "1인 편"만 남아 2:2·3:3 팀경기가 통째로 빠져 이력이 안 나왔다(실제로
+        # 지적받은 버그). 이 경우 조건은 "그 회원이 이 경기에 참가했는가"뿐이고, 개인전/팀전
+        # 구분은 호출부의 match_type 필터가 맡는다.
+        if len(member_pks) > 1:
+            side_size = aliased(MatchParticipant)
+            conditions.append(
+                select(func.count())
+                .select_from(side_size)
+                .where(side_size.match_id == anchor.match_id, side_size.team == anchor.team)
+                .scalar_subquery() == len(member_pks)
+            )
         anchor_stmt = select(1).select_from(anchor).outerjoin(anchor_alias, anchor_condition)
         return exists(anchor_stmt.where(and_(*conditions)))
 
