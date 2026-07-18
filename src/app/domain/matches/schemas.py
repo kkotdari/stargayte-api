@@ -177,6 +177,11 @@ class MemberStatsEntry(BaseModel):
     # 위 모든 기준까지 전부 같아 진짜 완전 동률인 회원들은 이 값이 서로 같다 — 화면이
     # 공동순위(같은 등수)로 묶는 기준. 순위 대상이 아니면 None.
     tie_group: int | None = Field(default=None, alias="tieGroup")
+    # 랭킹의 2순위 기준값(승자승 다음) — 붙어본 상대 한 명 한 명에 대해 우세 +1 / 동등 0 /
+    # 열세 -1을 합산한 '사람단위 점수'다. 경기 수·점수차는 무시한다. 카드에 이 숫자를
+    # 보여줘 화면 순위와 앞뒤가 맞게 한다(예전의 경기 승점(승-패) 자리를 대체). 순위 대상이
+    # 아니면 None.
+    person_score: int | None = Field(default=None, alias="personScore")
 
 
 class MatchStatsResponse(BaseModel):
