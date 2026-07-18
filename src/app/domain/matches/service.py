@@ -509,16 +509,16 @@ class MatchService:
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
-        승자승 절대우선은 폐기했다(요청). 이제 순위는 '사람 단위 점수'로만 가른다:
+        순위는 '경기마다 가중 합산한 점수'로 가른다(요청):
 
-          기본점수 = 붙어본 상대 한 명 한 명에 대해 이기면 3 / 비기면 2 / 지면 1점을 받아 합산.
-            = (참가점수: 상대 한 명당 2점) + (우열점수: 우세 수 - 열세 수).
-            져도 1점은 받으므로 '해서 진 사람'이 '아예 안 뛴 사람(0점)'보다 항상 위다(요청).
-          동점이면 → SoS(상대 강함 합: 붙어본 상대들의 기본점수 합)가 큰 쪽이 위 — "우열세가
-            같아도 누구와 붙었느냐"를 반영한다(강한 상대와 붙은 게 값지다).
-          그래도 같으면 닉네임 → 로그인 아이디 순(같은 입력이면 항상 같은 결과).
+          점수 = 각 경기(1v1)마다 이기면 +2·강함(상대) / 비기면 +1·강함 / 지면 -1·약함(상대).
+            강함(X) = 1 + X의 우세수(이긴 사람 수), 약함(X) = 1 + X의 열세수(진 사람 수).
+            → 센 상대를 이길수록·약한 상대에게 질수록 크게 움직인다. 같은 사람 여러 번 이기면
+            그만큼 누적(경기 수를 본다). 점수는 음수도 가능하다.
+          참가 우선 — 1경기라도 뛴 사람은 점수가 아무리 낮아도(음수여도) 0경기 회원보다 무조건
+            위다(요청). 그다음 점수(높은 순) → 닉네임 → 로그인 아이디.
 
-        0경기 회원도 모두 목록에 넣는다(요청) — 점수 0이라 맨 아래에 공동으로 모인다.
+        0경기 회원도 모두 목록에 넣는다(요청) — 맨 아래에 공동으로 모인다.
 
         여기서만 정렬을 하고 entries 자체의 순서(=회원 목록 순서)는 바꾸지 않는다 — 이 응답은
         랭킹 말고 전적통계/상세 모달도 함께 쓰기 때문이다."""
@@ -558,31 +558,46 @@ class MatchService:
             return sup, eq, inf
 
         person = {m.pk: _person_record(m.pk) for _, m in pairs}
-        # 기본점수 = 3·우세 + 2·동등 + 1·열세 (= 참가 2·상대수 + 우열(우세-열세)).
-        base = {pk: 3 * s + 2 * e + 1 * i for pk, (s, e, i) in person.items()}
+        # 상대의 강함/약함 — 강함 = 1 + 그 사람의 우세수, 약함 = 1 + 그 사람의 열세수(요청).
+        strength = {pk: 1 + s for pk, (s, e, i) in person.items()}
+        weakness = {pk: 1 + i for pk, (s, e, i) in person.items()}
 
-        def _sos(pk: int) -> int:
-            """SoS — 붙어본 상대들의 기본점수 합(강한 상대와 붙었을수록 큼). 동점 깨기용."""
-            return sum(base[o] for o in h2h.get(pk, {}) if o in pks)
+        def _score(pk: int) -> int:
+            """경기마다(per game) 합산 — 이기면 +2·강함(상대), 비기면 +1·강함, 지면 -1·약함(상대).
+            같은 사람을 여러 번 이기면 그만큼 누적된다(경기 수를 본다). 점수는 음수도 가능."""
+            total = 0
+            for opp_pk, rec in h2h.get(pk, {}).items():
+                if opp_pk not in pks:
+                    continue
+                losses = rec.plays - rec.wins - rec.draws
+                total += rec.wins * 2 * strength[opp_pk]
+                total += rec.draws * 1 * strength[opp_pk]
+                total += losses * (-1) * weakness[opp_pk]
+            return total
 
-        sos = {m.pk: _sos(m.pk) for _, m in pairs}
+        score = {m.pk: _score(m.pk) for _, m in pairs}
 
-        # 기본점수(높은 순) → SoS(높은 순) → 닉네임 → 로그인 아이디 순으로 정렬한다.
+        # 참가 우선 — 1경기라도 뛴 사람(plays>0)은 점수가 아무리 낮아도(음수여도) 0경기 회원보다
+        # 무조건 위(요청). 그다음 점수(높은 순) → 닉네임 → 로그인 아이디.
+        def _played(idx: int) -> bool:
+            return pairs[idx][0].overall.plays > 0
+
         order = sorted(
             range(len(pairs)),
             key=lambda i: (
-                -base[pairs[i][1].pk],
-                -sos[pairs[i][1].pk],
+                0 if _played(i) else 1,
+                -score[pairs[i][1].pk],
                 pairs[i][1].nickname,
                 pairs[i][1].id,
             ),
         )
-        # tie_group = (기본점수, SoS)가 같으면 동률(화면 공동순위). 그 안 나열만 닉네임으로 가른다.
-        prev_key: tuple[int, int] | None = None
+        # tie_group = (참가여부, 점수)가 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리.
+        prev_key: tuple[bool, int | None] | None = None
         group = -1
         for pos, i in enumerate(order):
             entry, m = pairs[i]
-            key = (base[m.pk], sos[m.pk])
+            played = entry.overall.plays > 0
+            key = (played, score[m.pk] if played else None)
             if key != prev_key:
                 group += 1
                 prev_key = key
@@ -592,7 +607,8 @@ class MatchService:
             entry.superior_count = s
             entry.equal_count = e
             entry.inferior_count = inf
-            entry.person_score = s - inf  # 우열점수(우세-열세)
+            entry.person_score = s - inf  # 우열(우세-열세) — 상세용
+            entry.rank_score = score[m.pk]  # 카드에 보여줄 총점(경기마다 가중 합산)
 
     async def get_main_race(
         self,
