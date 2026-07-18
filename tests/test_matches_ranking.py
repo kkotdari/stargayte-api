@@ -53,175 +53,114 @@ async def _stats(client, headers) -> dict:
 TODAY = date.today().isoformat()
 
 
-async def test_rank_order_puts_head_to_head_winner_first(client):
-    """승자승이 1순위다 — 승률도, 승점도 보기 전에 "그 둘이 직접 붙었을 때 누가 이겼나"부터 본다.
-    p1은 1전 1승(승점 +1), p2는 3전 2승 1패(승점 +1)로 승점이 같지만, 둘의 맞대결에서 p1이 이겼다."""
+async def test_rank_head_to_head_no_longer_absolute(client):
+    """승자승 절대우선은 폐기됐다(요청) — 더 많은 사람을 이긴 쪽이 위다. p1은 p2를 직접
+    이겼지만 딱 그 한 명(기본점수 3), p2는 p3·p4를 이기고 p1에게만 져서(우세2·열세1 →
+    3+3+1=7) 점수가 더 높아 p1보다 위로 온다."""
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2
     await _match(client, headers, ["player02"], ["player03"], "team1", TODAY)  # p2 > p3
     await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4
 
     by_id = await _stats(client, headers)
-    # 승률만 보면 p1(100%)이 p2(66.7%)보다 위지만, 그건 근거가 아니다 — 맞대결이 근거다.
-    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
-    assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
+    assert by_id["player02"]["sortOrder"] < by_id["player01"]["sortOrder"]
+    assert by_id["player02"]["tieGroup"] < by_id["player01"]["tieGroup"]
 
 
-async def test_rank_order_falls_back_to_points_when_no_common_opponent(client):
-    """맞대결이 없으면 사람단위 합산점수로 가른다. p1은 p3 한 명에게만 우세(2승, 점수 +1),
-    p2는 p4에게 우세·p5에게 열세(점수 0)라 p1이 위다 — 경기 수·점수차가 아니라 '몇 명에게
-    우세/열세인지'로 갈린다."""
-    headers = await _signup_many(client, 5)
-    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
-    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3 (승점 +2)
-    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4
-    await _match(client, headers, ["player05"], ["player02"], "team1", TODAY)  # p5 > p2 (p2 승점 0)
+async def test_rank_loss_beats_no_show_and_lists_all_members(client):
+    """져도 참가점수(기본점수 1)를 받아 '아예 안 뛴 사람(0점)'보다 위다(요청). 그리고 0경기
+    회원도 모두 목록에 나온다(sortOrder가 null이 아님) — 0점이라 맨 아래 공동."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 이김, p2 짐
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
-    assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
+    # 0경기 p3·p4도 순위가 매겨진다(예전엔 null).
+    assert by_id["player03"]["sortOrder"] is not None
+    assert by_id["player04"]["sortOrder"] is not None
+    # 진 p2(기본점수 1)가 아예 안 뛴 p3·p4(0점)보다 위.
+    assert by_id["player02"]["tieGroup"] < by_id["player03"]["tieGroup"]
+    # 안 뛴 둘은 맨 아래 공동.
+    assert by_id["player03"]["tieGroup"] == by_id["player04"]["tieGroup"]
 
 
-async def test_rank_order_ties_when_points_also_equal(client):
-    """맞대결·공통상대가 없고 승점(승-패)까지 같으면 진짜 동급이다. p1(1승1패, 승점 0)과
-    p2(1승1패, 승점 0)는 겹치는 상대가 전혀 없다."""
+async def test_rank_more_participation_wins_even_all_losses(client):
+    """참가 자체가 점수다 — 더 많은 사람과 붙으면(다 지더라도) 위로 간다. p1은 세 명에게 다
+    졌지만(기본점수 3), p2는 한 명에게만 져서(1) p1이 위다."""
     headers = await _signup_many(client, 6)
-    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
-    await _match(client, headers, ["player04"], ["player01"], "team1", TODAY)  # p4 > p1 (p1 승점 0)
-    await _match(client, headers, ["player02"], ["player05"], "team1", TODAY)  # p2 > p5
-    await _match(client, headers, ["player06"], ["player02"], "team1", TODAY)  # p6 > p2 (p2 승점 0)
+    for opp in ("player03", "player04", "player05"):
+        await _match(client, headers, [opp], ["player01"], "team1", TODAY)  # p1이 셋에게 다 짐
+    await _match(client, headers, ["player06"], ["player02"], "team1", TODAY)  # p2가 한 명에게 짐
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
-
-
-async def test_tied_players_ordered_by_points_then_nickname(client):
-    """동위(같은 순위)끼리는 순위를 못 가르지만, 나열 순서는 승점(승-패, 높은 순) → 닉네임
-    순으로 정한다(요청). p1(p3에게 3승 0패, 승점 +3)과 p2(p4에게 1승 0패, 승점 +1)는 각자
-    다른 한 명에게만 우세라 사람점수가 +1로 같아 동위지만, 승점이 높은 p1이 앞선다."""
-    headers = await _signup_many(client, 4)
-    for _ in range(3):
-        await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 3승 0패 (+3)
-    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 1승 0패 (+1)
-
-    by_id = await _stats(client, headers)
-    # 둘은 동위(같은 tieGroup).
-    assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
-    # 승점 높은 p1(+3)이 p2(+1)보다 앞.
-    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
-
-
-async def test_isolated_single_win_players_tie_by_person_score(client):
-    """사람단위 합산점수 — "팍규만 여러 번 이긴 사람(타센)"이라고 많이 이겨서 위로 가지
-    않는다. p1(타센)은 p2(팍규)를 3승 1패로 이겼지만 사람 수로는 "한 명에게 우세"라 +1,
-    p3도 p4를 이겨 +1 → 둘은 동률(같은 tieGroup)이다. 예전엔 경기 승점(+2 vs +1)으로
-    p1을 위에 뒀지만, 이제 경기 수·점수차를 무시하고 '몇 명에게 우세/열세인지'만 본다.
-    단, 승자승은 절대 우선이라 p1은 자기가 이긴 p2보다는 무조건 위다."""
-    headers = await _signup_many(client, 4)
-    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2
-    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2
-    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)  # p1 > p2 (3승)
-    await _match(client, headers, ["player02"], ["player01"], "team1", TODAY)  # p2 1승 (p1 3-1)
-    await _match(client, headers, ["player03"], ["player04"], "team1", TODAY)  # p3 > p4
-
-    by_id = await _stats(client, headers)
-    # p1(+1: p2 한 명에게 우세)과 p3(+1: p4 한 명에게 우세)은 동률.
-    assert by_id["player01"]["tieGroup"] == by_id["player03"]["tieGroup"]
-    # 승자승은 절대 우선 — p1은 자기가 이긴 p2보다 무조건 위.
     assert by_id["player01"]["tieGroup"] < by_id["player02"]["tieGroup"]
 
 
-async def test_rank_order_respects_head_to_head_chain(client):
-    """승자승은 체인(추이)으로도 이어진다 — p1이 p3를 이기고 p3가 p2를 이기면, p1과 p2가
-    직접 안 붙었어도 p1이 p2보다 위다(간접비교라는 별도 기준이 아니라, 승자승 그래프의
-    추이 폐포로 자연히 이어진다). p1/p2는 각각 1승 1패지만 이 체인 때문에 p1이 위."""
+async def test_rank_tie_broken_by_opponent_strength(client):
+    """기본점수가 같으면 '누구와 붙었나'(SoS: 상대들의 기본점수 합)로 가른다 — 강한 상대와
+    붙은 쪽이 위. p1·p2 둘 다 한 명을 이겨 기본점수 3으로 같지만, p1이 이긴 p3는 남들도
+    이겨 강하고(점수 큼) p2가 이긴 p4는 약해서(작음) p1이 위다."""
     headers = await _signup_many(client, 6)
     await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
-    await _match(client, headers, ["player04"], ["player01"], "team1", TODAY)  # p4 > p1
-    await _match(client, headers, ["player03"], ["player02"], "team1", TODAY)  # p3 > p2
-    await _match(client, headers, ["player02"], ["player05"], "team1", TODAY)  # p2 > p5
+    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4
+    await _match(client, headers, ["player03"], ["player05"], "team1", TODAY)  # p3도 강함
+    await _match(client, headers, ["player03"], ["player06"], "team1", TODAY)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["overall"]["wins"] == by_id["player02"]["overall"]["wins"] == 1
-    assert by_id["player01"]["overall"]["losses"] == by_id["player02"]["overall"]["losses"] == 1
-
+    # p1·p2 둘 다 한 명에게만 우세(기본점수 동일).
+    assert by_id["player01"]["superiorCount"] == by_id["player02"]["superiorCount"] == 1
+    # 강한 상대(p3)를 이긴 p1이 SoS로 위.
     assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
-    assert by_id["player01"]["tieGroup"] != by_id["player02"]["tieGroup"]
+    assert by_id["player01"]["tieGroup"] < by_id["player02"]["tieGroup"]
 
 
-async def test_rank_order_marks_full_ties_as_same_tie_group(client):
-    """모든 기준(맞대결 → 공통상대 → 승수)이 같으면 공동순위 — 셋이 물고 물리는
-    순환(p1>p2>p3>p1)이라 승점도 전원 0, 공통상대도 없고 승수도 1로 같다.
-
-    순환에서는 "이겼는데 아래"인 쌍이 반드시 하나 생긴다(원리적으로 순서를 정할 수 없다) —
-    그래도 정렬은 끝나야 하고, 같은 입력이면 매번 같은 결과가 나와야 한다."""
-    headers = await _signup_many(client, 3)
-    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
-    await _match(client, headers, ["player02"], ["player03"], "team1", TODAY)
-    await _match(client, headers, ["player03"], ["player01"], "team1", TODAY)
+async def test_rank_full_tie_same_group_ordered_by_nickname(client):
+    """기본점수도 SoS도 같으면 진짜 동률(같은 tieGroup) — 나열만 닉네임 순으로 가른다.
+    p1·p2가 각각 대칭적인 약체 한 명을 이긴 경우."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)
+    await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)
 
     by_id = await _stats(client, headers)
-    orders = [by_id[f"player0{i}"]["sortOrder"] for i in (1, 2, 3)]
-    assert sorted(orders) == [0, 1, 2]  # 순서 자체는 항상 결정된다
-
-    # 두 번 조회해도 같은 결과 — 순환이어도 매 요청 흔들리지 않는다.
-    again = await _stats(client, headers)
-    assert [again[f"player0{i}"]["sortOrder"] for i in (1, 2, 3)] == orders
+    assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
+    assert by_id["player03"]["tieGroup"] == by_id["player04"]["tieGroup"]
+    # 동률 안에서는 닉네임 순(Tag01 < Tag02) → p1이 앞.
+    assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
 
 
-async def test_rank_order_isolated_islands_by_person_score(client):
-    """서로 안 붙은 '섬'이 여러 개일 때 — 사람단위 합산점수(우세-열세)로 줄세우고, 승자승은
-    절대 유지한다. 실제 지적 시나리오를 재현한다:
-      섬A: p1(미친)이 p6·p7·p8을 각각 3승 1패 → p1 우세 3명(+3), p6/p7/p8 각 열세 1명(-1)
-      섬B: p3(조조) 1-1 p4(군범), p3가 p5(브래드) 1승 → p3 +1, p4 0, p5 -1
-      섬C: p2(타센) 3승 1패 p9(팍규) → p2 +1, p9 -1
-    기대 순위(tieGroup): p1 단독 1위 → (p3=p2) → p4 → (p6=p7=p8=p5=p9) 공동 꼴찌.
-    핵심: 타센(p2)이 팍규만 이겨 단독 상위가 아니라 조조와 동률이고, 브래드(p5)는 아무도
-    못 이겨 바닥 무리와 동급(예전 승점 방식처럼 위로 뜨지 않는다)."""
+async def test_rank_isolated_islands_by_score(client):
+    """서로 안 붙은 '섬'이 여럿이어도 기본점수(참가+우열)로 한 줄로 세우고, 동점은 SoS로 가른다.
+      섬A: 미친(p1)이 태섭(p6)·곰세(p7)·크리스(p8)를 각각 3승 1패 → 우세3 (기본점수 9)
+      섬B: 조조(p3) 1-1 군범(p4), 조조 1승 브래드(p5) → 조조 우세1·동등1(5) / 군범 동등1(2) / 브래드 열세1(1)
+      섬C: 타센(p2) 3승 1패 팍규(p9) → 타센 우세1(3) / 팍규 열세1(1)
+    기대: 미친(9) · 조조(5) · 타센(3) · 군범(2) · [태섭=곰세=크리스(1, SoS9)] · 브래드(1, SoS5) · 팍규(1, SoS3).
+    핵심: 조조가 두 명 상대(우세1+동등1)라 타센(한 명)보다 위, 태섭들은 강한 미친에게 져서
+    브래드·팍규(약체에게 짐)보다 위."""
     headers = await _signup_many(client, 9)
 
-    # 섬A — p1이 p6/p7/p8을 각각 3승 1패.
     for opp in ("player06", "player07", "player08"):
         for _ in range(3):
             await _match(client, headers, ["player01"], [opp], "team1", TODAY)
         await _match(client, headers, [opp], ["player01"], "team1", TODAY)
-    # 섬B — 조조(p3) 1-1 군범(p4), 조조 1승 브래드(p5).
     await _match(client, headers, ["player03"], ["player04"], "team1", TODAY)
     await _match(client, headers, ["player04"], ["player03"], "team1", TODAY)
     await _match(client, headers, ["player03"], ["player05"], "team1", TODAY)
-    # 섬C — 타센(p2) 3승 1패 팍규(p9).
     for _ in range(3):
         await _match(client, headers, ["player02"], ["player09"], "team1", TODAY)
     await _match(client, headers, ["player09"], ["player02"], "team1", TODAY)
 
     by_id = await _stats(client, headers)
-    # 우세/동등/열세 인원 내역(카드 표시용).
+    # 우세/동등/열세 내역(카드용) + 우열점수.
     assert (by_id["player01"]["superiorCount"], by_id["player01"]["equalCount"], by_id["player01"]["inferiorCount"]) == (3, 0, 0)
-    assert (by_id["player03"]["superiorCount"], by_id["player03"]["equalCount"], by_id["player03"]["inferiorCount"]) == (1, 1, 0)  # 조조: 브래드 우세, 군범 동등
-    assert (by_id["player04"]["superiorCount"], by_id["player04"]["equalCount"], by_id["player04"]["inferiorCount"]) == (0, 1, 0)  # 군범: 조조와 동등
-    assert (by_id["player05"]["superiorCount"], by_id["player05"]["equalCount"], by_id["player05"]["inferiorCount"]) == (0, 0, 1)  # 브래드: 조조에 열세
+    assert (by_id["player03"]["superiorCount"], by_id["player03"]["equalCount"], by_id["player03"]["inferiorCount"]) == (1, 1, 0)
     assert by_id["player01"]["personScore"] == 3
 
     g = {mid: m["tieGroup"] for mid, m in by_id.items()}
-    # p1 단독 최상위.
-    assert g["player01"] < g["player03"]
-    # 조조(p3)와 타센(p2)은 동률(둘 다 한 명에게만 우세).
-    assert g["player03"] == g["player02"]
-    # 군범(p4)은 그 아래.
-    assert g["player03"] < g["player04"] < g["player06"]
-    # 바닥 5명 공동 — 태섭·곰세·크리스(섬A 패자), 브래드(섬B 바닥), 팍규(섬C 패자).
-    assert g["player06"] == g["player07"] == g["player08"] == g["player05"] == g["player09"]
-    # 승자승 절대 유지 — 미친>태섭, 조조>브래드, 타센>팍규.
-    assert g["player01"] < g["player06"]
-    assert g["player03"] < g["player05"]
-    assert g["player02"] < g["player09"]
-
-
-async def test_rank_order_is_none_for_members_without_matches(client):
-    headers = await _signup_many(client, 2)
-    by_id = await _stats(client, headers)
-    assert by_id["player01"]["sortOrder"] is None
-    assert by_id["player01"]["tieGroup"] is None
+    # 기본점수 순: 미친 > 조조 > 타센 > 군범 (각자 다른 순위).
+    assert g["player01"] < g["player03"] < g["player02"] < g["player04"]
+    assert g["player04"] < g["player06"]
+    # 기본점수 1로 같은 다섯 명 — SoS(누구에게 졌나)로 갈린다.
+    assert g["player06"] == g["player07"] == g["player08"]   # 다 미친에게 짐(SoS 최고)
+    assert g["player06"] < g["player05"] < g["player09"]     # 미친에게 짐 > 조조에게 짐 > 타센에게 짐
 
 
 async def test_team_ranking_aggregates_actual_team_lineups(client):

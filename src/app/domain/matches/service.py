@@ -509,43 +509,26 @@ class MatchService:
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
-        승률도, 경기 승점도, 간접비교도 기준이 아니다. 둘의 우열은 다음 두 단계로만 가른다.
+        승자승 절대우선은 폐기했다(요청). 이제 순위는 '사람 단위 점수'로만 가른다:
 
-          ① 승자승 — 그 둘이 직접 붙은 전적. 이긴 쪽이 무조건 위다(1전 1승도 100전 99승을
-             이긴다). 재미요소라 이 원칙은 절대 유지한다.
-          ② 사람단위 합산점수 — 경기 수·점수차는 무시하고, 붙어본 상대 한 명 한 명에 대해
-             직접 전적이 우세면 +1 / 동등(무 포함)이면 0 / 열세면 -1을 매겨 합산한다(요청:
-             "몇 명에게 우세·동등·열세인지를 승점처럼 합산"). 맞대결이 없어 ①로 못 가를 때
-             이 점수로 곧장 비교한다.
+          기본점수 = 붙어본 상대 한 명 한 명에 대해 이기면 3 / 비기면 2 / 지면 1점을 받아 합산.
+            = (참가점수: 상대 한 명당 2점) + (우열점수: 우세 수 - 열세 수).
+            져도 1점은 받으므로 '해서 진 사람'이 '아예 안 뛴 사람(0점)'보다 항상 위다(요청).
+          동점이면 → SoS(상대 강함 합: 붙어본 상대들의 기본점수 합)가 큰 쪽이 위 — "우열세가
+            같아도 누구와 붙었느냐"를 반영한다(강한 상대와 붙은 게 값지다).
+          그래도 같으면 닉네임 → 로그인 아이디 순(같은 입력이면 항상 같은 결과).
 
-        ①② 모두 같으면 진짜 동급(동률로 표시)이다. 예전엔 ②가 간접비교 → 경기 승점이었는데,
-        "많은 경기·큰 점수차"에 휘둘리지 않게 사람 수 기반 합산으로 바꿨다(팍규만 여러 번
-        이겨도 사람 수로는 +1이라 한 명 farming이 부풀지 않는다).
-
-        ①②는 상대가 누구냐에 따라 값이 달라지는 쌍(pair) 비교라 회원별 점수 하나로 미리 뽑을
-        수 없다 — 그래서 우열(a가 b보다 위인가)을 간선으로 하는 방향그래프로 순위를 매긴다.
-        "A>B>C>A"처럼 물고 물리는 순환은 순서를 정할 수 없으니 강결합성분(SCC)으로 한 덩어리
-        동급 처리하고, 성분끼리의 축약 그래프(항상 비순환)에서 "위에서부터 가장 긴 경로 깊이"를
-        순위(tie_group)로 쓴다. 같은 깊이면 서로 못 가르는 동급이고, sort_order는 (깊이, 로그인
-        아이디)로 고정해 같은 입력이면 항상 같은 결과가 나온다.
+        0경기 회원도 모두 목록에 넣는다(요청) — 점수 0이라 맨 아래에 공동으로 모인다.
 
         여기서만 정렬을 하고 entries 자체의 순서(=회원 목록 순서)는 바꾸지 않는다 — 이 응답은
         랭킹 말고 전적통계/상세 모달도 함께 쓰기 때문이다."""
-        rankable = [(e, m) for e, m in zip(entries, members) if e.overall.plays > 0]
-        if len(rankable) < 2:
-            if rankable:
-                rankable[0][0].sort_order = 0
-                rankable[0][0].tie_group = 0
-                # 랭킹 대상이 한 명뿐이면 비교할 상대가 없으니 점수·인원 모두 0.
-                rankable[0][0].person_score = 0
-                rankable[0][0].superior_count = 0
-                rankable[0][0].equal_count = 0
-                rankable[0][0].inferior_count = 0
+        pairs = list(zip(entries, members))  # 0경기 포함 전원
+        if not pairs:
             return
 
-        # 승자승이 1순위라 맞대결 전적은 항상 필요하다(예전엔 승률 동률일 때만 조회했다).
+        # 사람 단위 우세/동등/열세 판정용 맞대결 전적(전원 대상).
         rows = await self._repo.head_to_head_rows(
-            member_pks=[m.pk for _, m in rankable],
+            member_pks=[m.pk for _, m in pairs],
             date_from=date_from,
             date_to=date_to,
             match_type=match_type,
@@ -556,10 +539,7 @@ class MatchService:
             h2h.setdefault(row.member_pk, {})[row.opponent_pk] = _Record(
                 plays=row.plays, wins=row.wins, draws=row.draws,
             )
-
-        # 두 사람의 우열은 ①승자승 → ②사람단위 합산점수(우세 +1 / 동등 0 / 열세 -1) 순으로만
-        # 가른다. 간접비교(공통상대)·경기 승점은 더 이상 쓰지 않는다.
-        pks = {m.pk for _, m in rankable}
+        pks = {m.pk for _, m in pairs}
 
         def _person_record(pk: int) -> tuple[int, int, int]:
             """붙어본 상대(랭킹 대상 회원)를 한 명씩 보고 우세/동등/열세 인원을 센다 — 경기
@@ -577,91 +557,42 @@ class MatchService:
                     eq += 1
             return sup, eq, inf
 
-        person = {m.pk: _person_record(m.pk) for _, m in rankable}
-        # 사람단위 점수 = 우세 수 - 열세 수(동등은 0). ①승자승 다음의 2순위 기준.
-        cope = {pk: sup - inf for pk, (sup, eq, inf) in person.items()}
+        person = {m.pk: _person_record(m.pk) for _, m in pairs}
+        # 기본점수 = 3·우세 + 2·동등 + 1·열세 (= 참가 2·상대수 + 우열(우세-열세)).
+        base = {pk: 3 * s + 2 * e + 1 * i for pk, (s, e, i) in person.items()}
 
-        def _is_above(a_member: Member, b_member: Member) -> bool:
-            """a가 b보다 '무조건 위'면 True — 둘 다 못 가르면(동급) False."""
-            # ① 승자승 — 맞대결에서 이긴 쪽이 무조건 위(절대 우선, 재미요소).
-            head = _points_against(h2h, a_member.pk, {b_member.pk})
-            if head != 0:
-                return head > 0
-            # ② 사람단위 합산점수가 높은 쪽. 같으면 동급(False).
-            return cope[a_member.pk] > cope[b_member.pk]
+        def _sos(pk: int) -> int:
+            """SoS — 붙어본 상대들의 기본점수 합(강한 상대와 붙었을수록 큼). 동점 깨기용."""
+            return sum(base[o] for o in h2h.get(pk, {}) if o in pks)
 
-        # ①② 우열을 간선으로 하는 방향그래프에서 순위를 매긴다. 우열이 안 서는 쌍은
-        # 간선이 없다(=동급 후보). "A>B>C>A"처럼 물고 물리는 순환은 순서를 정할 수 없으니
-        # 한 덩어리(강결합성분)로 묶어 통째로 동급 처리하고, 성분끼리의 축약 그래프(항상
-        # 비순환)에서 "위에서부터 가장 긴 경로 깊이(level)"를 순위로 쓴다 — 나를 이긴 성분이
-        # 하나도 없으면 level 0(최상위 공동순위)이다.
-        member_list = [m for _, m in rankable]
-        n = len(member_list)
-        above = [[i != j and _is_above(member_list[i], member_list[j]) for j in range(n)] for i in range(n)]
+        sos = {m.pk: _sos(m.pk) for _, m in pairs}
 
-        # 도달성(추이 폐포) — Floyd-Warshall.
-        reach = [row[:] for row in above]
-        for k in range(n):
-            rk = reach[k]
-            for i in range(n):
-                if reach[i][k]:
-                    ri = reach[i]
-                    for j in range(n):
-                        if rk[j]:
-                            ri[j] = True
-
-        # 강결합성분(SCC) — 서로 도달하면 같은 성분(순환).
-        comp = [-1] * n
-        comp_count = 0
-        for i in range(n):
-            if comp[i] != -1:
-                continue
-            comp[i] = comp_count
-            for j in range(i + 1, n):
-                if comp[j] == -1 and reach[i][j] and reach[j][i]:
-                    comp[j] = comp_count
-            comp_count += 1
-
-        # 성분 간 우열 + 레벨(가장 긴 경로 깊이). 축약 그래프는 비순환이라 재귀가 끝난다.
-        comp_above = [[False] * comp_count for _ in range(comp_count)]
-        for i in range(n):
-            for j in range(n):
-                if above[i][j] and comp[i] != comp[j]:
-                    comp_above[comp[i]][comp[j]] = True
-        level: list[int | None] = [None] * comp_count
-
-        def _level(c: int) -> int:
-            cached = level[c]
-            if cached is not None:
-                return cached
-            preds = [a for a in range(comp_count) if comp_above[a][c]]
-            resolved = 0 if not preds else 1 + max(_level(a) for a in preds)
-            level[c] = resolved
-            return resolved
-
-        # tie_group = 소속 성분의 level(같으면 서로 못 가르는 동급, 화면 순위는 공동). 동위끼리는
-        # 순위를 못 가르지만 나열 순서는 정해야 하니, 그 안에서 승점(승-패, 높은 순) → 닉네임
-        # 순으로 세운다(요청). 마지막에 로그인 아이디까지 넣어 완전 동률·동명이인도 항상 같은 결과.
+        # 기본점수(높은 순) → SoS(높은 순) → 닉네임 → 로그인 아이디 순으로 정렬한다.
         order = sorted(
-            range(n),
+            range(len(pairs)),
             key=lambda i: (
-                _level(comp[i]),
-                -(rankable[i][0].overall.wins - rankable[i][0].overall.losses),
-                member_list[i].nickname,
-                member_list[i].id,
+                -base[pairs[i][1].pk],
+                -sos[pairs[i][1].pk],
+                pairs[i][1].nickname,
+                pairs[i][1].id,
             ),
         )
+        # tie_group = (기본점수, SoS)가 같으면 동률(화면 공동순위). 그 안 나열만 닉네임으로 가른다.
+        prev_key: tuple[int, int] | None = None
+        group = -1
         for pos, i in enumerate(order):
-            entry = rankable[i][0]
+            entry, m = pairs[i]
+            key = (base[m.pk], sos[m.pk])
+            if key != prev_key:
+                group += 1
+                prev_key = key
             entry.sort_order = pos
-            entry.tie_group = _level(comp[i])
-            # 카드에 보여줄 사람단위 점수(우세-열세)와 우세/동등/열세 인원도 함께 실어 보낸다.
-            pk = member_list[i].pk
-            entry.person_score = cope[pk]
-            sup, eq, inf = person[pk]
-            entry.superior_count = sup
-            entry.equal_count = eq
+            entry.tie_group = group
+            s, e, inf = person[m.pk]
+            entry.superior_count = s
+            entry.equal_count = e
             entry.inferior_count = inf
+            entry.person_score = s - inf  # 우열점수(우세-열세)
 
     async def get_main_race(
         self,
