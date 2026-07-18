@@ -312,6 +312,9 @@ class ReplayNameMappingEntry(BaseModel):
     # 이 이름이 마지막으로 등장한 경기 날짜 — 미해결 항목을 최근 순으로 보여주는 데 쓴다.
     # 단건 저장 응답(set)에서는 다시 조회하지 않아 항상 None.
     last_seen: date | None = Field(default=None, alias="lastSeen")
+    # 이 게임아이디로 등록된 경기가 하나라도 있는지 — 있으면 휴지통(완전 삭제)이 막힌다
+    # (화면에서 경고를 띄우고 삭제 버튼을 못 누르게 한다). 단건 저장 응답에서는 False.
+    has_matches: bool = Field(default=False, alias="hasMatches")
 
 
 class ReplayNameMappingListResponse(BaseModel):

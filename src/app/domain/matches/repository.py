@@ -535,6 +535,14 @@ class MatchRepository:
         stmt = select(exists().where(MatchParticipant.player_name == raw_name))
         return bool((await self._session.execute(stmt)).scalar())
 
+    async def all_participant_player_names(self) -> set[str]:
+        # 유저 매핑 목록에 "이 이름으로 등록된 경기가 있는지"(has_matches)를 한 번에 채우기
+        # 위한 조회 — 회원 연결 여부와 무관하게 경기 참가 기록에 실제로 등장한 모든
+        # player_name을 모은다(회원으로 소급 연결된 이름은 placeholder 조회에서 빠지므로
+        # last_seen만으로는 판단할 수 없다).
+        stmt = select(MatchParticipant.player_name).distinct()
+        return set((await self._session.execute(stmt)).scalars())
+
     async def list_placeholder_raw_names_with_last_seen(self) -> list[tuple[str, date]]:
         # "회원으로 연결되지 않았다"인지는 이 player_name으로 매칭되는 kind='member'
         # replay_aliases 행이 있는지로 판단한다(더 이상 member_pk 컬럼이 없다) — 컴퓨터/

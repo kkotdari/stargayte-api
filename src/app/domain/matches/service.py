@@ -811,11 +811,17 @@ class MatchService:
         aliases = await self._repo.list_all_replay_aliases()
         placeholder_rows = await self._repo.list_placeholder_raw_names_with_last_seen()
         last_seen_by_raw_name = dict(placeholder_rows)
+        # 이 이름으로 등록된 경기가 하나라도 있는지 — 삭제(휴지통) 가능 여부와 같은 기준이다.
+        # 화면에서 삭제를 막고 경고를 띄우는 데 쓴다(요청: "등록된 경기기록이 있을 땐 경고
+        # 보여주고 삭제 안 되게"). member로 소급 연결된 이름은 placeholder에서 빠지므로
+        # last_seen이 아니라 이 집합으로 판단해야 정확하다.
+        names_with_matches = await self._repo.all_participant_player_names()
 
         entries: dict[str, dict] = {
             a.raw_name: {
                 "raw_name": a.raw_name, "kind": a.kind, "member": a.member,
                 "last_seen": last_seen_by_raw_name.get(a.raw_name),
+                "has_matches": a.raw_name in names_with_matches,
             }
             for a in aliases
             if a.raw_name not in reserved_raw_names
@@ -825,7 +831,10 @@ class MatchService:
                 continue
             entries.setdefault(
                 raw_name,
-                {"raw_name": raw_name, "kind": "unresolved", "member": None, "last_seen": last_seen},
+                {
+                    "raw_name": raw_name, "kind": "unresolved", "member": None,
+                    "last_seen": last_seen, "has_matches": raw_name in names_with_matches,
+                },
             )
 
         # 미해결(아직 아무 것도 연결 안 된) 항목을 맨 위에, 그 안에서는 최근에 나온 순으로 —

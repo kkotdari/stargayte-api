@@ -228,6 +228,7 @@ def _to_mapping_entry(row: dict) -> ReplayNameMappingEntry:
             id=member.id, nickname=member.nickname, battletag=member.battletag, avatar=member.avatar_url,
         ) if member is not None else None,
         last_seen=row.get("last_seen"),
+        has_matches=row.get("has_matches", False),
     )
 
 
