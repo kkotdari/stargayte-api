@@ -567,12 +567,13 @@ class MatchService:
         weakness = {pk: 1 + max(0, -n) for pk, n in net.items()}
 
         # 실제 랭킹 점수는 '경기 단위'로 합산한다 — 개인전(1:1)은 예전 그대로, 이기면 +강함(상대)
-        # 지면 −약함(상대) 비기면 0. 팀전은 여기에 '팀 강함 비율' f = (진 팀 강함 합) ÷ (이긴 팀
-        # 강함 합)을 곱한다(요청): 강한 팀으로 약팀을 이기면 f가 작아 조금만 얻고, 약한 팀으로
-        # 강팀을 이기면(이변) f가 커서 크게 얻는다. 승자(상대÷우리)와 패자(우리÷상대) 배율이
-        # 결국 둘 다 (진 팀÷이긴 팀)로 같아, 같은 f를 이긴 쪽·진 쪽에 그대로 곱한다 → 강한 팀이
-        # 지면 크게 잃고 약한 팀이 지면 조금만 잃는다. 팀 강함 = 그 팀 라인업(랭킹 대상 회원)의
-        # 강함 합. 비율을 곱하면 소수가 되므로 최종 점수는 소수 첫째 자리에서 반올림한다.
+        # 지면 −약함(상대) 비기면 0. 팀전은 여기에 '팀 강함 비율' f = (진 팀 강함 합) ÷ (양 팀 강함
+        # 합)을 곱한다(요청): 0~1 범위라 강한 팀으로 약팀을 이기면 f가 0에 가까워 조금만 얻고,
+        # 대등하면 0.5, 약한 팀으로 강팀을 이기면(이변) f가 1에 가까워 최대 원점수까지 얻는다.
+        # 승자(상대÷합)와 패자(우리÷합) 배율이 결국 둘 다 (진 팀÷양 팀 합)으로 같아, 같은 f를
+        # 이긴 쪽·진 쪽에 그대로 곱한다 → 강한 팀이 지면 크게 잃고 약한 팀이 지면 조금만 잃는다.
+        # 팀 강함 = 그 팀 라인업(랭킹 대상 회원)의 강함 합. 비율을 곱하면 소수가 되므로 최종
+        # 점수는 소수 첫째 자리에서 반올림한다.
         scoring_rows = await self._repo.rank_scoring_rows(
             member_pks=[m.pk for _, m in pairs],
             date_from=date_from,
@@ -607,7 +608,8 @@ class MatchService:
             winner_weak = sum(weakness[pk] for pk, _ in winners)
             # 어느 한쪽이라도 랭킹 대상 2명 이상이면 팀전으로 보고 비율을 곱한다. 개인전은 f=1.
             is_team = len(winners) >= TEAM_MIN_SIZE or len(losers) >= TEAM_MIN_SIZE
-            factor = (loser_str / winner_str) if (is_team and winner_str > 0) else 1.0
+            total_str = winner_str + loser_str
+            factor = (loser_str / total_str) if (is_team and total_str > 0) else 1.0
             # 이긴 사람: 상대팀 전원의 강함 합(=loser_str) × f. 진 사람: 이긴팀 전원의 약함
             # 합(=winner_weak) × f 만큼 잃는다. 종족 필터가 있으면 '그 경기에 그 종족으로 뛴'
             # 사람 점수만 센다(head_to_head의 self-종족 필터와 같은 의미).
