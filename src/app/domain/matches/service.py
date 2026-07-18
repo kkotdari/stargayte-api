@@ -566,19 +566,62 @@ class MatchService:
         strength = {pk: 1 + max(0, n) for pk, n in net.items()}
         weakness = {pk: 1 + max(0, -n) for pk, n in net.items()}
 
-        def _score(pk: int) -> int:
-            """경기마다(per game) 합산 — 이기면 +강함(상대), 지면 -약함(상대), 비기면 0(요청).
-            같은 사람을 여러 번 이기면 그만큼 누적된다(경기 수를 본다). 점수는 음수도 가능."""
-            total = 0
-            for opp_pk, rec in h2h.get(pk, {}).items():
-                if opp_pk not in pks:
-                    continue
-                losses = rec.plays - rec.wins - rec.draws
-                total += rec.wins * strength[opp_pk]
-                total += losses * (-1) * weakness[opp_pk]
-            return total
+        # 실제 랭킹 점수는 '경기 단위'로 합산한다 — 개인전(1:1)은 예전 그대로, 이기면 +강함(상대)
+        # 지면 −약함(상대) 비기면 0. 팀전은 여기에 '팀 강함 비율' f = (진 팀 강함 합) ÷ (이긴 팀
+        # 강함 합)을 곱한다(요청): 강한 팀으로 약팀을 이기면 f가 작아 조금만 얻고, 약한 팀으로
+        # 강팀을 이기면(이변) f가 커서 크게 얻는다. 승자(상대÷우리)와 패자(우리÷상대) 배율이
+        # 결국 둘 다 (진 팀÷이긴 팀)로 같아, 같은 f를 이긴 쪽·진 쪽에 그대로 곱한다 → 강한 팀이
+        # 지면 크게 잃고 약한 팀이 지면 조금만 잃는다. 팀 강함 = 그 팀 라인업(랭킹 대상 회원)의
+        # 강함 합. 비율을 곱하면 소수가 되므로 최종 점수는 소수 첫째 자리에서 반올림한다.
+        scoring_rows = await self._repo.rank_scoring_rows(
+            member_pks=[m.pk for _, m in pairs],
+            date_from=date_from,
+            date_to=date_to,
+            match_type=match_type,
+        )
+        # match_id -> {team -> [(member_pk, 그 경기 종족)]}, match_id -> 이긴 팀(=result 값).
+        match_lineups: dict[int, dict[str, list[tuple[int, str]]]] = {}
+        match_winner: dict[int, str] = {}
+        for row in scoring_rows:
+            if row.member_pk not in pks:
+                continue
+            match_lineups.setdefault(row.match_id, {}).setdefault(row.team, []).append(
+                (row.member_pk, row.race)
+            )
+            match_winner[row.match_id] = row.result
 
-        score = {m.pk: _score(m.pk) for _, m in pairs}
+        race_active = race is not None and race != "all"
+        score: dict[int, float] = {m.pk: 0.0 for _, m in pairs}
+        for match_id, teams in match_lineups.items():
+            result = match_winner[match_id]
+            if result == "draw":
+                continue  # 비기면 0점.
+            loser_team = next((t for t in teams if t != result), None)
+            winners = teams.get(result, [])
+            losers = teams.get(loser_team, []) if loser_team is not None else []
+            if not winners or not losers:
+                continue  # 한쪽에 랭킹 대상 회원이 없으면 점수를 매길 수 없다.
+            # 팀 강함/약함 합은 라인업 전원(종족 필터와 무관) 기준 — 팀 자체의 세기다.
+            winner_str = sum(strength[pk] for pk, _ in winners)
+            loser_str = sum(strength[pk] for pk, _ in losers)
+            winner_weak = sum(weakness[pk] for pk, _ in winners)
+            # 어느 한쪽이라도 랭킹 대상 2명 이상이면 팀전으로 보고 비율을 곱한다. 개인전은 f=1.
+            is_team = len(winners) >= TEAM_MIN_SIZE or len(losers) >= TEAM_MIN_SIZE
+            factor = (loser_str / winner_str) if (is_team and winner_str > 0) else 1.0
+            # 이긴 사람: 상대팀 전원의 강함 합(=loser_str) × f. 진 사람: 이긴팀 전원의 약함
+            # 합(=winner_weak) × f 만큼 잃는다. 종족 필터가 있으면 '그 경기에 그 종족으로 뛴'
+            # 사람 점수만 센다(head_to_head의 self-종족 필터와 같은 의미).
+            for pk, p_race in winners:
+                if race_active and p_race != race:
+                    continue
+                score[pk] += loser_str * factor
+            for pk, p_race in losers:
+                if race_active and p_race != race:
+                    continue
+                score[pk] += -winner_weak * factor
+
+        # 팀 강함 비율 때문에 생긴 소수는 첫째 자리에서 반올림(요청) — 동률 판정도 이 값으로.
+        score = {pk: round(v, 1) for pk, v in score.items()}
 
         # 참가 우선 — 1경기라도 뛴 사람(plays>0)은 점수가 아무리 낮아도(음수여도) 0경기 회원보다
         # 무조건 위(요청). 그다음 점수(높은 순) → 닉네임 → 로그인 아이디.
@@ -595,7 +638,7 @@ class MatchService:
             ),
         )
         # tie_group = (참가여부, 점수)가 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리.
-        prev_key: tuple[bool, int | None] | None = None
+        prev_key: tuple[bool, float | None] | None = None
         group = -1
         for pos, i in enumerate(order):
             entry, m = pairs[i]
