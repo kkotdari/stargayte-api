@@ -55,8 +55,8 @@ TODAY = date.today().isoformat()
 
 
 async def test_rank_beating_strong_opponent_scores_more(client):
-    """센 상대를 이길수록 점수가 크다 — p1은 아무도 못 이긴 p3(강함 1)를 이겨 +2, p2는 둘을
-    이긴 강한 p4(강함 3)를 이겨 +6이라 p2가 위."""
+    """센 상대를 이길수록 점수가 크다 — 강함 = 1 + max(0, 순우열). p1은 순우열 -1인 p3(강함
+    1)를 이겨 +1, p2는 순우열 +1인 p4(강함 2)를 이겨 +2라 p2가 위."""
     headers = await _signup_many(client, 6)
     await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)  # p1 > p3
     await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > p4(강함)
@@ -64,8 +64,8 @@ async def test_rank_beating_strong_opponent_scores_more(client):
     await _match(client, headers, ["player04"], ["player06"], "team1", TODAY)
 
     by_id = await _stats(client, headers)
-    assert by_id["player02"]["rankScore"] == 6   # 1경기 × 2 × 강함3
-    assert by_id["player01"]["rankScore"] == 2   # 1경기 × 2 × 강함1
+    assert by_id["player02"]["rankScore"] == 2   # p4 강함 2(순우열 +1)
+    assert by_id["player01"]["rankScore"] == 1   # p3 강함 1(순우열 -1)
     assert by_id["player02"]["sortOrder"] < by_id["player01"]["sortOrder"]
 
 
@@ -79,20 +79,21 @@ async def test_rank_losing_to_weak_hurts_more(client):
     await _match(client, headers, ["player04"], ["player02"], "team1", TODAY)  # p4 > p2(센)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["rankScore"] == -3  # 1경기 × -1 × 약함3
-    assert by_id["player02"]["rankScore"] == -1  # 1경기 × -1 × 약함1
+    assert by_id["player01"]["rankScore"] == -2  # p3 약함 2(순우열 -1)
+    assert by_id["player02"]["rankScore"] == -1  # p4 약함 1(순우열 +1, 순 승자라 최소 -1)
     assert by_id["player02"]["sortOrder"] < by_id["player01"]["sortOrder"]
 
 
 async def test_rank_repeated_wins_accumulate_per_game(client):
-    """경기마다 합산이라 같은 사람을 여러 번 이기면 그만큼 누적된다 — p1이 p2를 3번 이겨 +6."""
+    """경기마다 합산이라 같은 사람을 여러 번 이기면 그만큼 누적된다 — p1이 p2(약함 1)를 3번
+    이겨 +3, p2는 p1(약함 1, 순 승자라 최소)에게 3번 져 -3."""
     headers = await _signup_many(client, 2)
     for _ in range(3):
         await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["rankScore"] == 6   # 3경기 × 2 × 강함1
-    assert by_id["player02"]["rankScore"] == -3  # 3경기 × -1 × 약함1
+    assert by_id["player01"]["rankScore"] == 3   # 3경기 × 강함1(p2 순우열 -1)
+    assert by_id["player02"]["rankScore"] == -3  # 3경기 × -약함1(p1 순우열 +1)
 
 
 async def test_rank_player_beats_no_show_even_when_negative(client):
@@ -110,13 +111,24 @@ async def test_rank_player_beats_no_show_even_when_negative(client):
 
 async def test_rank_ties_ordered_by_nickname(client):
     """점수가 같으면 동률(같은 tieGroup) — 나열만 닉네임 순. p1·p2가 각각 대칭적인 약체
-    한 명을 이겨 점수가 2로 같다."""
+    한 명(강함 1)을 이겨 점수가 1로 같다."""
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)
     await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["rankScore"] == by_id["player02"]["rankScore"] == 2
+    assert by_id["player01"]["rankScore"] == by_id["player02"]["rankScore"] == 1
+    assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
+
+
+async def test_rank_draw_scores_zero(client):
+    """비기면 0점(요청) — p1·p2가 한 번 비기면 둘 다 순우열 0, 점수 0으로 동률."""
+    headers = await _signup_many(client, 2)
+    await _match(client, headers, ["player01"], ["player02"], "draw", TODAY)
+
+    by_id = await _stats(client, headers)
+    assert by_id["player01"]["rankScore"] == 0
+    assert by_id["player02"]["rankScore"] == 0
     assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
     # 동률 안에서는 닉네임 순(Tag01 < Tag02) → p1이 앞.
     assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
@@ -130,9 +142,9 @@ async def test_team_match_ranks_as_individual_cross_product(client):
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
 
     team = await _stats(client, headers, match_type="0102")
-    assert team["player01"]["rankScore"] == 4    # p3·p4 각각 이김: 2×1 + 2×1
-    assert team["player02"]["rankScore"] == 4
-    assert team["player03"]["rankScore"] == -2   # p1·p2에게 각각 짐: -1×1 + -1×1
+    assert team["player01"]["rankScore"] == 2    # p3·p4(각 강함1) 각각 이김: 1 + 1
+    assert team["player02"]["rankScore"] == 2
+    assert team["player03"]["rankScore"] == -2   # p1·p2(각 약함1) 에게 각각 짐: -1 + -1
     assert team["player04"]["rankScore"] == -2
     # 승패 기록은 경기 단위(2:2 한 판이면 1승/1패), 우열 인원은 상대별.
     assert team["player01"]["overall"]["plays"] == 1
