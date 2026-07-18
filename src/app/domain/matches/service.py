@@ -11,8 +11,6 @@ from app.domain.matches.models import Match, MatchParticipant, MatchResult, Repl
 from app.domain.matches.repository import MatchRepository
 from app.domain.matches.schemas import (
     COMPUTER_ID_PREFIX,
-    MANUAL_COMPUTER_RAW_NAME,
-    MANUAL_UNREGISTERED_RAW_NAME,
     UNREGISTERED_ID_PREFIX,
     MatchAuthor,
     MatchOut,
@@ -258,9 +256,7 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
     # ReplayAlias.member까지 eager load 되어 있다). 회원이 아니면 실제로 저장된 고유
     # 아이디가 없으니 team 내 position으로 매 조회마다 안정적으로 재생성한다(같은 경기를
     # 다시 읽어도 동일한 값). 컴퓨터/비회원 중 어느 쪽인지는 alias.kind == "computer"면
-    # 컴퓨터로 취급한다. 수기등록 슬롯의 예약 player_name은 마이그레이션이 replay_aliases에
-    # 심어둔 행에 기대지 않고 여기서 직접 비교한다 — alias 조회 결과와 무관하게 항상
-    # 정확해야 하는 값이라(테스트 DB처럼 그 시드 데이터가 없는 환경도 포함). 분류가 없으면
+    # 컴퓨터로 취급한다. 분류가 없으면
     # 비회원으로 본다 — 컴퓨터는 등록 시점에 항상 kind="computer"로 기억되므로
     # (_remember_placeholder_raw_names), 조회가 안 되는 이름은 "아직 아무도 분류하지 않은
     # 사람"이라는 뜻이다. 예전엔 반대로 컴퓨터를 기본값으로 뒀는데, 그러면 비회원을
@@ -269,7 +265,7 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
     alias = alias_by_player_name.get(p.player_name)
     if alias is not None and alias.kind == "member":
         member_id = alias.member.id
-    elif p.player_name == MANUAL_COMPUTER_RAW_NAME or (alias is not None and alias.kind == "computer"):
+    elif alias is not None and alias.kind == "computer":
         member_id = f"{COMPUTER_ID_PREFIX}{p.position}"
     else:
         member_id = f"{UNREGISTERED_ID_PREFIX}{p.position}"
@@ -804,10 +800,7 @@ class MatchService:
         """유저 매핑 관리 화면 — 리플레이 원본 이름(rawName) 하나를 기준으로, replay_aliases
         (회원 별칭/컴퓨터·비회원 분류)와 아직 그 어느 쪽도 아닌 미해결(match_participants에만
         남아있는) 항목을 합쳐서 중복 없이 보여준다. raw_name이 replay_aliases 안에서 유일하므로
-        회원/분류가 겹칠 일은 원천적으로 없다. 수기등록 컴퓨터/비회원 전용 예약 raw_name
-        (MANUAL_COMPUTER_RAW_NAME/MANUAL_UNREGISTERED_RAW_NAME)은 실제 게임 아이디가
-        아니라 내부 구현용 시스템 값이라 이 화면에는 아예 보이지 않는다."""
-        reserved_raw_names = (MANUAL_COMPUTER_RAW_NAME, MANUAL_UNREGISTERED_RAW_NAME)
+        회원/분류가 겹칠 일은 원천적으로 없다."""
         aliases = await self._repo.list_all_replay_aliases()
         placeholder_rows = await self._repo.list_placeholder_raw_names_with_last_seen()
         last_seen_by_raw_name = dict(placeholder_rows)
@@ -824,11 +817,8 @@ class MatchService:
                 "has_matches": a.raw_name in names_with_matches,
             }
             for a in aliases
-            if a.raw_name not in reserved_raw_names
         }
         for raw_name, last_seen in placeholder_rows:
-            if raw_name in reserved_raw_names:
-                continue
             entries.setdefault(
                 raw_name,
                 {
@@ -853,8 +843,6 @@ class MatchService:
     async def set_replay_name_mapping(
         self, raw_name: str, kind: str, member_id: str | None, *, actor_pk: int
     ) -> dict:
-        if raw_name in (MANUAL_COMPUTER_RAW_NAME, MANUAL_UNREGISTERED_RAW_NAME):
-            raise ValidationError("이 이름은 수정할 수 없는 시스템 예약값입니다.")
         # 새 매핑을 걸기 전에, 이 raw_name에 걸려 있던 예전 매핑(분류/다른 회원의 별칭)은
         # 항상 먼저 지운다 — 한 raw_name은 항상 하나의 대상만 가리켜야 목록에서 중복 없이
         # 보인다.
@@ -893,8 +881,6 @@ class MatchService:
         kind="unresolved")와는 다르다 — 그쪽은 경기 기록이 남아있는 한 계속 목록에
         (미지정으로) 다시 나타나야 정상이고, 이쪽(삭제)은 그 경기 기록 자체가 없을 때만
         허용해 진짜로 없앨 수 있다."""
-        if raw_name in (MANUAL_COMPUTER_RAW_NAME, MANUAL_UNREGISTERED_RAW_NAME):
-            raise ValidationError("이 이름은 삭제할 수 없는 시스템 예약값입니다.")
         if await self._repo.raw_name_has_any_participants(raw_name):
             raise ValidationError("이 게임 아이디로 등록된 경기가 있어 삭제할 수 없어요 — 대신 미지정으로 되돌려 주세요.")
         await self._repo.delete_replay_alias(raw_name)
@@ -1069,26 +1055,15 @@ class MatchService:
             raise ForbiddenError("운영자만 삭제할 수 있습니다.")
 
     def _player_name(self, slot: MatchSlot, members_by_id: dict[str, Member]) -> str:
-        # 리플레이에서 파싱된 원본 게임 아이디, 또는 수기등록에서 프론트가 직접 고른
-        # 이름은 무슨 일이 있어도 그대로 보존한다 — 회원으로 매칭됐든, 비회원/컴퓨터로
-        # 남았든 상관없다(models.py의 MatchParticipant.player_name 참고). 예전엔 비회원/
-        # 컴퓨터면 이 값을 버리고 공용 예약값으로 덮어썼는데, 그러면 그 사람이 실제로
-        # 누구였는지가 영영 사라져서 나중에 유저 매핑 관리 화면에서 회원과 연결할 수조차
-        # 없었다(실제로 지적받은 문제).
+        # 리플레이에서 파싱된 원본 게임 아이디는 무슨 일이 있어도 그대로 보존한다 — 회원으로
+        # 매칭됐든, 비회원/컴퓨터로 남았든 상관없다(models.py의 MatchParticipant.player_name
+        # 참고). 예전엔 비회원/컴퓨터면 이 값을 버리고 공용 예약값으로 덮어썼는데, 그러면
+        # 그 사람이 실제로 누구였는지가 영영 사라져 나중에 회원과 연결할 수조차 없었다.
         if slot.player_name:
             return slot.player_name
-        if is_computer_slot(slot.member_id):
-            # 수기등록 컴퓨터 슬롯은 실제 게임 아이디가 없다 — 공용 예약값을 대신 넣는다
-            # (schemas.MANUAL_COMPUTER_RAW_NAME, 마이그레이션에서 이미 replay_aliases에
-            # kind="computer"로 심어둔 값).
-            return MANUAL_COMPUTER_RAW_NAME
-        if is_unregistered_slot(slot.member_id):
-            return MANUAL_UNREGISTERED_RAW_NAME
-        # 실제 회원 슬롯인데 이름을 안 보냈다(수기등록 화면이 아직 이름 선택 UI로
-        # 바뀌지 않은 경우) — player_name은 절대 비워둘 수 없으므로, 그 회원이 등록해둔
-        # 게임 아이디 중 가장 최근 것으로 대신한다(레거시 데이터 백필과 같은 전략,
-        # migrations의 player_name 백필 마이그레이션 참고). 등록된 별칭이 하나도 없으면
-        # (있을 수 없지만 방어적으로) 현재 배틀태그로 대신한다.
+        # 리플레이 등록은 모든 슬롯의 이름을 항상 채워 보내므로 여기 도달하면 회원 슬롯인데
+        # 이름만 빠진 경우다 — player_name은 절대 비워둘 수 없으므로, 그 회원이 등록해둔
+        # 게임 아이디 중 가장 최근 것으로 대신한다(등록된 별칭이 없으면 방어적으로 배틀태그).
         member = members_by_id[slot.member_id]
         if member.replay_aliases:
             return member.replay_aliases[-1].raw_name
@@ -1175,9 +1150,6 @@ class MatchService:
         이미 등록된 이름)를 덮어쓰면 그 회원의 과거 경기 매칭이 통째로 어긋난다."""
         for slot in payload.team1 + payload.team2:
             if not slot.player_name:
-                continue
-            # 수기등록 슬롯이 쓰는 공용 예약값은 마이그레이션이 이미 심어둔 시스템 행이다.
-            if slot.player_name in (MANUAL_COMPUTER_RAW_NAME, MANUAL_UNREGISTERED_RAW_NAME):
                 continue
             if is_computer_slot(slot.member_id):
                 kind = "computer"

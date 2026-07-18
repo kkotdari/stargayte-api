@@ -228,7 +228,8 @@ async def test_manual_match_no_uses_match_date_not_registration_time(client):
 
 async def test_match_with_unregistered_slot(client):
     """아직 가입하지 않은 실제 사람(비회원) 슬롯 — 컴퓨터와 같은 방식(회원 없음,
-    team 내 position으로 재생성되는 임시 아이디)으로 저장/조회되는지 확인한다."""
+    team 내 position으로 재생성되는 임시 아이디)으로 저장/조회되는지 확인한다. 리플레이가
+    파싱한 실제 이름(playerName)은 그대로 저장된다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
@@ -237,8 +238,8 @@ async def test_match_with_unregistered_slot(client):
         headers=headers,
         json={
             "date": "2026-07-01",
-            "team1": [{"memberId": "player01", "race": "테란"}],
-            "team2": [{"memberId": "__unregistered__anything", "race": "저그"}],
+            "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01"}],
+            "team2": [{"memberId": "__unregistered__anything", "race": "저그", "playerName": "GhostGuy"}],
             "result": "team1",
             "note": "",
         },
@@ -246,9 +247,8 @@ async def test_match_with_unregistered_slot(client):
     assert create_res.status_code == 200, create_res.text
     match = create_res.json()
     assert match["team1"][0]["memberId"] == "player01"
-    # 프론트가 보낸 원본 아이디값과 무관하게, 저장 시 회원이 아니라는 사실(member_pk=NULL,
-    # raw_name=예약값 "__unregistered__")만 남고 응답에서는 항상 team 내 position 기준으로
-    # 재생성된다.
+    # 프론트가 보낸 원본 아이디값과 무관하게, 저장 시 회원이 아니라는 사실만 남고 응답에서는
+    # 항상 team 내 position 기준으로 재생성된다(실제 이름은 playerName에 보존).
     assert match["team2"][0]["memberId"] == "__unregistered__0"
 
     # 다시 조회해도(목록) 같은 값으로 안정적으로 재생성된다.
