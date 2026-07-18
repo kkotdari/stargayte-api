@@ -182,11 +182,14 @@ class MemberStatsEntry(BaseModel):
     # 보여줘 화면 순위와 앞뒤가 맞게 한다(예전의 경기 승점(승-패) 자리를 대체). 순위 대상이
     # 아니면 None.
     person_score: int | None = Field(default=None, alias="personScore")
-    # 사람단위 점수의 내역 — 몇 명에게 우세/동등/열세인지(인원수). 카드가 전적 대신 이 셋을
-    # 보여준다(요청). 순위 대상이 아니면 None.
+    # 사람단위 점수의 내역 — 몇 명에게 우세/동등/열세인지(인원수). 상세 화면에서 쓴다.
+    # 순위 대상이 아니면 None.
     superior_count: int | None = Field(default=None, alias="superiorCount")
     equal_count: int | None = Field(default=None, alias="equalCount")
     inferior_count: int | None = Field(default=None, alias="inferiorCount")
+    # 랭킹 총점 — 경기마다 (이김 +2·강함 / 비김 +1·강함 / 짐 -1·약함)을 합산한 값. 카드에
+    # 이 숫자만 보여주고 세부는 상세 화면에서 본다(요청). 음수 가능. 순위 대상이 아니면 None.
+    rank_score: int | None = Field(default=None, alias="rankScore")
 
 
 class MatchStatsResponse(BaseModel):
