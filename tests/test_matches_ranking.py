@@ -178,7 +178,15 @@ async def test_rank_order_isolated_islands_by_person_score(client):
         await _match(client, headers, ["player02"], ["player09"], "team1", TODAY)
     await _match(client, headers, ["player09"], ["player02"], "team1", TODAY)
 
-    g = {mid: m["tieGroup"] for mid, m in (await _stats(client, headers)).items()}
+    by_id = await _stats(client, headers)
+    # 우세/동등/열세 인원 내역(카드 표시용).
+    assert (by_id["player01"]["superiorCount"], by_id["player01"]["equalCount"], by_id["player01"]["inferiorCount"]) == (3, 0, 0)
+    assert (by_id["player03"]["superiorCount"], by_id["player03"]["equalCount"], by_id["player03"]["inferiorCount"]) == (1, 1, 0)  # 조조: 브래드 우세, 군범 동등
+    assert (by_id["player04"]["superiorCount"], by_id["player04"]["equalCount"], by_id["player04"]["inferiorCount"]) == (0, 1, 0)  # 군범: 조조와 동등
+    assert (by_id["player05"]["superiorCount"], by_id["player05"]["equalCount"], by_id["player05"]["inferiorCount"]) == (0, 0, 1)  # 브래드: 조조에 열세
+    assert by_id["player01"]["personScore"] == 3
+
+    g = {mid: m["tieGroup"] for mid, m in by_id.items()}
     # p1 단독 최상위.
     assert g["player01"] < g["player03"]
     # 조조(p3)와 타센(p2)은 동률(둘 다 한 명에게만 우세).

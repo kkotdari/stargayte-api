@@ -536,8 +536,11 @@ class MatchService:
             if rankable:
                 rankable[0][0].sort_order = 0
                 rankable[0][0].tie_group = 0
-                # 랭킹 대상이 한 명뿐이면 비교할 상대가 없으니 사람단위 점수는 0.
+                # 랭킹 대상이 한 명뿐이면 비교할 상대가 없으니 점수·인원 모두 0.
                 rankable[0][0].person_score = 0
+                rankable[0][0].superior_count = 0
+                rankable[0][0].equal_count = 0
+                rankable[0][0].inferior_count = 0
             return
 
         # 승자승이 1순위라 맞대결 전적은 항상 필요하다(예전엔 승률 동률일 때만 조회했다).
@@ -558,22 +561,25 @@ class MatchService:
         # 가른다. 간접비교(공통상대)·경기 승점은 더 이상 쓰지 않는다.
         pks = {m.pk for _, m in rankable}
 
-        def _copeland(pk: int) -> int:
-            """붙어본 상대(랭킹 대상 회원)를 한 명씩 보고, 그 사람과의 직접 전적이 우세면 +1,
-            열세면 -1, 동등(무 포함)이면 0을 매겨 합산한다 — 경기 수·점수차는 안 본다(팍규만
-            10번 이겨도 '한 명 우세'라 +1)."""
-            score = 0
+        def _person_record(pk: int) -> tuple[int, int, int]:
+            """붙어본 상대(랭킹 대상 회원)를 한 명씩 보고 우세/동등/열세 인원을 센다 — 경기
+            수·점수차는 안 본다(팍규만 10번 이겨도 '한 명 우세'). (우세 수, 동등 수, 열세 수)."""
+            sup = eq = inf = 0
             for opp_pk, rec in h2h.get(pk, {}).items():
                 if opp_pk not in pks:
                     continue
                 losses = rec.plays - rec.wins - rec.draws
                 if rec.wins > losses:
-                    score += 1
+                    sup += 1
                 elif rec.wins < losses:
-                    score -= 1
-            return score
+                    inf += 1
+                else:
+                    eq += 1
+            return sup, eq, inf
 
-        cope = {m.pk: _copeland(m.pk) for _, m in rankable}
+        person = {m.pk: _person_record(m.pk) for _, m in rankable}
+        # 사람단위 점수 = 우세 수 - 열세 수(동등은 0). ①승자승 다음의 2순위 기준.
+        cope = {pk: sup - inf for pk, (sup, eq, inf) in person.items()}
 
         def _is_above(a_member: Member, b_member: Member) -> bool:
             """a가 b보다 '무조건 위'면 True — 둘 다 못 가르면(동급) False."""
@@ -640,8 +646,13 @@ class MatchService:
             entry = rankable[i][0]
             entry.sort_order = pos
             entry.tie_group = _level(comp[i])
-            # 카드에 보여줄 사람단위 점수(우세-열세)도 함께 실어 보낸다.
-            entry.person_score = cope[member_list[i].pk]
+            # 카드에 보여줄 사람단위 점수(우세-열세)와 우세/동등/열세 인원도 함께 실어 보낸다.
+            pk = member_list[i].pk
+            entry.person_score = cope[pk]
+            sup, eq, inf = person[pk]
+            entry.superior_count = sup
+            entry.equal_count = eq
+            entry.inferior_count = inf
 
     async def get_main_race(
         self,
