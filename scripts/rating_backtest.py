@@ -324,6 +324,42 @@ async def db_games(url: str, match_type: str | None) -> tuple[list[Game], dict[i
     return games, names
 
 
+def csv_games(path: str) -> tuple[list[Game], dict[int, str]]:
+    """psql \\copy 등으로 뽑은 CSV를 읽는다. 필요한 헤더:
+      match_no, match_type, result, duration_seconds, team, race, eapm,
+      effective_cmd_count, member_pk, (선택) nickname
+    참가자 1명당 1행. member_pk 빈칸 = 컴퓨터/비회원."""
+    import csv
+
+    by_match: dict[str, dict] = {}
+    names: dict[int, str] = {}
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            mno = r["match_no"]
+            g = by_match.setdefault(mno, {
+                "order": (r.get("ord") or mno, mno), "match_type": r.get("match_type", ""),
+                "result": r["result"], "team1": [], "team2": []})
+            team = r["team"]
+            if team not in ("team1", "team2"):
+                continue
+            pk = r.get("member_pk")
+            member_id = int(pk) if pk not in (None, "", "\\N") else None
+            if member_id is not None and r.get("nickname"):
+                names[member_id] = r["nickname"]
+            dur = r.get("duration_seconds")
+            dur = int(dur) if dur not in (None, "", "\\N") else None
+            ecc = r.get("effective_cmd_count")
+            ecc = int(ecc) if ecc not in (None, "", "\\N") else None
+            eapm = r.get("eapm")
+            eapm = float(eapm) if eapm not in (None, "", "\\N") else None
+            ecmd = (ecc / (dur / 60)) if (ecc and dur) else None
+            g[team].append(Player(member_id=member_id, race=r.get("race", ""), eapm=eapm, ecmd=ecmd))
+    games = [Game(order=g["order"], match_type=g["match_type"],
+                  team1=g["team1"], team2=g["team2"], result=g["result"])
+             for g in by_match.values()]
+    return games, names
+
+
 def win_stats_of(games: list[Game]) -> dict[int, tuple[int, int, int]]:
     """회원별 (승, 무, 패) — 리더보드/상관 표시용(팀 결과를 각 회원에게 귀속)."""
     st: dict[int, list[int]] = defaultdict(lambda: [0, 0, 0])
@@ -343,8 +379,9 @@ def win_stats_of(games: list[Game]) -> dict[int, tuple[int, int, int]]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", choices=["db", "synthetic"], default="synthetic")
+    ap.add_argument("--source", choices=["db", "synthetic", "csv"], default="synthetic")
     ap.add_argument("--db-url", default=None, help="postgresql://... (없으면 env DATABASE_URL)")
+    ap.add_argument("--csv-path", default=None, help="--source csv 일 때 읽을 CSV 파일")
     ap.add_argument("--match-type", default=None, help="0101=개인전, 0102=팀전, 미지정=전체")
     ap.add_argument("--warmup", type=int, default=6, help="각 회원 이 경기수 이후부터 예측 평가")
     args = ap.parse_args()
@@ -358,6 +395,12 @@ def main() -> None:
         url = url.replace("postgresql+asyncpg://", "postgresql://").replace(
             "postgres://", "postgresql://")
         games, names = asyncio.run(db_games(url, args.match_type))
+    elif args.source == "csv":
+        if not args.csv_path:
+            raise SystemExit("--csv-path 가 필요합니다")
+        games, names = csv_games(args.csv_path)
+        if args.match_type:
+            games = [g for g in games if g.match_type == args.match_type]
     else:
         games, names = synthetic_games()
 
