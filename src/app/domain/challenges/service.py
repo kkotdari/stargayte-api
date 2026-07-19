@@ -340,14 +340,12 @@ class ChallengeService:
             raise ValidationError("이미 종료된 도전장입니다.")
         if target.response != "pending":
             raise ValidationError("이미 응답한 도전장입니다.")
-        # 요청자가 "시간 지정"을 끄고 보낸(scheduled_at=None) 도전장은 "상대가 정해도
-        # 된다"는 뜻이라, 수락하는 이 시점에 상대가 직접 정하게 한다 — 안 그러면 시간이
-        # 영원히 안 채워진 채 "승락" 상태로 박제된다(요청: "도전자/상대 모두 시간을
-        # 지정하지 않았는데 수락이 된 경우가 있네 이러면 안되는데"). 이미 시간이 정해진
-        # 도전장은 응답하는 쪽이 바꿀 수 없으므로 여기서 들어온 값은 무시한다.
-        if response == "accepted" and challenge.scheduled_at is None:
-            if scheduled_at is None:
-                raise ValidationError("일시가 정해지지 않은 도전장이에요 — 수락하며 시간을 정해주세요.")
+        # 시간 미정(scheduled_at=None) 도전장도 시간을 안 정한 채 그대로 수락할 수 있다(요청:
+        # "시간 미정 수락 가능하게 변경 — 완료 시점으로 입력됨"). 이때는 결과 입력(enter_result)
+        # 시점에 그 순간을 예정 일시로 기록한다. 수락하며 시간을 정하고 싶으면 scheduled_at을
+        # 넘길 수 있고, 그 경우 그 값으로 확정한다. 이미 시간이 정해진 도전장은 응답하는 쪽이
+        # 바꿀 수 없으므로 여기서 들어온 값은 무시한다.
+        if response == "accepted" and challenge.scheduled_at is None and scheduled_at is not None:
             challenge.scheduled_at = scheduled_at
             challenge.updated_by = actor.pk
         target.response = response
@@ -378,9 +376,12 @@ class ChallengeService:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if _status_of(challenge) != "confirmed":
             raise ValidationError("확정된 대결만 결과를 입력할 수 있습니다.")
-        if challenge.scheduled_at is None or _to_utc_naive(challenge.scheduled_at) > _to_utc_naive(
-            datetime.now(UTC)
-        ):
+        now = datetime.now(UTC)
+        if challenge.scheduled_at is None:
+            # 시간 미정으로 수락된 대결은 언제든 결과를 입력할 수 있고, 그 완료 시점을 예정
+            # 일시로 기록한다(요청: "시간 미정 수락 가능, 완료 시점으로 입력됨").
+            challenge.scheduled_at = now
+        elif _to_utc_naive(challenge.scheduled_at) > _to_utc_naive(now):
             raise ValidationError("예정 일시가 지난 뒤에만 결과를 입력할 수 있습니다.")
         if not any(p.member_pk == actor.pk for p in challenge.participants):
             raise ForbiddenError("이 대결의 참가자만 결과를 입력할 수 있습니다.")
