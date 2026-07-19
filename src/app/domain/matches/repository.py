@@ -156,16 +156,10 @@ class MatchRepository:
         terms: list[str],
         match_all_terms: bool,
         has_placeholder: bool = False,
-        match_no: str | None = None,
         team_member_pks: list[int] | None = None,
     ) -> Select:
         """목록 조회(list_page)와 총 건수(count_page)가 공유하는 필터 조건 — 정렬/커서/limit은
         건수 집계와 무관하므로 여기 포함하지 않는다."""
-        if match_no is not None:
-            # 정확히 일치가 아니라 부분 일치(LIKE) — 14자리 전체를 다 기억/타이핑하지
-            # 않아도 앞/뒤/중간 일부만으로 찾을 수 있게 한다(프론트는 일치한 부분을
-            # 하이라이트로 보여준다).
-            stmt = stmt.where(Match.match_no.like(f"%{match_no}%"))
         if match_type is not None:
             stmt = stmt.where(Match.match_type == match_type)
         if date_from is not None:
@@ -207,14 +201,13 @@ class MatchRepository:
         terms: list[str],
         match_all_terms: bool,
         has_placeholder: bool = False,
-        match_no: str | None = None,
         team_member_pks: list[int] | None = None,
     ) -> tuple[list[Match], bool]:
         stmt = self._apply_list_filters(
             self._base_query(),
             date_from=date_from, date_to=date_to, match_type=match_type,
             terms=terms, match_all_terms=match_all_terms,
-            has_placeholder=has_placeholder, match_no=match_no,
+            has_placeholder=has_placeholder,
             team_member_pks=team_member_pks,
         )
 
@@ -249,7 +242,6 @@ class MatchRepository:
         terms: list[str],
         match_all_terms: bool,
         has_placeholder: bool = False,
-        match_no: str | None = None,
         team_member_pks: list[int] | None = None,
     ) -> int:
         """무한스크롤로 일부만 로드된 상태에서도 화면에 정확한 총 건수를 보여주기 위한
@@ -258,7 +250,7 @@ class MatchRepository:
             select(func.count(Match.id)),
             date_from=date_from, date_to=date_to, match_type=match_type,
             terms=terms, match_all_terms=match_all_terms,
-            has_placeholder=has_placeholder, match_no=match_no,
+            has_placeholder=has_placeholder,
             team_member_pks=team_member_pks,
         )
         return (await self._session.execute(stmt)).scalar_one()

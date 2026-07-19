@@ -52,7 +52,6 @@ async def list_matches(
     user_query: str | None = Query(default=None, alias="userQuery"),
     match_all_users: bool = Query(default=False, alias="matchAllUsers"),
     has_placeholder: bool = Query(default=False, alias="hasPlaceholder"),
-    match_no: str | None = Query(default=None, alias="matchNo"),
     # 팀 랭킹에서 팀 하나를 눌렀을 때 — 이 회원들이 전부 "같은 편"으로 뛴 경기만 추린다
     # (전원이 참가한 경기로만 찾으면 서로 상대편이었던 경기까지 딸려온다).
     team_member_ids: str | None = Query(default=None, alias="teamMemberIds"),
@@ -69,7 +68,6 @@ async def list_matches(
         user_query=user_query,
         match_all_users=match_all_users,
         has_placeholder=has_placeholder,
-        match_no=match_no,
         team_member_ids=team_ids,
     )
     # 첫 페이지(커서 없음)에서만 전체 건수를 센다 — 스크롤로 다음 페이지를 불러올 때마다
@@ -82,7 +80,6 @@ async def list_matches(
             user_query=user_query,
             match_all_users=match_all_users,
             has_placeholder=has_placeholder,
-            match_no=match_no,
             team_member_ids=team_ids,
         )
         if cursor is None
