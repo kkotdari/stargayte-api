@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.domain.matches.models import Match, MatchParticipant, MatchResult, Replay
+from app.domain.matches.rating import RatingEngine
 from app.domain.matches.repository import MatchRepository
 from app.domain.matches.schemas import (
     COMPUTER_ID_PREFIX,
@@ -21,6 +22,7 @@ from app.domain.matches.schemas import (
     MemberStatsEntry,
     MemberStatsMonthEntry,
     RaceStatsEntry,
+    RatingHistoryResponse,
     TeamRankEntry,
     TeamRankingResponse,
     TeamRankMonthEntry,
@@ -248,11 +250,47 @@ def _points_against(h2h: HeadToHead, pk: int, opponents: set[int]) -> int:
 # 팀으로 인정하는 최소 인원 — 2명 이상이면 (2:2든 3:3이든) 그 팀 구성 그대로 하나의 팀이다.
 TEAM_MIN_SIZE = 2
 
-# 랭킹 강함/약함(strength/weakness)의 정규화 스케일 — 순우열(참가자 수로 정규화한 비율)에
-# 이 값을 곱해 최종 상한을 1+NET_SCALE_MAX로 고정한다(요청: "회원이 많아지면 편차가
-# 커지는 게 공평하냐" — 클럽 규모와 무관하게 경기 한 판의 점수 스윙 범위를 일정하게
-# 유지). _apply_rank_order 참고.
-NET_SCALE_MAX = 9.0
+
+def _replay_order_key(game_started_at, match_date, match_no):
+    """경기를 시간순으로 세울 정렬 키 — 리플레이 실제 시작시각(game_started_at)이 있으면 그걸,
+    없으면 경기 날짜 자정(UTC)을 쓰고, 마지막으로 match_no로 안정 정렬한다. tz 없는 값은
+    UTC로 맞춰 비교 가능하게 한다(백테스트 ORDER BY와 같은 규칙)."""
+    if game_started_at is not None:
+        ts = game_started_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+    else:
+        ts = datetime(match_date.year, match_date.month, match_date.day, tzinfo=UTC)
+    return (ts, match_no or "")
+
+
+def _replay_ratings(rows, focal_pk: int | None = None) -> tuple[RatingEngine, dict[str, float]]:
+    """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 TrueSkill을 누적한다.
+
+    반환: (엔진, focal_pk의 경기별 μ 변화). focal_pk가 주어지면 그 회원이 뛴 각 경기마다
+    갱신 전후 μ 차이를 match_no로 키잉해 함께 돌려준다(랭킹 상세의 '경기당 Δ' 병기용).
+    엔진 자체는 date_to까지의 누적 상태라, 리더보드는 이 엔진의 보수추정(μ−3σ)으로 매긴다."""
+    matches: dict[int, dict] = {}
+    for r in rows:
+        m = matches.get(r.match_id)
+        if m is None:
+            m = matches[r.match_id] = {
+                "team1": [], "team2": [], "result": r.result, "match_no": r.match_no,
+                "key": _replay_order_key(r.game_started_at, r.match_date, r.match_no),
+            }
+        if r.team in ("team1", "team2"):
+            m[r.team].append(r.member_pk)
+
+    engine = RatingEngine()
+    deltas: dict[str, float] = {}
+    for mid in sorted(matches, key=lambda k: matches[k]["key"]):
+        mm = matches[mid]
+        involved = focal_pk is not None and focal_pk in (mm["team1"] + mm["team2"])
+        pre = engine.get(focal_pk).mu if involved else 0.0
+        engine.update(mm["team1"], mm["team2"], mm["result"])
+        if involved:
+            deltas[mm["match_no"]] = engine.get(focal_pk).mu - pre
+    return engine, deltas
 
 
 def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> MatchSlot:
@@ -511,21 +549,16 @@ class MatchService:
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
-        순위는 '경기마다 가중 합산한 점수'로 가른다(요청):
+        순위는 TrueSkill 레이팅으로 가른다(요청: "완전 교체"):
 
-          점수 = 각 경기(1v1)마다 이기면 +강함(상대) / 지면 -약함(상대) / 비기면 0.
-            강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면인데, 이 순우열을 이번
-            기간 참가자 수로 정규화한 뒤 고정 스케일을 곱한다(요청: "회원이 많아지면
-            편차가 커지는 게 공평하냐" — superiorCount/inferiorCount의 상한이 참가자
-            수에 비례해 커져서, 클럽 규모가 클수록 경기 한 판의 점수 스윙이 부풀어
-            오르던 문제를 없앤다). NET_SCALE_MAX(아래)가 그 고정 상한이라, 참가자가
-            5명이든 50명이든 강함/약함은 항상 1~(1+NET_SCALE_MAX) 범위 안에 있다.
-            → 순 승자(우열≥0)에게 지면 약함 1(최소, -1점), 순 패자를 이기면 강함 1(최소, +1점).
-            센 상대를 이길수록 크게 얻고 약한 상대에게 질수록 크게 잃는다. 같은 사람 여러 번
-            이기면 그만큼 누적(경기 수를 본다). 점수는 음수도 가능하다.
-          참가 우선 — 1경기라도 뛴 사람은 점수가 아무리 낮아도(음수여도) 0경기 회원보다 무조건
-            위다(요청). 그다음 점수(높은 순) → 닉네임 → 로그인 아이디.
+          레이팅 = 이 경기유형의 모든 경기를 이 기간 끝(date_to)까지 시간순으로 재생해 얻은
+            회원별 실력 추정(μ)과 불확실성(σ). 순위·카드 점수는 보수추정(μ−3σ)으로 매긴다 —
+            강한 상대를 이길수록 오르고, 표본이 적으면 σ가 커서 보수값이 낮게(잠정) 잡혀
+            소수표본 인플레를 막는다. 레이팅은 과거 전체 누적이라 date_from은 걸지 않는다.
+          참가 우선 — 이 기간에 1경기라도 뛴 사람은 레이팅이 아무리 낮아도(음수여도) 0경기
+            회원보다 무조건 위다(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
 
+        우세/동등/열세 인원과 person_score(우열)는 순위 산정에서 빠지고 상세 참고값으로만 남는다.
         0경기 회원도 모두 목록에 넣는다(요청) — 맨 아래에 공동으로 모인다.
 
         여기서만 정렬을 하고 entries 자체의 순서(=회원 목록 순서)는 바꾸지 않는다 — 이 응답은
@@ -566,85 +599,21 @@ class MatchService:
             return sup, eq, inf
 
         person = {m.pk: _person_record(m.pk) for _, m in pairs}
-        # 강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면이다(요청). superiorCount/
-        # inferiorCount의 상한이 "이번 기간에 실제로 뛴 사람 수 − 1"이라 클럽이 커질수록
-        # 순우열의 최댓값도, 그로 인한 점수 스윙도 같이 부풀어 오른다(요청: "회원이 많아지면
-        # 편차가 커지는 게 공평하냐") — 순우열을 참가자 수로 정규화한 비율(-1~1)로 바꾼 뒤
-        # 고정 스케일(NET_SCALE_MAX)을 곱해서, 참가자가 몇 명이든 강함/약함이 항상 같은
-        # 범위(1~1+NET_SCALE_MAX) 안에 들어오게 한다. 참가자가 1명 이하면 나눌 대상이
-        # 없으므로 분모를 최소 1로 둔다.
-        participant_count = sum(1 for entry, _ in pairs if entry.overall.plays > 0)
-        net_denom = max(1, participant_count - 1)
-        net = {pk: s - i for pk, (s, e, i) in person.items()}
-        strength = {pk: 1 + NET_SCALE_MAX * max(0, n) / net_denom for pk, n in net.items()}
-        weakness = {pk: 1 + NET_SCALE_MAX * max(0, -n) / net_denom for pk, n in net.items()}
+        # 우세/동등/열세 인원은 이 기간 상세 표시에만 쓰고 순위 산정에는 더는 쓰지 않는다
+        # (아래 레이팅이 대신한다). person_score(우열)도 상세 참고값으로만 남긴다.
 
-        # 실제 랭킹 점수는 '경기 단위'로 합산한다 — 개인전(1:1)은 예전 그대로, 이기면 +강함(상대)
-        # 지면 −약함(상대) 비기면 0. 팀전은 여기에 '팀 강함 비율' f = (진 팀 강함 합) ÷ (양 팀 강함
-        # 합)을 곱한다(요청): 0~1 범위라 강한 팀으로 약팀을 이기면 f가 0에 가까워 조금만 얻고,
-        # 대등하면 0.5, 약한 팀으로 강팀을 이기면(이변) f가 1에 가까워 최대 원점수까지 얻는다.
-        # 승자(상대÷합)와 패자(우리÷합) 배율이 결국 둘 다 (진 팀÷양 팀 합)으로 같아, 같은 f를
-        # 이긴 쪽·진 쪽에 그대로 곱한다 → 강한 팀이 지면 크게 잃고 약한 팀이 지면 조금만 잃는다.
-        # 팀 강함 = 그 팀 라인업(랭킹 대상 회원)의 강함 합. 비율을 곱하면 소수가 되므로 최종
-        # 점수는 소수 첫째 자리에서 반올림한다.
-        scoring_rows = await self._repo.rank_scoring_rows(
-            member_pks=[m.pk for _, m in pairs],
-            date_from=date_from,
-            date_to=date_to,
-            match_type=match_type,
-        )
-        # match_id -> {team -> [(member_pk|None, 그 경기 종족)]}, match_id -> 이긴 팀(=result 값).
-        # 컴퓨터/비회원(member_pk=None)도 담는다 — 팀원수(n)를 라인업 전체 인원으로 세야 한다.
-        match_lineups: dict[int, dict[str, list[tuple[int | None, str]]]] = {}
-        match_winner: dict[int, str] = {}
-        for row in scoring_rows:
-            match_lineups.setdefault(row.match_id, {}).setdefault(row.team, []).append(
-                (row.member_pk, row.race)
-            )
-            match_winner[row.match_id] = row.result
+        # 랭킹 점수 = TrueSkill 레이팅(요청: "완전 교체"). 순우열 정규화 대신, 이 경기유형의
+        # 모든 경기를 이 기간 끝(date_to)까지 '시간순으로 재생'해 회원별 실력(μ)과 불확실성(σ)을
+        # 추정한다. 카드에 보여줄 점수·순위는 보수추정(μ−3σ)으로 매긴다 — 표본이 적으면 σ가
+        # 커서 값이 낮게(잠정) 잡혀 소수표본 인플레를 막는다. date_from은 걸지 않는다(레이팅은
+        # 과거 전체 누적) — 대신 '이 기간에 한 판이라도 뛴 사람'만 순위 대상으로 앞세운다.
+        replay_rows = await self._repo.rank_replay_rows(match_type=match_type, date_to=date_to)
+        engine, _ = _replay_ratings(replay_rows)
+        # 카드/정렬에 쓰는 보수추정치 — 첫째 자리 반올림(동률 판정도 이 값으로).
+        score = {m.pk: round(engine.get(m.pk).conservative, 1) for _, m in pairs}
 
-        race_active = race is not None and race != "all"
-        score: dict[int, float] = {m.pk: 0.0 for _, m in pairs}
-        for match_id, teams in match_lineups.items():
-            result = match_winner[match_id]
-            if result == "draw":
-                continue  # 비기면 0점.
-            loser_team = next((t for t in teams if t != result), None)
-            winners = teams.get(result, [])
-            losers = teams.get(loser_team, []) if loser_team is not None else []
-            # 팀원수(n)는 라인업 전체 인원(컴퓨터/비회원 포함, 요청). 점수·강함은 회원만 잡는다.
-            n_winner = len(winners)
-            n_loser = len(losers)
-            win_members = [(pk, r) for pk, r in winners if pk in pks]
-            lose_members = [(pk, r) for pk, r in losers if pk in pks]
-            if not win_members or not lose_members:
-                continue  # 한쪽에 랭킹 대상 회원이 없으면 점수를 매길 수 없다.
-            # 팀 강함/약함 합은 회원 라인업(종족 필터와 무관) 기준 — 팀 자체의 세기다.
-            winner_str = sum(strength[pk] for pk, _ in win_members)
-            loser_str = sum(strength[pk] for pk, _ in lose_members)
-            winner_weak = sum(weakness[pk] for pk, _ in win_members)
-            # 어느 한쪽이라도 라인업 2명 이상이면 팀전 — 강함 비율(f)을 곱하고, 각자 점수를
-            # 팀원수(n)로 나눈다(요청: 팀전은 영향도가 1/n). 개인전(1:1)은 f=1·n=1로 그대로.
-            is_team = n_winner >= TEAM_MIN_SIZE or n_loser >= TEAM_MIN_SIZE
-            total_str = winner_str + loser_str
-            factor = (loser_str / total_str) if (is_team and total_str > 0) else 1.0
-            # 이긴 사람: 상대팀 회원 강함 합(=loser_str) × f ÷ 팀원수. 진 사람: 이긴팀 회원
-            # 약함 합(=winner_weak) × f ÷ 팀원수 만큼 잃는다. 종족 필터가 있으면 '그 경기에
-            # 그 종족으로 뛴' 사람 점수만 센다(head_to_head의 self-종족 필터와 같은 의미).
-            for pk, p_race in win_members:
-                if race_active and p_race != race:
-                    continue
-                score[pk] += loser_str * factor / n_winner
-            for pk, p_race in lose_members:
-                if race_active and p_race != race:
-                    continue
-                score[pk] += -winner_weak * factor / n_loser
-
-        # 팀 강함 비율·팀원수 나눗셈으로 생긴 소수는 첫째 자리에서 반올림(요청) — 동률 판정도 이 값으로.
-        score = {pk: round(v, 1) for pk, v in score.items()}
-
-        # 참가 우선 — 1경기라도 뛴 사람(plays>0)은 점수가 아무리 낮아도(음수여도) 0경기 회원보다
-        # 무조건 위(요청). 그다음 점수(높은 순) → 닉네임 → 로그인 아이디.
+        # 참가 우선 — 이 기간에 1경기라도 뛴 사람(plays>0)은 레이팅이 아무리 낮아도 0경기
+        # 회원보다 무조건 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
         def _played(idx: int) -> bool:
             return pairs[idx][0].overall.plays > 0
 
@@ -657,7 +626,7 @@ class MatchService:
                 pairs[i][1].id,
             ),
         )
-        # tie_group = (참가여부, 점수)가 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리.
+        # tie_group = (참가여부, 보수레이팅)이 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리.
         prev_key: tuple[bool, float | None] | None = None
         group = -1
         for pos, i in enumerate(order):
@@ -673,8 +642,14 @@ class MatchService:
             entry.superior_count = s
             entry.equal_count = e
             entry.inferior_count = inf
-            entry.person_score = s - inf  # 우열(우세-열세) — 상세용
-            entry.rank_score = score[m.pk]  # 카드에 보여줄 총점(경기마다 가중 합산)
+            entry.person_score = s - inf  # 우열(우세-열세) — 상세 참고용
+            entry.rank_score = score[m.pk]  # 카드에 보여줄 보수레이팅(μ−3σ)
+            r = engine.get(m.pk)
+            entry.mu = round(r.mu, 1)
+            entry.sigma = round(r.sigma, 1)
+            entry.rating_games = engine.games.get(m.pk, 0)
+            # 잠정 = 이 경기유형 누적 경기 수가 기준 미만 — 아직 레이팅이 덜 여문 상태.
+            entry.provisional = engine.is_provisional(m.pk) if played else None
 
     async def get_main_race(
         self,
@@ -692,6 +667,29 @@ class MatchService:
             race=None,
         )
         return entries[0].most_played_race if entries else None
+
+    async def get_rating_history(
+        self, *, member_id: str, match_type: str | None,
+    ) -> RatingHistoryResponse:
+        """랭킹 상세의 '경기당 레이팅 변화' — 이 회원이 뛴 경기마다의 μ 증감. 레이팅은 시간순
+        누적이라 date 범위와 무관하게 항상 과거 전체를 재생하며 계산한다(각 경기의 Δ는 그
+        경기 시점의 상태로 결정되므로 date_to로 자를 필요가 없다). 프론트는 상세에 띄운
+        경기들(period로 좁힌)만 match_no로 골라 병기한다."""
+        member = await self._member_repo.get_by_login_id(member_id)
+        if member is None:
+            return RatingHistoryResponse(deltas={})
+        rows = await self._repo.rank_replay_rows(match_type=match_type, date_to=None)
+        engine, deltas = _replay_ratings(rows, focal_pk=member.pk)
+        r = engine.get(member.pk)
+        played = engine.games.get(member.pk, 0) > 0
+        return RatingHistoryResponse(
+            deltas={mno: round(d, 1) for mno, d in deltas.items()},
+            mu=round(r.mu, 1) if played else None,
+            sigma=round(r.sigma, 1) if played else None,
+            conservative=round(r.conservative, 1) if played else None,
+            games=engine.games.get(member.pk, 0),
+            provisional=engine.is_provisional(member.pk) if played else False,
+        )
 
     async def get_stats_monthly(
         self,

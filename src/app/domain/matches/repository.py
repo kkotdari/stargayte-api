@@ -422,28 +422,27 @@ class MatchRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
-    async def rank_scoring_rows(
+    async def rank_replay_rows(
         self,
         *,
-        member_pks: list[int],
-        date_from: date | None,
-        date_to: date | None,
         match_type: str | None,
+        date_to: date | None,
     ) -> list[Row]:
-        """랭킹 점수를 '경기 단위'로 매기기 위한 원본 — 각 경기의 (match_id, team,
-        member_pk, race, result). 팀전 점수에 '팀 강함 비율'(진 팀÷이긴 팀 강함)과 '÷팀원수'를
-        경기마다 적용하려면 head_to_head처럼 쌍으로 뭉친 값이 아니라 경기별 라인업 전체가
-        필요하다. 컴퓨터/비회원까지 포함해 '전부' 준다(member_pk는 회원이 아니면 NULL) —
-        팀원수(n)를 라인업 전체 인원으로 세야 하기 때문이다(요청). 점수·강함은 서비스에서
-        member_pk가 있는 회원행만 잡고, race 필터도 서비스에서 '그 경기 본인 종족'으로 건다."""
+        """레이팅(TrueSkill) 누적 계산용 — 이 경기유형의 모든 경기를 '시간순으로 재생'하기 위한
+        원본. 각 경기의 (match_id, team, member_pk, result)에 정렬 키(game_started_at·match_date·
+        match_no)를 함께 준다. 레이팅은 과거 전체를 누적해야 하므로 date_from은 걸지 않고
+        date_to(그 기간 끝)까지 전부 가져와 서비스에서 경기 단위로 시간순 재생한다. 컴퓨터/
+        비회원(member_pk=NULL)도 포함해야 팀 구성(인원수)이 맞다."""
         member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
         stmt = (
             select(
                 MatchParticipant.match_id,
                 MatchParticipant.team,
                 member_alias.member_pk,
-                MatchParticipant.race,
                 MatchResult.result,
+                MatchResult.game_started_at,
+                Match.match_date,
+                Match.match_no,
             )
             .select_from(MatchParticipant)
             .join(Match, Match.id == MatchParticipant.match_id)
@@ -452,7 +451,7 @@ class MatchRepository:
             .where(MatchResult.result != "not_held")
         )
         stmt = self._apply_common_match_filters(
-            stmt, date_from=date_from, date_to=date_to, match_type=match_type,
+            stmt, date_from=None, date_to=date_to, match_type=match_type,
         )
         return list((await self._session.execute(stmt)).all())
 
