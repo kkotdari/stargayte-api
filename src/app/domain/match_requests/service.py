@@ -97,15 +97,13 @@ class MatchRequestService:
         if len(targets) < MIN_TARGETS:
             raise ValidationError("최소 두 명 이상을 @태그로 지목해주세요.")
 
-        # 같은 구성원(작성자 + 지목된 사람들의 집합)으로 이미 살아있는 요청이 있으면 막는다
-        # (요청: "같은 구성원의 요청이 존재하면 만들 수 없음"). 순서/작성자 위치와 무관하게
-        # 참여자 집합이 완전히 같은지로 판정한다.
-        new_members = frozenset({actor.pk, *(m.pk for m in targets)})
+        # 같은 구성원(지목된 사람들의 집합)으로 이미 살아있는 요청이 있으면 막는다(요청: "같은
+        # 구성원의 요청이 존재하면 만들 수 없음", "구성원에서 지목자(작성자)는 제외"). 작성자와
+        # 무관하게 @태그로 지목된 대상 집합이 완전히 같은지로만 판정한다.
+        new_targets = frozenset(m.pk for m in targets)
         for existing in await self._repo.list_all_alive():
-            existing_members = frozenset(
-                {existing.created_by, *(t.member_pk for t in existing.targets)}
-            )
-            if existing_members == new_members:
+            existing_targets = frozenset(t.member_pk for t in existing.targets)
+            if existing_targets == new_targets:
                 raise ValidationError("같은 구성원으로 올라온 대결 요청이 이미 있어요.")
 
         request = MatchRequest(text=cleaned, created_by=actor.pk, updated_by=actor.pk)

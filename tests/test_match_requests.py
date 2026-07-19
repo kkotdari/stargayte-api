@@ -97,11 +97,12 @@ async def test_full_flow_recommend_sort_and_fulfill(client):
     assert [it["id"] for it in lst2.json()["items"]] == [id2]
 
 
-async def test_duplicate_member_set_blocked(client):
+async def test_duplicate_target_set_blocked_author_independent(client):
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _signup(client, "carol", "Carol#1003")
-    await _signup(client, "dave", "Dave#1004")
+    d = await _signup(client, "dave", "Dave#1004")
+    await _approve(client, a["accessToken"], "dave")
 
     r1 = await client.post(
         "/api/match-requests", headers=_h(a),
@@ -109,14 +110,21 @@ async def test_duplicate_member_set_blocked(client):
     )
     assert r1.status_code == 200, r1.text
 
-    # 같은 구성원(alice+bob+carol)으로 또 올리면 막힌다 — 지목 순서가 달라도 마찬가지.
+    # 지목 대상이 같으면(순서 무관) 막힌다.
     dup = await client.post(
         "/api/match-requests", headers=_h(a),
         json={"text": "@carol @bob 또", "targetMemberIds": ["carol", "bob"]},
     )
     assert dup.status_code in (400, 409, 422), dup.text
 
-    # 구성원이 다르면(dave 추가) 허용.
+    # 작성자가 달라도(dave가 올려도) 지목 대상 집합이 같으면 막힌다(구성원에서 작성자 제외).
+    dup2 = await client.post(
+        "/api/match-requests", headers=_h(d),
+        json={"text": "@bob @carol 나도", "targetMemberIds": ["bob", "carol"]},
+    )
+    assert dup2.status_code in (400, 409, 422), dup2.text
+
+    # 지목 대상이 다르면(dave 추가) 허용.
     ok = await client.post(
         "/api/match-requests", headers=_h(a),
         json={"text": "@bob @carol @dave 팀전", "targetMemberIds": ["bob", "carol", "dave"]},
