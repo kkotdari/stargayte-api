@@ -23,6 +23,13 @@ class MatchRequestRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_all_alive(self) -> list[MatchRequest]:
+        """살아있는 요청 전부(작성자·지목 포함) — 같은 구성원의 요청이 이미 있는지 확인용."""
+        result = await self._session.execute(
+            select(MatchRequest).where(MatchRequest.fulfilled_at.is_(None))
+        )
+        return list(result.scalars().unique().all())
+
     async def count_alive(self) -> int:
         total = await self._session.scalar(
             select(func.count())

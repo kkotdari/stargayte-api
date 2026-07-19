@@ -46,10 +46,11 @@ async def test_full_flow_recommend_sort_and_fulfill(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     c = await _signup(client, "carol", "Carol#1003")
+    await _signup(client, "dave", "Dave#1004")
     await _approve(client, a["accessToken"], "bob")
     await _approve(client, a["accessToken"], "carol")
 
-    # alice가 bob, carol을 지목해 요청 두 개 생성.
+    # 구성원이 서로 다른 요청 두 개(중복 금지 규칙 회피). 둘 다 bob·carol이 지목돼 있다.
     r1 = await client.post(
         "/api/match-requests", headers=_h(a),
         json={"text": "@bob @carol 첫 요청", "targetMemberIds": ["bob", "carol"]},
@@ -61,7 +62,7 @@ async def test_full_flow_recommend_sort_and_fulfill(client):
 
     r2 = await client.post(
         "/api/match-requests", headers=_h(a),
-        json={"text": "@bob @carol 둘째 요청", "targetMemberIds": ["bob", "carol"]},
+        json={"text": "@bob @carol @dave 둘째 요청", "targetMemberIds": ["bob", "carol", "dave"]},
     )
     id1, id2 = req1["id"], r2.json()["id"]
 
@@ -96,14 +97,44 @@ async def test_full_flow_recommend_sort_and_fulfill(client):
     assert [it["id"] for it in lst2.json()["items"]] == [id2]
 
 
-async def test_pagination_five_per_page(client):
+async def test_duplicate_member_set_blocked(client):
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _signup(client, "carol", "Carol#1003")
+    await _signup(client, "dave", "Dave#1004")
+
+    r1 = await client.post(
+        "/api/match-requests", headers=_h(a),
+        json={"text": "@bob @carol 붙자", "targetMemberIds": ["bob", "carol"]},
+    )
+    assert r1.status_code == 200, r1.text
+
+    # 같은 구성원(alice+bob+carol)으로 또 올리면 막힌다 — 지목 순서가 달라도 마찬가지.
+    dup = await client.post(
+        "/api/match-requests", headers=_h(a),
+        json={"text": "@carol @bob 또", "targetMemberIds": ["carol", "bob"]},
+    )
+    assert dup.status_code in (400, 409, 422), dup.text
+
+    # 구성원이 다르면(dave 추가) 허용.
+    ok = await client.post(
+        "/api/match-requests", headers=_h(a),
+        json={"text": "@bob @carol @dave 팀전", "targetMemberIds": ["bob", "carol", "dave"]},
+    )
+    assert ok.status_code == 200, ok.text
+
+
+async def test_pagination_five_per_page(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    # 같은 구성원 중복 금지 규칙 때문에 요청마다 지목 조합을 달리한다 — 회원을 넉넉히 만들고
+    # 서로 다른 짝(bob과 X)으로 7건을 올린다.
+    others = ["bob", "carol", "dave", "eve", "frank", "grace", "heidi", "ivan"]
+    for i, name in enumerate(others):
+        await _signup(client, name, f"{name.title()}#20{i:02d}")
     for i in range(7):
         res = await client.post(
             "/api/match-requests", headers=_h(a),
-            json={"text": f"@bob @carol 요청 {i}", "targetMemberIds": ["bob", "carol"]},
+            json={"text": f"@bob @{others[i + 1]} 요청 {i}", "targetMemberIds": ["bob", others[i + 1]]},
         )
         assert res.status_code == 200, res.text
     p0 = (await client.get("/api/match-requests?page=0", headers=_h(a))).json()
