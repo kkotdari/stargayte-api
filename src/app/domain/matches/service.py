@@ -248,6 +248,12 @@ def _points_against(h2h: HeadToHead, pk: int, opponents: set[int]) -> int:
 # 팀으로 인정하는 최소 인원 — 2명 이상이면 (2:2든 3:3이든) 그 팀 구성 그대로 하나의 팀이다.
 TEAM_MIN_SIZE = 2
 
+# 랭킹 강함/약함(strength/weakness)의 정규화 스케일 — 순우열(참가자 수로 정규화한 비율)에
+# 이 값을 곱해 최종 상한을 1+NET_SCALE_MAX로 고정한다(요청: "회원이 많아지면 편차가
+# 커지는 게 공평하냐" — 클럽 규모와 무관하게 경기 한 판의 점수 스윙 범위를 일정하게
+# 유지). _apply_rank_order 참고.
+NET_SCALE_MAX = 9.0
+
 
 def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> MatchSlot:
     # 회원인지, 아니면 컴퓨터(AI)/비회원 참가자인지는 더 이상 member_pk 컬럼이 아니라
@@ -334,7 +340,6 @@ class MatchService:
         user_query: str | None,
         match_all_users: bool,
         has_placeholder: bool = False,
-        match_no: str | None = None,
         team_member_ids: list[str] | None = None,
     ) -> tuple[list[Match], str | None, bool]:
         decoded_cursor = _decode_cursor(cursor) if cursor else None
@@ -348,7 +353,6 @@ class MatchService:
             terms=_split_terms(user_query),
             match_all_terms=match_all_users,
             has_placeholder=has_placeholder,
-            match_no=match_no,
             team_member_pks=await self._team_member_pks(team_member_ids),
         )
         next_cursor = _encode_cursor(matches[-1].match_no) if has_more and matches else None
@@ -377,7 +381,6 @@ class MatchService:
         user_query: str | None,
         match_all_users: bool,
         has_placeholder: bool = False,
-        match_no: str | None = None,
         team_member_ids: list[str] | None = None,
     ) -> int:
         """무한스크롤로 화면엔 일부만 로드돼도, list_matches_page와 같은 필터 조건에
@@ -389,7 +392,6 @@ class MatchService:
             terms=_split_terms(user_query),
             match_all_terms=match_all_users,
             has_placeholder=has_placeholder,
-            match_no=match_no,
             team_member_pks=await self._team_member_pks(team_member_ids),
         )
 
@@ -512,8 +514,12 @@ class MatchService:
         순위는 '경기마다 가중 합산한 점수'로 가른다(요청):
 
           점수 = 각 경기(1v1)마다 이기면 +강함(상대) / 지면 -약함(상대) / 비기면 0.
-            강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면이다 — 강함(X) = 이기기
-            힘든 정도 = 1 + max(0, 순우열), 약함(X) = 이기기 쉬운 정도 = 1 + max(0, −순우열).
+            강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면인데, 이 순우열을 이번
+            기간 참가자 수로 정규화한 뒤 고정 스케일을 곱한다(요청: "회원이 많아지면
+            편차가 커지는 게 공평하냐" — superiorCount/inferiorCount의 상한이 참가자
+            수에 비례해 커져서, 클럽 규모가 클수록 경기 한 판의 점수 스윙이 부풀어
+            오르던 문제를 없앤다). NET_SCALE_MAX(아래)가 그 고정 상한이라, 참가자가
+            5명이든 50명이든 강함/약함은 항상 1~(1+NET_SCALE_MAX) 범위 안에 있다.
             → 순 승자(우열≥0)에게 지면 약함 1(최소, -1점), 순 패자를 이기면 강함 1(최소, +1점).
             센 상대를 이길수록 크게 얻고 약한 상대에게 질수록 크게 잃는다. 같은 사람 여러 번
             이기면 그만큼 누적(경기 수를 본다). 점수는 음수도 가능하다.
@@ -560,11 +566,18 @@ class MatchService:
             return sup, eq, inf
 
         person = {m.pk: _person_record(m.pk) for _, m in pairs}
-        # 강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면이다(요청). 강함 = 이기기
-        # 힘든 정도 = 1 + max(0, 순우열), 약함 = 이기기 쉬운 정도 = 1 + max(0, −순우열).
+        # 강함/약함은 '한 지표'(순 우열 = 우세수 − 열세수)의 양면이다(요청). superiorCount/
+        # inferiorCount의 상한이 "이번 기간에 실제로 뛴 사람 수 − 1"이라 클럽이 커질수록
+        # 순우열의 최댓값도, 그로 인한 점수 스윙도 같이 부풀어 오른다(요청: "회원이 많아지면
+        # 편차가 커지는 게 공평하냐") — 순우열을 참가자 수로 정규화한 비율(-1~1)로 바꾼 뒤
+        # 고정 스케일(NET_SCALE_MAX)을 곱해서, 참가자가 몇 명이든 강함/약함이 항상 같은
+        # 범위(1~1+NET_SCALE_MAX) 안에 들어오게 한다. 참가자가 1명 이하면 나눌 대상이
+        # 없으므로 분모를 최소 1로 둔다.
+        participant_count = sum(1 for entry, _ in pairs if entry.overall.plays > 0)
+        net_denom = max(1, participant_count - 1)
         net = {pk: s - i for pk, (s, e, i) in person.items()}
-        strength = {pk: 1 + max(0, n) for pk, n in net.items()}
-        weakness = {pk: 1 + max(0, -n) for pk, n in net.items()}
+        strength = {pk: 1 + NET_SCALE_MAX * max(0, n) / net_denom for pk, n in net.items()}
+        weakness = {pk: 1 + NET_SCALE_MAX * max(0, -n) / net_denom for pk, n in net.items()}
 
         # 실제 랭킹 점수는 '경기 단위'로 합산한다 — 개인전(1:1)은 예전 그대로, 이기면 +강함(상대)
         # 지면 −약함(상대) 비기면 0. 팀전은 여기에 '팀 강함 비율' f = (진 팀 강함 합) ÷ (양 팀 강함

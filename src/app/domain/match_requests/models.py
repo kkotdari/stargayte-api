@@ -38,8 +38,10 @@ class MatchRequest(AuditMixin, TimestampMixin, Base):
 
 
 class MatchRequestTarget(Base):
-    """대결 요청에 @태그로 지목된 회원 한 명 — (요청, 회원) 조합은 유일하다. 이 목록에 있는
-    회원만 해당 요청을 "들어주기"할 수 있다."""
+    """대결 요청에 언급(지목)된 회원 한 명 — (요청, 회원) 조합은 유일하다. @태그 기능은 폐지돼
+    이제 이 목록은 "언급된 사람" 표시 + 알림 대상 용도로만 쓰인다(권한 판정 등 다른 기능과는
+    연결하지 않는다). 요청이 등록되면 언급된 각 회원에게 알림이 되며, read_at이 NULL이면
+    아직 안 읽은 알림(앱 열 때 인박스 팝업으로 보여준다). 한 번 읽으면 read_at을 채운다."""
 
     __tablename__ = "match_request_targets"
     __table_args__ = (
@@ -53,6 +55,8 @@ class MatchRequestTarget(Base):
     member_pk: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("members.pk", ondelete="CASCADE"), nullable=False
     )
+    # 언급된 회원이 이 요청 알림을 읽은 시각 — NULL이면 안 읽음(인박스에 뜬다).
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     request: Mapped[MatchRequest] = relationship(back_populates="targets")
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
