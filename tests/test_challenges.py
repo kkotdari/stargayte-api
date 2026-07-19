@@ -309,7 +309,7 @@ async def test_cannot_put_same_member_on_both_teams(client):
     assert res.status_code == 422, res.text
 
 
-async def test_accepting_unscheduled_challenge_requires_time(client):
+async def test_accepting_unscheduled_challenge_stays_undecided_then_completes_now(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -319,14 +319,38 @@ async def test_accepting_unscheduled_challenge_requires_time(client):
     res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
     challenge_id = res.json()["id"]
 
-    # 시간 미정 도전장 — 수락하며 시간을 안 넘기면 거부.
+    # 시간 미정 도전장 — 시간을 안 넘겨도 그대로 수락(성사)된다(예전엔 거부했음).
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
         json={"response": "accepted", "reason": "OK!"},
     )
-    assert res.status_code == 400, res.text
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "confirmed"
+    assert body["scheduledAt"] is None
 
-    # 수락하며 시간을 정하면 성사된다.
+    # 시간 미정이라도 결과를 바로 입력할 수 있고, 예정 일시가 완료(입력) 시점으로 채워진다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/result", headers=headers_a,
+        json={"winnerSide": "creator"},
+    )
+    assert res.status_code == 200, res.text
+    done = res.json()
+    assert done["status"] == "done"
+    assert done["scheduledAt"] is not None
+
+
+async def test_accepting_unscheduled_challenge_can_still_set_time(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    challenge_id = res.json()["id"]
+
+    # 수락하며 시간을 정하면 그 값으로 확정된다.
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
         json={"response": "accepted", "reason": "OK!", "scheduledAt": "2026-09-01T10:00:00Z"},
@@ -759,3 +783,22 @@ async def test_result_pending_for_me_skips_future_schedule_and_entered_result(cl
     headers_a, _headers_b, _future_id = await _confirmed_1v1(client, scheduled_at="2099-01-01T10:00:00Z")
     res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
     assert res.json()["items"] == []
+
+
+async def test_from_match_request_flag_roundtrips(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    # 일반 도전장은 False.
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    assert res.json()["fromMatchRequest"] is False
+
+    # 들어주기로 만든 도전장은 fromMatchRequest=True로 표식된다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "fromMatchRequest": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["fromMatchRequest"] is True

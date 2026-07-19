@@ -14,6 +14,7 @@ from app.domain.app_version import models as app_version_models  # noqa: F401
 from app.domain.auth import models as auth_models  # noqa: F401
 from app.domain.challenges import models as challenges_models  # noqa: F401
 from app.domain.env_vars import models as env_vars_models  # noqa: F401
+from app.domain.match_requests import models as match_requests_models  # noqa: F401
 from app.domain.matches import models as matches_models  # noqa: F401
 from app.domain.members import models as members_models  # noqa: F401
 from app.domain.settings import models as settings_models  # noqa: F401
