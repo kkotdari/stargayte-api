@@ -783,3 +783,22 @@ async def test_result_pending_for_me_skips_future_schedule_and_entered_result(cl
     headers_a, _headers_b, _future_id = await _confirmed_1v1(client, scheduled_at="2099-01-01T10:00:00Z")
     res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
     assert res.json()["items"] == []
+
+
+async def test_from_match_request_flag_roundtrips(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    # 일반 도전장은 False.
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    assert res.json()["fromMatchRequest"] is False
+
+    # 들어주기로 만든 도전장은 fromMatchRequest=True로 표식된다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "fromMatchRequest": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["fromMatchRequest"] is True

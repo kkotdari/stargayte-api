@@ -146,6 +146,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         reappliedFromId=challenge.reapplied_from_id,
         resultWinnerSide=challenge.result_winner_side,
         history=[_history_entry(c) for c in (history or [])],
+        fromMatchRequest=challenge.from_match_request,
     )
 
 
@@ -262,6 +263,7 @@ class ChallengeService:
             match_type=match_type,
             scheduled_at=payload.scheduled_at,
             message=payload.message,
+            from_match_request=payload.from_match_request,
             created_by=actor.pk,
             updated_by=actor.pk,
         )

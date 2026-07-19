@@ -82,6 +82,8 @@ class ChallengeOut(BaseModel):
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
     # 이 도전장보다 앞선 체인 기록(오래된 순) — 재대결 이력이 없으면 빈 배열.
     history: list[ChallengeHistoryEntry] = Field(default_factory=list)
+    # "대결 요청 들어주기"로 만들어졌으면 True — 카드에 "요청대결" 배지를 붙인다.
+    from_match_request: bool = Field(default=False, alias="fromMatchRequest")
 
 
 class ChallengeCreate(BaseModel):
@@ -94,6 +96,8 @@ class ChallengeCreate(BaseModel):
     # — 본인 포함 최대 4명이라 이 목록 자체는 최대 3명. (지금 UI는 1:1만 신청하므로 항상
     # 빈 배열로 오지만, 서버는 계속 팀전을 받아준다 — 나중에 UI가 팀전을 다시 열면 그대로 쓴다.)
     own_team_member_ids: list[str] = Field(default_factory=list, alias="ownTeamMemberIds", max_length=3)
+    # "대결 요청 들어주기"로 만든 도전장이면 True — 카드에 "요청대결" 배지를 붙인다.
+    from_match_request: bool = Field(default=False, alias="fromMatchRequest")
 
     @model_validator(mode="after")
     def _normalize(self) -> "ChallengeCreate":
