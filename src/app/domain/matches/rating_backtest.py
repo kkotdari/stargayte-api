@@ -1,15 +1,18 @@
-"""[임시/분석] 전투력 산정 방식 백테스트 — 현재 방식(결과 순우열) vs 레이팅(팀 Elo).
+"""[임시/분석] 전투력 산정 방식 백테스트 — 현재 방식(결과 순우열) vs 레이팅(Elo/TrueSkill).
 
 각 방식으로 '다음 경기 승자'를 예측해 정확도로 '실제 강함 반영도'를 잰다. 예측 정확도가
 높을수록 그 전투력이 실제 강함을 잘 담는다는 뜻. 관리자 임시 버튼에서 호출한다.
 검증이 끝나면 이 파일과 라우터의 임시 엔드포인트를 함께 제거하면 된다.
 
-eapm/유효커맨드 기반은 제외(폐기). 레이팅(Elo)과 현재방식만 비교한다.
+eapm/유효커맨드 기반은 제외(폐기). 최종 채택 후보는 TrueSkill이며, Elo·현재방식과 함께
+정확도를 비교하고 TrueSkill 리더보드(μ/σ/보수추정·잠정)를 같이 출력한다.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+
+from app.domain.matches.rating import RatingEngine
 
 NET_SCALE_MAX = 9.0  # service.py와 동일
 
@@ -105,8 +108,8 @@ def _acc(correct, total):
 
 def render_report(games: list[Game], names: dict[int, str], warmup: int = 4) -> str:
     games = sorted(games, key=lambda g: g.order)
-    elo, cur = EloModel(), CurrentModel()
-    stat = {k: [0, 0] for k in ("elo", "current", "base")}  # [correct, total]
+    elo, cur, ts = EloModel(), CurrentModel(), RatingEngine()
+    stat = {k: [0, 0] for k in ("trueskill", "elo", "current", "base")}  # [correct, total]
     win = defaultdict(lambda: [0, 0, 0])  # pk -> [w,d,l] (팀 결과 귀속)
     mg = defaultdict(int)
 
@@ -115,8 +118,9 @@ def render_report(games: list[Game], names: dict[int, str], warmup: int = 4) -> 
         both = bool(_members(g.team1)) and bool(_members(g.team2))
         warm = all(mg[p] >= warmup for p in _members(g.team1) + _members(g.team2))
         if decisive and both and warm:
-            for key, model in (("elo", elo), ("current", cur)):
-                pred = model.predict(g)
+            for key, pred in (("elo", elo.predict(g)),
+                              ("current", cur.predict(g)),
+                              ("trueskill", ts.predict(g.team1, g.team2))):
                 if pred is not None:
                     stat[key][1] += 1
                     stat[key][0] += int(pred == g.result)
@@ -132,6 +136,7 @@ def render_report(games: list[Game], names: dict[int, str], warmup: int = 4) -> 
                     win[p][2] += 1
         elo.update(g)
         cur.update(g)
+        ts.update(g.team1, g.team2, g.result)
         if decisive:
             for p in _members(g.team1) + _members(g.team2):
                 mg[p] += 1
@@ -143,31 +148,35 @@ def render_report(games: list[Game], names: dict[int, str], warmup: int = 4) -> 
     L.append("=" * 60)
     L.append("")
     L.append("[예측 정확도] 다음 경기 승자 적중률 (높을수록 실제 강함 반영)")
-    lab = {"elo": "레이팅(Elo)", "current": "현재방식(결과)", "base": "기준선(항상 team1)"}
-    for k in ("elo", "current", "base"):
+    lab = {"trueskill": "레이팅(TrueSkill)", "elo": "레이팅(Elo)",
+           "current": "현재방식(결과)", "base": "기준선(항상 team1)"}
+    for k in ("trueskill", "elo", "current", "base"):
         c, t = stat[k]
-        L.append(f"  {lab[k]:<16} {_acc(c, t):5.1f}%  ({c}/{t})")
+        L.append(f"  {lab[k]:<18} {_acc(c, t):5.1f}%  ({c}/{t})")
     L.append("")
-    L.append("[레이팅 리더보드]  (현재순위→레이팅순위 이동, 승률=이 경기유형 전적)")
-    L.append(f"  {'레이팅#':>5} {'현재#':>5}  {'닉네임':<12} {'경기':>4} {'승-무-패':>9} {'승률':>5} {'레이팅':>6}")
-    rated = sorted(elo.rating.items(), key=lambda kv: -kv[1])
-    for i, (pk, r) in enumerate(rated):
+    L.append("[TrueSkill 리더보드]  (보수추정 μ−3σ 순, 승률=이 경기유형 전적, *=잠정)")
+    L.append(f"  {'#':>3} {'현재#':>5}  {'닉네임':<12} {'경기':>4} {'승-무-패':>9} {'승률':>5} "
+             f"{'μ':>6} {'σ':>5} {'보수':>6}")
+    # 순위는 보수 추정치(μ−3σ) 기준 — 표본 적으면 σ가 커서 아래로 내려간다.
+    ranked = sorted(ts.rating.items(), key=lambda kv: -kv[1].conservative)
+    for i, (pk, r) in enumerate(ranked):
         w, d, l = win[pk]
         tot = w + d + l
         wr = f"{100*w/tot:.0f}%" if tot else "-"
         nick = names.get(pk, f"#{pk}")[:12]
-        L.append(f"  {i+1:>5} {cur_rank.get(pk, '-'):>5}  {nick:<12} {elo.games[pk]:>4} "
-                 f"{f'{w}-{d}-{l}':>9} {wr:>5} {r:>6.0f}")
+        prov = "*" if ts.is_provisional(pk) else " "
+        L.append(f"  {i+1:>3} {cur_rank.get(pk, '-'):>5}  {nick:<12}{prov}{ts.games[pk]:>3} "
+                 f"{f'{w}-{d}-{l}':>9} {wr:>5} {r.mu:>6.1f} {r.sigma:>5.1f} {r.conservative:>6.1f}")
 
-    # 레이팅↔승률 순위 상관(스피어만) — 방향 확인용.
-    common = [pk for pk, _ in rated if sum(win[pk]) >= 5]
+    # 레이팅(TrueSkill 보수)↔승률 순위 상관(스피어만) — 방향 확인용.
+    common = [pk for pk, _ in ranked if sum(win[pk]) >= 5]
     if len(common) >= 3:
         wr = {pk: win[pk][0] / sum(win[pk]) for pk in common}
-        e_rank = {pk: i for i, pk in enumerate(sorted(common, key=lambda p: -elo.rating[p]))}
+        t_rank = {pk: i for i, pk in enumerate(sorted(common, key=lambda p: -ts.rating[p].conservative))}
         w_rank = {pk: i for i, pk in enumerate(sorted(common, key=lambda p: -wr[p]))}
         n = len(common)
-        d2 = sum((e_rank[pk] - w_rank[pk]) ** 2 for pk in common)
+        d2 = sum((t_rank[pk] - w_rank[pk]) ** 2 for pk in common)
         rho = 1 - 6 * d2 / (n * (n * n - 1))
         L.append("")
-        L.append(f"[레이팅 ↔ 승률 순위 상관(5경기+, {n}명)] rho = {rho:.3f} (1이면 완전일치)")
+        L.append(f"[TrueSkill 보수 ↔ 승률 순위 상관(5경기+, {n}명)] rho = {rho:.3f} (1이면 완전일치)")
     return "\n".join(L)
