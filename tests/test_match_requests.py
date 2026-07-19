@@ -1,5 +1,6 @@
-"""대결 요청 코너 — @태그 지목(최소 2명), 추천 토글, 추천순→먼저등록순 정렬/페이징(5개),
-지목된 사람만 들어주기(fulfill) 스모크 테스트."""
+"""대결 요청 코너 — @태그 폐지, 언급(표시+알림)만 유지. 자유 텍스트 + 언급 인원 0명 이상,
+추천 토글, 추천순→먼저등록순 정렬/페이징(5개), 언급 알림 인박스(읽음 저장), 작성자/운영자
+성사됨 완료 처리 스모크 테스트."""
 
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
@@ -22,7 +23,6 @@ def _h(tok: dict) -> dict:
 
 
 async def _approve(client, admin_token: str, member_id: str) -> None:
-    # 첫 가입자(alice)가 자동으로 운영자/active가 되므로 그 토큰으로 나머지를 승인한다.
     res = await client.patch(
         f"/api/members/{member_id}/status",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -31,118 +31,93 @@ async def _approve(client, admin_token: str, member_id: str) -> None:
     assert res.status_code == 200, res.text
 
 
-async def test_create_requires_two_targets(client):
+async def test_create_freetext_with_mentions_and_reject_empty(client):
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
-    # 한 명만 지목하면 거절.
-    res = await client.post(
+    await _approve(client, a["accessToken"], "bob")
+
+    # 자유 텍스트 + 언급(제한 없음). 자기 자신 언급은 무시된다.
+    ok = await client.post(
         "/api/match-requests", headers=_h(a),
-        json={"text": "@bob 나랑 붙자", "targetMemberIds": ["bob"]},
+        json={"text": "팍규 대 Rex 보고싶어요!", "targetMemberIds": ["bob", "alice"]},
     )
-    assert res.status_code == 422 or res.status_code == 400, res.text
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["text"] == "팍규 대 Rex 보고싶어요!"
+    assert {t["memberId"] for t in body["targets"]} == {"bob"}
+    assert body["mine"] is True
+
+    # 언급 0명도 허용.
+    ok2 = await client.post(
+        "/api/match-requests", headers=_h(a), json={"text": "아무나 붙어요"}
+    )
+    assert ok2.status_code == 200, ok2.text
+    assert ok2.json()["targets"] == []
+
+    # 빈 텍스트는 거절.
+    bad = await client.post("/api/match-requests", headers=_h(a), json={"text": "   "})
+    assert bad.status_code in (400, 422), bad.text
 
 
-async def test_full_flow_recommend_sort_and_fulfill(client):
+async def test_inbox_notifies_mentioned_and_marks_read(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     c = await _signup(client, "carol", "Carol#1003")
-    await _signup(client, "dave", "Dave#1004")
     await _approve(client, a["accessToken"], "bob")
     await _approve(client, a["accessToken"], "carol")
 
-    # 구성원이 서로 다른 요청 두 개(중복 금지 규칙 회피). 둘 다 bob·carol이 지목돼 있다.
-    r1 = await client.post(
+    await client.post(
         "/api/match-requests", headers=_h(a),
-        json={"text": "@bob @carol 첫 요청", "targetMemberIds": ["bob", "carol"]},
+        json={"text": "bob 대 carol!", "targetMemberIds": ["bob", "carol"]},
     )
-    assert r1.status_code == 200, r1.text
-    req1 = r1.json()
-    assert req1["recommendCount"] == 0
-    assert {t["memberId"] for t in req1["targets"]} == {"bob", "carol"}
 
-    r2 = await client.post(
-        "/api/match-requests", headers=_h(a),
-        json={"text": "@bob @carol @dave 둘째 요청", "targetMemberIds": ["bob", "carol", "dave"]},
-    )
-    id1, id2 = req1["id"], r2.json()["id"]
+    # 언급된 bob 인박스에 뜬다.
+    inbox_b = (await client.get("/api/match-requests/inbox", headers=_h(b))).json()
+    assert len(inbox_b["items"]) == 1
+    assert inbox_b["items"][0]["text"] == "bob 대 carol!"
+    assert {m["memberId"] for m in inbox_b["items"][0]["mentioned"]} == {"bob", "carol"}
 
-    # 둘째 요청(id2)에 bob이 추천 → 추천 많은 순으로 id2가 위로 와야 한다.
+    # 언급 안 된 작성자 alice 인박스는 비어있다.
+    inbox_a = (await client.get("/api/match-requests/inbox", headers=_h(a))).json()
+    assert inbox_a["items"] == []
+
+    # bob이 읽음 처리하면 다시 안 뜬다. carol은 여전히 안 읽음.
+    r = await client.post("/api/match-requests/inbox/read", headers=_h(b))
+    assert r.status_code == 200, r.text
+    assert (await client.get("/api/match-requests/inbox", headers=_h(b))).json()["items"] == []
+    assert len((await client.get("/api/match-requests/inbox", headers=_h(c))).json()["items"]) == 1
+
+
+async def test_recommend_sort_and_complete(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    r1 = await client.post("/api/match-requests", headers=_h(a), json={"text": "첫 요청"})
+    r2 = await client.post("/api/match-requests", headers=_h(a), json={"text": "둘째 요청"})
+    id1, id2 = r1.json()["id"], r2.json()["id"]
+
     rec = await client.post(f"/api/match-requests/{id2}/recommend", headers=_h(b))
-    assert rec.status_code == 200, rec.text
     assert rec.json()["recommendCount"] == 1
-    assert rec.json()["recommendedByMe"] is True
-
-    lst = await client.get("/api/match-requests", headers=_h(b))
-    items = lst.json()["items"]
+    items = (await client.get("/api/match-requests", headers=_h(b))).json()["items"]
     assert [it["id"] for it in items] == [id2, id1], "추천순→먼저등록순"
 
-    # bob은 지목됐으니 iAmTarget True, alice(작성자)는 아님.
-    assert items[0]["iAmTarget"] is True
-    lst_a = await client.get("/api/match-requests", headers=_h(a))
-    assert lst_a.json()["items"][0]["iAmTarget"] is False
-    assert lst_a.json()["items"][0]["mine"] is True
-
-    # 추천 토글 취소.
-    rec_off = await client.post(f"/api/match-requests/{id2}/recommend", headers=_h(b))
-    assert rec_off.json()["recommendCount"] == 0
-
-    # 지목 안 된 사람(작성자 alice)은 들어줄 수 없다.
-    bad = await client.post(f"/api/match-requests/{id1}/fulfill", headers=_h(a))
+    # 작성자가 아니고 운영자도 아니면 완료 처리 불가.
+    bad = await client.delete(f"/api/match-requests/{id1}", headers=_h(b))
     assert bad.status_code in (400, 403), bad.text
 
-    # 지목된 carol은 들어줄 수 있고, 그 뒤 목록에서 사라진다.
-    ok = await client.post(f"/api/match-requests/{id1}/fulfill", headers=_h(c))
+    # 작성자(alice)는 성사됨 완료 처리 가능 → 목록에서 사라진다.
+    ok = await client.delete(f"/api/match-requests/{id1}", headers=_h(a))
     assert ok.status_code == 200, ok.text
-    lst2 = await client.get("/api/match-requests", headers=_h(b))
-    assert [it["id"] for it in lst2.json()["items"]] == [id2]
-
-
-async def test_duplicate_target_set_blocked_author_independent(client):
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _signup(client, "carol", "Carol#1003")
-    d = await _signup(client, "dave", "Dave#1004")
-    await _approve(client, a["accessToken"], "dave")
-
-    r1 = await client.post(
-        "/api/match-requests", headers=_h(a),
-        json={"text": "@bob @carol 붙자", "targetMemberIds": ["bob", "carol"]},
-    )
-    assert r1.status_code == 200, r1.text
-
-    # 지목 대상이 같으면(순서 무관) 막힌다.
-    dup = await client.post(
-        "/api/match-requests", headers=_h(a),
-        json={"text": "@carol @bob 또", "targetMemberIds": ["carol", "bob"]},
-    )
-    assert dup.status_code in (400, 409, 422), dup.text
-
-    # 작성자가 달라도(dave가 올려도) 지목 대상 집합이 같으면 막힌다(구성원에서 작성자 제외).
-    dup2 = await client.post(
-        "/api/match-requests", headers=_h(d),
-        json={"text": "@bob @carol 나도", "targetMemberIds": ["bob", "carol"]},
-    )
-    assert dup2.status_code in (400, 409, 422), dup2.text
-
-    # 지목 대상이 다르면(dave 추가) 허용.
-    ok = await client.post(
-        "/api/match-requests", headers=_h(a),
-        json={"text": "@bob @carol @dave 팀전", "targetMemberIds": ["bob", "carol", "dave"]},
-    )
-    assert ok.status_code == 200, ok.text
+    left = (await client.get("/api/match-requests", headers=_h(b))).json()
+    assert [it["id"] for it in left["items"]] == [id2]
 
 
 async def test_pagination_five_per_page(client):
     a = await _signup(client, "alice", "Alice#1001")
-    # 같은 구성원 중복 금지 규칙 때문에 요청마다 지목 조합을 달리한다 — 회원을 넉넉히 만들고
-    # 서로 다른 짝(bob과 X)으로 7건을 올린다.
-    others = ["bob", "carol", "dave", "eve", "frank", "grace", "heidi", "ivan"]
-    for i, name in enumerate(others):
-        await _signup(client, name, f"{name.title()}#20{i:02d}")
     for i in range(7):
         res = await client.post(
-            "/api/match-requests", headers=_h(a),
-            json={"text": f"@bob @{others[i + 1]} 요청 {i}", "targetMemberIds": ["bob", others[i + 1]]},
+            "/api/match-requests", headers=_h(a), json={"text": f"요청 {i}"}
         )
         assert res.status_code == 200, res.text
     p0 = (await client.get("/api/match-requests?page=0", headers=_h(a))).json()

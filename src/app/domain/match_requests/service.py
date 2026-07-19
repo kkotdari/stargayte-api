@@ -11,6 +11,8 @@ from app.domain.match_requests.models import (
 from app.domain.match_requests.repository import MatchRequestRepository
 from app.domain.match_requests.schemas import (
     MatchRequestAuthor,
+    MatchRequestInboxItem,
+    MatchRequestInboxOut,
     MatchRequestListOut,
     MatchRequestOut,
     MatchRequestTargetOut,
@@ -20,8 +22,6 @@ from app.domain.members.repository import MemberRepository
 
 # 페이지당 노출 개수(요청: "페이지당 5개까지 노출").
 PAGE_SIZE = 5
-# 최소 지목 인원(요청: "최소 두명을 지목").
-MIN_TARGETS = 2
 
 
 class MatchRequestService:
@@ -57,7 +57,6 @@ class MatchRequestService:
                 )
                 for t in targets
             ],
-            iAmTarget=any(t.member_pk == actor.pk for t in targets),
         )
 
     async def list_requests(self, *, actor: Member, page: int) -> MatchRequestListOut:
@@ -76,12 +75,13 @@ class MatchRequestService:
     async def create_request(
         self, text: str, target_member_ids: list[str], *, actor: Member
     ) -> MatchRequestOut:
+        # @태그 기능은 폐지됐지만 언급된 사람은 계속 관리한다(요청). 최소 인원/중복 제한 없이
+        # 0명 이상 언급 가능. 언급된 사람은 표시 + 알림 대상으로만 쓰고(권한 등 다른 기능과
+        # 연결 안 함), 등록 시 각자에게 알림(target.read_at=NULL)이 간다.
         cleaned = text.strip()
         if not cleaned:
             raise ValidationError("요청 내용을 입력해주세요.")
 
-        # @태그로 지목한 회원들 — 중복 제거 후 최소 2명, 본인은 지목 불가(자신에게 도전장을
-        # 보낼 수 없으므로).
         seen: set[str] = set()
         targets: list[Member] = []
         for member_id in target_member_ids:
@@ -92,28 +92,54 @@ class MatchRequestService:
             if m is None:
                 raise NotFoundError(f"존재하지 않는 회원입니다: {member_id}")
             if m.pk == actor.pk:
-                raise ValidationError("자기 자신은 지목할 수 없어요.")
+                # 자기 자신 언급은 무시(자신에게 알림 보낼 필요 없음).
+                continue
             targets.append(m)
-        if len(targets) < MIN_TARGETS:
-            raise ValidationError("최소 두 명 이상을 @태그로 지목해주세요.")
-
-        # 같은 구성원(지목된 사람들의 집합)으로 이미 살아있는 요청이 있으면 막는다(요청: "같은
-        # 구성원의 요청이 존재하면 만들 수 없음", "구성원에서 지목자(작성자)는 제외"). 작성자와
-        # 무관하게 @태그로 지목된 대상 집합이 완전히 같은지로만 판정한다.
-        new_targets = frozenset(m.pk for m in targets)
-        for existing in await self._repo.list_all_alive():
-            existing_targets = frozenset(t.member_pk for t in existing.targets)
-            if existing_targets == new_targets:
-                raise ValidationError("같은 구성원으로 올라온 대결 요청이 이미 있어요.")
 
         request = MatchRequest(text=cleaned, created_by=actor.pk, updated_by=actor.pk)
-        # member=m을 채워 두면 _to_out에서 target.member 지연로드가 안 일어난다. recommends는
-        # 빈 컬렉션으로 미리 세팅해 "로드됨(비어있음)"으로 표시(지연로드 회피).
-        request.targets = [MatchRequestTarget(member_pk=m.pk, member=m) for m in targets]
+        # member=m을 미리 채워 _to_out의 지연로드를 피한다. read_at=NULL이면 안 읽은 알림.
+        request.targets = [
+            MatchRequestTarget(member_pk=m.pk, member=m) for m in targets
+        ]
         request.recommends = []
         self._repo.add(request)
         await self._session.commit()
         return self._to_out(request, actor, author=actor)
+
+    async def list_inbox(self, *, actor: Member) -> MatchRequestInboxOut:
+        """내가 언급된, 아직 안 읽은(read_at NULL) 살아있는 요청들 — 앱 열 때 인박스 팝업용."""
+        targets = await self._repo.list_unread_targets_for(actor.pk)
+        items: list[MatchRequestInboxItem] = []
+        for t in targets:
+            req = t.request
+            author = req.creator
+            items.append(
+                MatchRequestInboxItem(
+                    requestId=req.id,
+                    text=req.text,
+                    author=MatchRequestAuthor(
+                        memberId=author.id if author else "",
+                        nickname=author.nickname if author else "(탈퇴한 회원)",
+                        avatar=author.avatar_url if author else None,
+                    ),
+                    createdAt=req.created_at,
+                    mentioned=[
+                        MatchRequestTargetOut(
+                            memberId=mt.member.id if mt.member else "",
+                            nickname=mt.member.nickname if mt.member else "(탈퇴한 회원)",
+                        )
+                        for mt in req.targets
+                    ],
+                )
+            )
+        return MatchRequestInboxOut(items=items)
+
+    async def mark_inbox_read(self, *, actor: Member) -> None:
+        """내 안 읽은 언급 알림을 모두 읽음 처리한다(인박스 팝업 닫을 때)."""
+        now = datetime.now(UTC)
+        for t in await self._repo.list_unread_targets_for(actor.pk):
+            t.read_at = now
+        await self._session.commit()
 
     async def toggle_recommend(self, request_id: int, *, actor: Member) -> MatchRequestOut:
         request = await self._get_alive(request_id)
@@ -128,26 +154,13 @@ class MatchRequestService:
         await self._session.commit()
         return self._to_out(request, actor)
 
-    async def fulfill(self, request_id: int, *, actor: Member) -> None:
-        """"들어주기"로 실제 도전장을 보낸 뒤, 그 요청을 목록에서 내린다(요청: "요청을 들어준
-        경우 해당 요청은 사라짐"). 자기 자신의 요청은 들어줄 수 없다(자신에게 도전장을 보낼 수
-        없으므로)."""
-        request = await self._get_alive(request_id)
-        if request.created_by == actor.pk:
-            raise ValidationError("자신의 요청은 들어줄 수 없어요.")
-        # @태그로 지목된 사람만 들어줄 수 있다(요청: "그 사람들만 들어줄 수 있는 시스템").
-        if not any(t.member_pk == actor.pk for t in request.targets):
-            raise ForbiddenError("이 요청에 지목된 회원만 들어줄 수 있어요.")
-        request.fulfilled_at = datetime.now(UTC)
-        request.updated_by = actor.pk
-        await self._session.commit()
-
-    async def delete_request(self, request_id: int, *, actor: Member) -> None:
-        """작성자 본인 또는 운영자가 요청을 내린다. (들어주기와 같은 소프트삭제.)"""
+    async def complete_request(self, request_id: int, *, actor: Member) -> None:
+        """대결이 성사되면 작성자 본인 또는 운영자가 "성사됨"으로 완료 처리한다(요청). 목록에서
+        사라지는 소프트삭제(fulfilled_at)."""
         request = await self._get_alive(request_id)
         is_admin = actor.has_any_role("0202")
         if request.created_by != actor.pk and not is_admin:
-            raise ForbiddenError("자신이 올린 요청만 내릴 수 있어요.")
+            raise ForbiddenError("작성자 본인 또는 운영자만 완료 처리할 수 있어요.")
         request.fulfilled_at = datetime.now(UTC)
         request.updated_by = actor.pk
         await self._session.commit()
