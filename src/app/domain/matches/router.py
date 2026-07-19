@@ -356,18 +356,21 @@ async def rating_backtest(
         r.pk: r.nickname
         for r in (await db.execute(text("SELECT pk, nickname FROM members"))).all()
     }
+    # match_type 필터는 조건부로 WHERE에 붙인다 — :mt를 IS NULL 비교에 쓰면 asyncpg가
+    # 파라미터 타입을 못 정해 AmbiguousParameterError가 난다.
+    mt_clause = "AND m.match_type = :mt" if match_type else ""
     rows = (await db.execute(text(
-        """
+        f"""
         SELECT m.match_no AS match_no, m.match_type AS match_type,
                rr.result AS result, p.team AS team, p.player_name AS player_name
         FROM matches m
         JOIN match_results rr     ON rr.match_id = m.id
         JOIN match_participants p ON p.match_id = m.id
         WHERE rr.result IN ('team1','team2','draw')
-          AND (:mt IS NULL OR m.match_type = :mt)
+          {mt_clause}
         ORDER BY COALESCE(rr.game_started_at, m.match_date::timestamptz), m.match_no
         """
-    ), {"mt": match_type})).all()
+    ), ({"mt": match_type} if match_type else {}))).all()
 
     by: dict[str, dict] = {}
     for r in rows:
