@@ -271,41 +271,56 @@ def synthetic_games(n: int = 1200, seed: int = 7) -> tuple[list[Game], dict[int,
     return games, names
 
 
-async def db_games(match_type: str | None) -> tuple[list[Game], dict[int, str]]:
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from app.db.session import AsyncSessionLocal
-    from app.domain.matches.models import Match
-    from app.domain.members.models import Member, ReplayAlias
+async def db_games(url: str, match_type: str | None) -> tuple[list[Game], dict[int, str]]:
+    """앱 설정/ORM에 의존하지 않는 독립 로더 — DATABASE_URL만 있으면 어디서든 실행 가능.
+    asyncpg만 필요: pip install asyncpg"""
+    import ssl
+    import asyncpg
 
-    async with AsyncSessionLocal() as s:
-        alias_rows = (await s.execute(
-            select(ReplayAlias.raw_name, ReplayAlias.member_pk).where(ReplayAlias.kind == "member")
-        )).all()
-        alias = {raw: pk for raw, pk in alias_rows}
-        names = {pk: nick for pk, nick in (await s.execute(select(Member.pk, Member.nickname))).all()}
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # Railway 프록시 인증서 검증 생략(1회성 분석)
+    try:
+        conn = await asyncpg.connect(url, ssl=ctx)
+    except Exception:
+        conn = await asyncpg.connect(url)  # SSL 불가 서버면 평문 재시도
+    try:
+        alias = {r["raw_name"]: r["member_pk"] for r in await conn.fetch(
+            "SELECT raw_name, member_pk FROM replay_aliases WHERE kind = 'member'")}
+        names = {r["pk"]: r["nickname"] for r in await conn.fetch(
+            "SELECT pk, nickname FROM members")}
+        rows = await conn.fetch(
+            """
+            SELECT m.match_no, m.match_type,
+                   COALESCE(rr.game_started_at, m.match_date::timestamptz) AS ord,
+                   rr.result, rr.duration_seconds,
+                   p.team, p.race, p.eapm, p.effective_cmd_count, p.player_name
+            FROM matches m
+            JOIN match_results rr     ON rr.match_id = m.id
+            JOIN match_participants p ON p.match_id = m.id
+            WHERE rr.result IN ('team1','team2','draw')
+              AND ($1::text IS NULL OR m.match_type = $1)
+            ORDER BY ord, m.match_no
+            """,
+            match_type,
+        )
+    finally:
+        await conn.close()
 
-        q = select(Match).options(selectinload(Match.participants), selectinload(Match.result_row))
-        if match_type:
-            q = q.where(Match.match_type == match_type)
-        matches = (await s.execute(q)).scalars().all()
-
-    games: list[Game] = []
-    for m in matches:
-        rr = m.result_row
-        if rr is None or rr.result not in ("team1", "team2", "draw"):
-            continue  # 미실시 등 제외
-        dur = rr.duration_seconds
-        sides: dict[str, list[Player]] = {"team1": [], "team2": []}
-        for p in m.participants:
-            if p.team not in sides:
-                continue
-            ecmd = (p.effective_cmd_count / (dur / 60)) if (p.effective_cmd_count and dur) else None
-            sides[p.team].append(Player(member_id=alias.get(p.player_name), race=p.race,
-                                        eapm=p.eapm, ecmd=ecmd))
-        order = (rr.game_started_at or m.match_date, m.match_no)
-        games.append(Game(order=order, match_type=m.match_type,
-                          team1=sides["team1"], team2=sides["team2"], result=rr.result))
+    by_match: dict[str, dict] = {}
+    for r in rows:
+        g = by_match.setdefault(r["match_no"], {
+            "order": (r["ord"], r["match_no"]), "match_type": r["match_type"],
+            "result": r["result"], "team1": [], "team2": []})
+        if r["team"] not in ("team1", "team2"):
+            continue
+        dur = r["duration_seconds"]
+        ecmd = (r["effective_cmd_count"] / (dur / 60)) if (r["effective_cmd_count"] and dur) else None
+        g[r["team"]].append(Player(member_id=alias.get(r["player_name"]), race=r["race"],
+                                   eapm=r["eapm"], ecmd=ecmd))
+    games = [Game(order=g["order"], match_type=g["match_type"],
+                  team1=g["team1"], team2=g["team2"], result=g["result"])
+             for g in by_match.values()]
     return games, names
 
 
@@ -329,12 +344,20 @@ def win_stats_of(games: list[Game]) -> dict[int, tuple[int, int, int]]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=["db", "synthetic"], default="synthetic")
+    ap.add_argument("--db-url", default=None, help="postgresql://... (없으면 env DATABASE_URL)")
     ap.add_argument("--match-type", default=None, help="0101=개인전, 0102=팀전, 미지정=전체")
     ap.add_argument("--warmup", type=int, default=6, help="각 회원 이 경기수 이후부터 예측 평가")
     args = ap.parse_args()
 
     if args.source == "db":
-        games, names = asyncio.run(db_games(args.match_type))
+        import os
+        url = args.db_url or os.environ.get("DATABASE_URL")
+        if not url:
+            raise SystemExit("DB URL이 필요합니다: --db-url 또는 env DATABASE_URL")
+        # SQLAlchemy 스킴이 섞여 있으면 asyncpg용 순수 스킴으로.
+        url = url.replace("postgresql+asyncpg://", "postgresql://").replace(
+            "postgres://", "postgresql://")
+        games, names = asyncio.run(db_games(url, args.match_type))
     else:
         games, names = synthetic_games()
 
