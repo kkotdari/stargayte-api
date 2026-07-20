@@ -271,8 +271,12 @@ def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngi
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
     무슨 종족이든 상관없이, 각 참가자는 자기가 그 경기에서 낸 종족 레이팅으로 서로 겨뤄 갱신된다.
 
-    반환: (엔진, focal의 경기별 μ 변화). focal(회원 pk 또는 (pk,race) 조합)이 주어지면 그가 뛴
-    각 경기마다 갱신 전후 μ 차이를 match_no로 키잉해 함께 돌려준다(랭킹 상세의 '경기당 Δ' 병기용).
+    반환: (엔진, focal의 경기별 보수레이팅 변화). focal(회원 pk 또는 (pk,race) 조합)이 주어지면
+    그가 뛴 각 경기마다 갱신 전후 '보수레이팅(μ−3σ, 목록/카드에 노출되는 그 점수)' 차이를
+    match_no로 키잉해 돌려준다(랭킹 상세의 '경기당 Δ' 병기용). μ 차이가 아니라 보수레이팅
+    차이를 쓰는 이유: 신규 회원의 초기 보수레이팅이 정확히 0(=MU0−3·SIGMA0)이라, 이렇게 하면
+    경기별 Δ의 합이 카드에 보이는 최종 점수와 정확히 일치한다(신고: "이력의 합산과 차트 점수가
+    다름" — μ 차이를 합치면 μ−25가 되어 μ−3σ와 어긋났다).
     컴퓨터/비회원(member_pk=None)은 by_race와 무관하게 None으로 둬(레이팅 미대상) 갱신에서 빠진다."""
     def _ident(member_pk, race):
         if member_pk is None:
@@ -295,10 +299,10 @@ def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngi
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
         involved = focal is not None and focal in (mm["team1"] + mm["team2"])
-        pre = engine.get(focal).mu if involved else 0.0
+        pre = engine.get(focal).conservative if involved else 0.0
         engine.update(mm["team1"], mm["team2"], mm["result"])
         if involved:
-            deltas[mm["match_no"]] = engine.get(focal).mu - pre
+            deltas[mm["match_no"]] = engine.get(focal).conservative - pre
     return engine, deltas
 
 
