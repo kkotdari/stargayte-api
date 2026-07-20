@@ -20,8 +20,8 @@ from app.domain.match_requests.schemas import (
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
-# 페이지당 노출 개수(요청: "페이지당 5개까지 노출").
-PAGE_SIZE = 5
+# 페이지당 노출 개수(요청: "요청 목록은 3개씩 페이징 처리해줘 너무 많은 공간을 차지하지 않게").
+PAGE_SIZE = 3
 
 
 class MatchRequestService:
