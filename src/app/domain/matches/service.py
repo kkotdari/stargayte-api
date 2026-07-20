@@ -551,10 +551,12 @@ class MatchService:
 
         순위는 TrueSkill 레이팅으로 가른다(요청: "완전 교체"):
 
-          레이팅 = 이 경기유형의 모든 경기를 이 기간 끝(date_to)까지 시간순으로 재생해 얻은
+          레이팅 = 이 경기유형의 경기 중 조회 기간(date_from~date_to)만 시간순으로 재생해 얻은
             회원별 실력 추정(μ)과 불확실성(σ). 순위·카드 점수는 보수추정(μ−3σ)으로 매긴다 —
             강한 상대를 이길수록 오르고, 표본이 적으면 σ가 커서 보수값이 낮게(잠정) 잡혀
-            소수표본 인플레를 막는다. 레이팅은 과거 전체 누적이라 date_from은 걸지 않는다.
+            소수표본 인플레를 막는다. date_from을 기간 시작으로 그대로 걸어 그 이전 경기는
+            재생 대상에서 빼므로, 매 기간(월/년)마다 전원이 기본 레이팅(μ0)에서 새로 시작한
+            것처럼 리셋된다(요청: "랭킹 조회시 해당 월이나 년도만의 리셋된 데이터로 조회").
           참가 우선 — 이 기간에 1경기라도 뛴 사람은 레이팅이 아무리 낮아도(음수여도) 0경기
             회원보다 무조건 위다(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
 
@@ -603,11 +605,14 @@ class MatchService:
         # (아래 레이팅이 대신한다). person_score(우열)도 상세 참고값으로만 남긴다.
 
         # 랭킹 점수 = TrueSkill 레이팅(요청: "완전 교체"). 순우열 정규화 대신, 이 경기유형의
-        # 모든 경기를 이 기간 끝(date_to)까지 '시간순으로 재생'해 회원별 실력(μ)과 불확실성(σ)을
+        # 조회 기간(date_from~date_to) 경기만 '시간순으로 재생'해 회원별 실력(μ)과 불확실성(σ)을
         # 추정한다. 카드에 보여줄 점수·순위는 보수추정(μ−3σ)으로 매긴다 — 표본이 적으면 σ가
-        # 커서 값이 낮게(잠정) 잡혀 소수표본 인플레를 막는다. date_from은 걸지 않는다(레이팅은
-        # 과거 전체 누적) — 대신 '이 기간에 한 판이라도 뛴 사람'만 순위 대상으로 앞세운다.
-        replay_rows = await self._repo.rank_replay_rows(match_type=match_type, date_to=date_to)
+        # 커서 값이 낮게(잠정) 잡혀 소수표본 인플레를 막는다. date_from을 그대로 걸어 이전 기간
+        # 경기는 재생하지 않으므로 매 기간 리셋된다(요청) — '이 기간에 한 판이라도 뛴 사람'만
+        # 순위 대상으로 앞세운다.
+        replay_rows = await self._repo.rank_replay_rows(
+            match_type=match_type, date_from=date_from, date_to=date_to,
+        )
         engine, _ = _replay_ratings(replay_rows)
         # 카드/정렬에 쓰는 보수추정치 — 첫째 자리 반올림(동률 판정도 이 값으로).
         score = {m.pk: round(engine.get(m.pk).conservative, 1) for _, m in pairs}
@@ -670,15 +675,18 @@ class MatchService:
 
     async def get_rating_history(
         self, *, member_id: str, match_type: str | None,
+        date_from: str | None = None, date_to: str | None = None,
     ) -> RatingHistoryResponse:
-        """랭킹 상세의 '경기당 레이팅 변화' — 이 회원이 뛴 경기마다의 μ 증감. 레이팅은 시간순
-        누적이라 date 범위와 무관하게 항상 과거 전체를 재생하며 계산한다(각 경기의 Δ는 그
-        경기 시점의 상태로 결정되므로 date_to로 자를 필요가 없다). 프론트는 상세에 띄운
-        경기들(period로 좁힌)만 match_no로 골라 병기한다."""
+        """랭킹 상세의 '경기당 레이팅 변화' — 이 회원이 뛴 경기마다의 μ 증감. 랭킹 목록이
+        조회 기간(date_from~date_to)만으로 리셋해 매겨지므로(요청), 여기도 같은 기간만 재생한다
+        — 안 그러면 이 상세의 μ/σ/Δ 합이 목록의 리셋된 값과 어긋난다. 프론트는 상세에 띄운
+        경기들(같은 period로 좁힌)만 match_no로 골라 병기한다."""
         member = await self._member_repo.get_by_login_id(member_id)
         if member is None:
             return RatingHistoryResponse(deltas={})
-        rows = await self._repo.rank_replay_rows(match_type=match_type, date_to=None)
+        rows = await self._repo.rank_replay_rows(
+            match_type=match_type, date_from=_parse_date(date_from), date_to=_parse_date(date_to),
+        )
         engine, deltas = _replay_ratings(rows, focal_pk=member.pk)
         r = engine.get(member.pk)
         played = engine.games.get(member.pk, 0) > 0

@@ -426,13 +426,15 @@ class MatchRepository:
         self,
         *,
         match_type: str | None,
+        date_from: date | None = None,
         date_to: date | None,
     ) -> list[Row]:
-        """레이팅(TrueSkill) 누적 계산용 — 이 경기유형의 모든 경기를 '시간순으로 재생'하기 위한
+        """레이팅(TrueSkill) 누적 계산용 — 이 경기유형의 경기를 '시간순으로 재생'하기 위한
         원본. 각 경기의 (match_id, team, member_pk, result)에 정렬 키(game_started_at·match_date·
-        match_no)를 함께 준다. 레이팅은 과거 전체를 누적해야 하므로 date_from은 걸지 않고
-        date_to(그 기간 끝)까지 전부 가져와 서비스에서 경기 단위로 시간순 재생한다. 컴퓨터/
-        비회원(member_pk=NULL)도 포함해야 팀 구성(인원수)이 맞다."""
+        match_no)를 함께 준다. 레이팅은 조회 기간(date_from~date_to)만으로 리셋해 다시 매긴다
+        (요청: "랭킹 조회시 해당 월이나 년도만의 리셋된 데이터로 조회") — date_from을 주면 그
+        이전 경기는 아예 재생 대상에서 빠져, 이 기간 시작 시점에 전원이 기본 레이팅(μ0)에서
+        다시 시작한 것과 같다. 컴퓨터/비회원(member_pk=NULL)도 포함해야 팀 구성(인원수)이 맞다."""
         member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
         stmt = (
             select(
@@ -451,7 +453,7 @@ class MatchRepository:
             .where(MatchResult.result != "not_held")
         )
         stmt = self._apply_common_match_filters(
-            stmt, date_from=None, date_to=date_to, match_type=match_type,
+            stmt, date_from=date_from, date_to=date_to, match_type=match_type,
         )
         return list((await self._session.execute(stmt)).all())
 
