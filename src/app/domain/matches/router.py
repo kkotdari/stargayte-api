@@ -3,9 +3,12 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, status
-from fastapi.responses import Response
+from fastapi.responses import PlainTextResponse, Response
+from sqlalchemy import text
 
 from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
+from app.domain.matches.rating_backtest import Game as _BtGame
+from app.domain.matches.rating_backtest import render_report as _bt_render
 from app.core.exceptions import NotFoundError
 from app.domain.matches.schemas import (
     DuplicateCheckRequest,
@@ -352,3 +355,50 @@ async def download_replay(
         media_type=replay.content_type or "application/octet-stream",
         headers={"Content-Disposition": disposition},
     )
+
+
+# ─────────────────────────── [임시/분석] 레이팅 백테스트 ───────────────────────────
+# 전투력 산정 방식 검증용 관리자 임시 엔드포인트(결과 텍스트 반환). 검증이 끝나면
+# 이 엔드포인트와 rating_backtest.py를 함께 제거한다.
+@router.get("/rating-backtest", response_class=PlainTextResponse)
+async def rating_backtest(
+    db: DbSession,
+    _admin: CurrentAdmin,
+    match_type: str | None = Query(None, description="0101/0102, 미지정=전체"),
+) -> str:
+    alias = {
+        r.raw_name: r.member_pk
+        for r in (await db.execute(text(
+            "SELECT raw_name, member_pk FROM replay_aliases WHERE kind = 'member'"))).all()
+    }
+    names = {
+        r.pk: r.nickname
+        for r in (await db.execute(text("SELECT pk, nickname FROM members"))).all()
+    }
+    # match_type 필터는 조건부로 WHERE에 붙인다 — :mt를 IS NULL 비교에 쓰면 asyncpg가
+    # 파라미터 타입을 못 정해 AmbiguousParameterError가 난다.
+    mt_clause = "AND m.match_type = :mt" if match_type else ""
+    rows = (await db.execute(text(
+        f"""
+        SELECT m.match_no AS match_no, m.match_type AS match_type,
+               rr.result AS result, p.team AS team, p.player_name AS player_name
+        FROM matches m
+        JOIN match_results rr     ON rr.match_id = m.id
+        JOIN match_participants p ON p.match_id = m.id
+        WHERE rr.result IN ('team1','team2','draw')
+          {mt_clause}
+        ORDER BY COALESCE(rr.game_started_at, m.match_date::timestamptz), m.match_no
+        """
+    ), ({"mt": match_type} if match_type else {}))).all()
+
+    by: dict[str, dict] = {}
+    for r in rows:
+        g = by.get(r.match_no)
+        if g is None:
+            g = by[r.match_no] = {"order": (len(by),), "match_type": r.match_type,
+                                  "result": r.result, "team1": [], "team2": []}
+        if r.team in ("team1", "team2"):
+            g[r.team].append(alias.get(r.player_name))
+    games = [_BtGame(order=g["order"], match_type=g["match_type"], team1=g["team1"],
+                     team2=g["team2"], result=g["result"]) for g in by.values()]
+    return _bt_render(games, names)
