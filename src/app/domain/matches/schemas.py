@@ -203,6 +203,12 @@ class MatchStatsResponse(BaseModel):
     members: list[MemberStatsEntry]
 
 
+class RankingResponse(MatchStatsResponse):
+    """랭킹 조회 전용 응답 — 구조는 전적통계(MatchStatsResponse)와 같지만(회원별 전적 +
+    순위/레이팅), URL 의미(랭킹)에 맞게 별도 이름으로 노출한다(요청: "랭킹 엔드포인트
+    분리"). 백엔드 산정 로직은 get_stats를 그대로 공유한다."""
+
+
 class RatingHistoryResponse(BaseModel):
     """랭킹 상세의 '경기당 레이팅 변화(Δ)' — 이 회원이 뛴 각 경기의 μ 증감(match_no로 키잉).
 

@@ -19,6 +19,7 @@ from app.domain.matches.schemas import (
     MatchWrite,
     MonthlyMatchStatsResponse,
     MonthlyTeamRankingResponse,
+    RankingResponse,
     RatingHistoryResponse,
     ReplayNameClassificationEntry,
     ReplayNameClassificationLookupRequest,
@@ -118,6 +119,28 @@ async def get_stats(
     return MatchStatsResponse(members=members)
 
 
+@router.get("/ranking", response_model=RankingResponse)
+async def get_ranking(
+    db: DbSession,
+    storage: StorageDep,
+    _current: CurrentMember,
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+    match_type: str | None = Query(default=None, alias="matchType"),
+    race: str | None = None,
+) -> RankingResponse:
+    # 랭킹 조회 — 순위/레이팅(+전적)을 회원별로 내려준다. 산정 로직은 전적통계(/stats)와
+    # 공유하지만 URL은 의미(랭킹)에 맞춘다(요청). member_ids는 랭킹에선 안 쓰므로 뺐다.
+    members = await MatchService(db, storage).get_stats(
+        member_ids=None,
+        date_from=date_from,
+        date_to=date_to,
+        match_type=match_type,
+        race=race,
+    )
+    return RankingResponse(members=members)
+
+
 @router.get("/rating-history", response_model=RatingHistoryResponse)
 async def get_rating_history(
     db: DbSession,
@@ -127,12 +150,13 @@ async def get_rating_history(
     match_type: str | None = Query(default=None, alias="matchType"),
     date_from: str | None = Query(default=None, alias="dateFrom"),
     date_to: str | None = Query(default=None, alias="dateTo"),
+    race: str | None = None,
 ) -> RatingHistoryResponse:
     # 랭킹 상세의 '경기당 레이팅 변화(Δ)' — 이 회원이 뛴 경기마다의 μ 증감(match_no로 키잉).
     # 랭킹이 조회 기간(dateFrom~dateTo)만으로 리셋해 매겨지므로, 여기도 같은 기간만 재생해야
-    # 목록의 μ/σ와 이 상세의 Δ 합이 서로 어긋나지 않는다.
+    # 목록의 μ/σ와 이 상세의 Δ 합이 서로 어긋나지 않는다. 종족 필터 시 그 종족 Δ만 나온다.
     return await MatchService(db, storage).get_rating_history(
-        member_id=member_id, match_type=match_type, date_from=date_from, date_to=date_to,
+        member_id=member_id, match_type=match_type, date_from=date_from, date_to=date_to, race=race,
     )
 
 
