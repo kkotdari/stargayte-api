@@ -22,6 +22,7 @@ from app.domain.matches.schemas import (
     MatchWrite,
     MonthlyMatchStatsResponse,
     MonthlyTeamRankingResponse,
+    RatingHistoryResponse,
     ReplayNameClassificationEntry,
     ReplayNameClassificationLookupRequest,
     ReplayNameClassificationLookupResponse,
@@ -118,6 +119,24 @@ async def get_stats(
         race=race,
     )
     return MatchStatsResponse(members=members)
+
+
+@router.get("/rating-history", response_model=RatingHistoryResponse)
+async def get_rating_history(
+    db: DbSession,
+    storage: StorageDep,
+    _current: CurrentMember,
+    member_id: str = Query(alias="memberId"),
+    match_type: str | None = Query(default=None, alias="matchType"),
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+) -> RatingHistoryResponse:
+    # 랭킹 상세의 '경기당 레이팅 변화(Δ)' — 이 회원이 뛴 경기마다의 μ 증감(match_no로 키잉).
+    # 랭킹이 조회 기간(dateFrom~dateTo)만으로 리셋해 매겨지므로, 여기도 같은 기간만 재생해야
+    # 목록의 μ/σ와 이 상세의 Δ 합이 서로 어긋나지 않는다.
+    return await MatchService(db, storage).get_rating_history(
+        member_id=member_id, match_type=match_type, date_from=date_from, date_to=date_to,
+    )
 
 
 @router.get("/team-ranking", response_model=TeamRankingResponse)

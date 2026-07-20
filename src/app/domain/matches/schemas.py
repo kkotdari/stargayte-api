@@ -187,14 +187,38 @@ class MemberStatsEntry(BaseModel):
     superior_count: int | None = Field(default=None, alias="superiorCount")
     equal_count: int | None = Field(default=None, alias="equalCount")
     inferior_count: int | None = Field(default=None, alias="inferiorCount")
-    # 랭킹 총점 — 경기마다 (이김 +강함(상대) / 비김 0 / 짐 −약함(상대))을 합산하되, 팀전은
-    # 팀 강함 비율(진 팀÷이긴 팀 강함 합)을 곱한다. 카드에 이 숫자만 보여주고 세부는 상세에서
-    # 본다(요청). 팀 강함 비율 때문에 소수(첫째 자리 반올림) 가능·음수 가능. 순위 대상 아니면 None.
+    # 랭킹 총점 — TrueSkill 보수추정 레이팅(μ−3σ, 첫째 자리 반올림). 카드에 이 숫자를 보여주고
+    # 이 값으로 순위를 매긴다(음수 가능). 순위 대상 아니면 None.
     rank_score: float | None = Field(default=None, alias="rankScore")
+    # TrueSkill 실력 추정치(μ)와 불확실성(σ) — 상세/뱃지 표시용. 순위 대상 아니면 None.
+    mu: float | None = Field(default=None)
+    sigma: float | None = Field(default=None)
+    # 이 경기유형에서 누적된(레이팅에 반영된) 경기 수. 순위 대상 아니면 None.
+    rating_games: int | None = Field(default=None, alias="ratingGames")
+    # 잠정 — 누적 경기가 기준 미만이라 레이팅이 아직 덜 여문 상태(뱃지로 표시). 순위 대상 아니면 None.
+    provisional: bool | None = Field(default=None)
 
 
 class MatchStatsResponse(BaseModel):
     members: list[MemberStatsEntry]
+
+
+class RatingHistoryResponse(BaseModel):
+    """랭킹 상세의 '경기당 레이팅 변화(Δ)' — 이 회원이 뛴 각 경기의 μ 증감(match_no로 키잉).
+
+    레이팅은 시간순 누적이라 경기당 변화는 그 시점 상태에 따라 달라져 클라이언트가 재구성할
+    수 없다 — 백엔드가 전체를 재생하며 이 회원 경기마다의 Δμ를 계산해 준다. 함께 현재 레이팅
+    요약(μ/σ/보수/누적경기/잠정)도 싣는다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    # matchNo -> 그 경기에서의 μ 변화량(양수=상승). 첫째 자리 반올림.
+    deltas: dict[str, float]
+    mu: float | None = Field(default=None)
+    sigma: float | None = Field(default=None)
+    conservative: float | None = Field(default=None)
+    games: int = 0
+    provisional: bool = False
 
 
 class MemberStatsMonthEntry(BaseModel):
