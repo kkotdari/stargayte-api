@@ -80,3 +80,5 @@ class MatchRequestRecommend(AuditMixin, TimestampMixin, Base):
     )
 
     request: Mapped[MatchRequest] = relationship(back_populates="recommends")
+    # 누가 추천했는지 목록으로 보여주기 위해(요청) 닉네임/아바타를 함께 로드한다.
+    member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
