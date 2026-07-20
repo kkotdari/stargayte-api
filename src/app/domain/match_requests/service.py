@@ -156,8 +156,15 @@ class MatchRequestService:
             # 다시 누르면 추천 취소 — delete-orphan cascade로 flush 때 삭제된다.
             request.recommends.remove(existing)
         else:
+            # member 관계를 relationship 객체로도 명시해야 한다 — member_pk만 주면 이
+            # 새로 만든(아직 DB에서 다시 읽어온 적 없는) 객체의 .member는 메모리에 채워지지
+            # 않고, 비동기 세션에서 그 상태로 .member를 읽으면(_to_out의 recommenders
+            # 직렬화) 동기 lazy-load가 걸려 즉시 500 에러가 난다 — 프론트는 그 에러를
+            # 조용히 무시해서 "추천 눌러도 반영 안 됨"으로 보였다(실제로 지적받은 문제).
             request.recommends.append(
-                MatchRequestRecommend(member_pk=actor.pk, created_by=actor.pk, updated_by=actor.pk)
+                MatchRequestRecommend(
+                    member_pk=actor.pk, member=actor, created_by=actor.pk, updated_by=actor.pk
+                )
             )
         await self._session.commit()
         return self._to_out(request, actor)
