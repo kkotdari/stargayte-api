@@ -33,7 +33,7 @@ class MatchRequestService:
     def _to_out(
         self, request: MatchRequest, actor: Member, *, author: Member | None = None
     ) -> MatchRequestOut:
-        recommends = list(request.recommends)
+        recommends = sorted(request.recommends, key=lambda r: r.created_at)
         targets = list(request.targets)
         # 갓 만든(아직 select로 다시 로드 안 한) 요청은 viewonly creator가 지연로드라
         # 비동기 밖에서 만지면 터진다 — 작성자를 명시로 넘겨 그 로드를 피한다.
@@ -49,6 +49,14 @@ class MatchRequestService:
             createdAt=request.created_at,
             recommendCount=len(recommends),
             recommendedByMe=any(r.member_pk == actor.pk for r in recommends),
+            recommenders=[
+                MatchRequestAuthor(
+                    memberId=r.member.id if r.member else "",
+                    nickname=r.member.nickname if r.member else "(탈퇴한 회원)",
+                    avatar=r.member.avatar_url if r.member else None,
+                )
+                for r in recommends
+            ],
             mine=request.created_by == actor.pk,
             targets=[
                 MatchRequestTargetOut(

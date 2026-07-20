@@ -28,6 +28,8 @@ class MatchRequestOut(BaseModel):
     recommend_count: int = Field(alias="recommendCount")
     # 지금 조회하는 회원이 이미 추천을 눌렀는지 — 버튼 눌림 상태 표시용.
     recommended_by_me: bool = Field(alias="recommendedByMe")
+    # 추천한 사람 목록(요청: PC 한정 마우스오버로 팝오버 노출).
+    recommenders: list[MatchRequestAuthor]
     # 지금 조회하는 회원이 작성자인지 — 작성자/운영자만 "성사됨" 완료 처리를 할 수 있다.
     mine: bool
     # 언급된 회원들 — 카드에 "언급: A, B"로 표시(권한 등 다른 기능과는 연결 안 함).
