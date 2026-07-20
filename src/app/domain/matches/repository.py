@@ -441,6 +441,7 @@ class MatchRepository:
                 MatchParticipant.match_id,
                 MatchParticipant.team,
                 member_alias.member_pk,
+                MatchParticipant.race,
                 MatchResult.result,
                 MatchResult.game_started_at,
                 Match.match_date,

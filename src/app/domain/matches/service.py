@@ -264,12 +264,21 @@ def _replay_order_key(game_started_at, match_date, match_no):
     return (ts, match_no or "")
 
 
-def _replay_ratings(rows, focal_pk: int | None = None) -> tuple[RatingEngine, dict[str, float]]:
+def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngine, dict[str, float]]:
     """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 TrueSkill을 누적한다.
 
-    반환: (엔진, focal_pk의 경기별 μ 변화). focal_pk가 주어지면 그 회원이 뛴 각 경기마다
-    갱신 전후 μ 차이를 match_no로 키잉해 함께 돌려준다(랭킹 상세의 '경기당 Δ' 병기용).
-    엔진 자체는 date_to까지의 누적 상태라, 리더보드는 이 엔진의 보수추정(μ−3σ)으로 매긴다."""
+    by_race=False면 레이팅 대상이 '회원'(member_pk)이고, True면 '(회원, 그 경기 종족)' 조합이다
+    (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
+    무슨 종족이든 상관없이, 각 참가자는 자기가 그 경기에서 낸 종족 레이팅으로 서로 겨뤄 갱신된다.
+
+    반환: (엔진, focal의 경기별 μ 변화). focal(회원 pk 또는 (pk,race) 조합)이 주어지면 그가 뛴
+    각 경기마다 갱신 전후 μ 차이를 match_no로 키잉해 함께 돌려준다(랭킹 상세의 '경기당 Δ' 병기용).
+    컴퓨터/비회원(member_pk=None)은 by_race와 무관하게 None으로 둬(레이팅 미대상) 갱신에서 빠진다."""
+    def _ident(member_pk, race):
+        if member_pk is None:
+            return None
+        return (member_pk, race) if by_race else member_pk
+
     matches: dict[int, dict] = {}
     for r in rows:
         m = matches.get(r.match_id)
@@ -279,17 +288,17 @@ def _replay_ratings(rows, focal_pk: int | None = None) -> tuple[RatingEngine, di
                 "key": _replay_order_key(r.game_started_at, r.match_date, r.match_no),
             }
         if r.team in ("team1", "team2"):
-            m[r.team].append(r.member_pk)
+            m[r.team].append(_ident(r.member_pk, r.race))
 
     engine = RatingEngine()
     deltas: dict[str, float] = {}
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
-        involved = focal_pk is not None and focal_pk in (mm["team1"] + mm["team2"])
-        pre = engine.get(focal_pk).mu if involved else 0.0
+        involved = focal is not None and focal in (mm["team1"] + mm["team2"])
+        pre = engine.get(focal).mu if involved else 0.0
         engine.update(mm["team1"], mm["team2"], mm["result"])
         if involved:
-            deltas[mm["match_no"]] = engine.get(focal_pk).mu - pre
+            deltas[mm["match_no"]] = engine.get(focal).mu - pre
     return engine, deltas
 
 
@@ -613,9 +622,18 @@ class MatchService:
         replay_rows = await self._repo.rank_replay_rows(
             match_type=match_type, date_from=date_from, date_to=date_to,
         )
-        engine, _ = _replay_ratings(replay_rows)
-        # 카드/정렬에 쓰는 보수추정치 — 첫째 자리 반올림(동률 판정도 이 값으로).
-        score = {m.pk: round(engine.get(m.pk).conservative, 1) for _, m in pairs}
+        # 종족 필터가 걸리면 레이팅 대상을 '(회원, 종족)'으로 나눠 그 종족으로 낸 경기만 그
+        # 회원의 그 종족 레이팅에 쌓는다(요청: "종족은 랭커의 종족"). '전체'면 회원 단위 하나.
+        race_active = race is not None and race != "all"
+
+        def _rk(pk: int):
+            return (pk, race) if race_active else pk
+
+        engine, _ = _replay_ratings(replay_rows, by_race=race_active)
+        # 카드/정렬에 쓰는 보수추정치 — 첫째 자리 반올림(동률 판정도 이 값으로). 종족 필터 시
+        # overall.plays는 이미 그 종족 기준이라(get_stats), 0경기(그 종족 미플레이) 회원은
+        # 아래 _played 게이트로 지금처럼 공동 최하위로 내려간다(요청).
+        score = {m.pk: round(engine.get(_rk(m.pk)).conservative, 1) for _, m in pairs}
 
         # 참가 우선 — 이 기간에 1경기라도 뛴 사람(plays>0)은 레이팅이 아무리 낮아도 0경기
         # 회원보다 무조건 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
@@ -649,12 +667,12 @@ class MatchService:
             entry.inferior_count = inf
             entry.person_score = s - inf  # 우열(우세-열세) — 상세 참고용
             entry.rank_score = score[m.pk]  # 카드에 보여줄 보수레이팅(μ−3σ)
-            r = engine.get(m.pk)
+            r = engine.get(_rk(m.pk))
             entry.mu = round(r.mu, 1)
             entry.sigma = round(r.sigma, 1)
-            entry.rating_games = engine.games.get(m.pk, 0)
-            # 잠정 = 이 경기유형 누적 경기 수가 기준 미만 — 아직 레이팅이 덜 여문 상태.
-            entry.provisional = engine.is_provisional(m.pk) if played else None
+            entry.rating_games = engine.games.get(_rk(m.pk), 0)
+            # 잠정 = 이 경기유형(종족 필터 시 그 종족) 누적 경기 수가 기준 미만 — 덜 여문 상태.
+            entry.provisional = engine.is_provisional(_rk(m.pk)) if played else None
 
     async def get_main_race(
         self,
@@ -675,28 +693,31 @@ class MatchService:
 
     async def get_rating_history(
         self, *, member_id: str, match_type: str | None,
-        date_from: str | None = None, date_to: str | None = None,
+        date_from: str | None = None, date_to: str | None = None, race: str | None = None,
     ) -> RatingHistoryResponse:
         """랭킹 상세의 '경기당 레이팅 변화' — 이 회원이 뛴 경기마다의 μ 증감. 랭킹 목록이
         조회 기간(date_from~date_to)만으로 리셋해 매겨지므로(요청), 여기도 같은 기간만 재생한다
-        — 안 그러면 이 상세의 μ/σ/Δ 합이 목록의 리셋된 값과 어긋난다. 프론트는 상세에 띄운
-        경기들(같은 period로 좁힌)만 match_no로 골라 병기한다."""
+        — 안 그러면 이 상세의 μ/σ/Δ 합이 목록의 리셋된 값과 어긋난다. 종족 필터가 걸리면
+        레이팅 대상이 '(회원, 그 종족)'이라 그 회원이 그 종족으로 낸 경기의 Δ만 병기한다.
+        프론트는 상세에 띄운 경기들(같은 period로 좁힌)만 match_no로 골라 병기한다."""
         member = await self._member_repo.get_by_login_id(member_id)
         if member is None:
             return RatingHistoryResponse(deltas={})
         rows = await self._repo.rank_replay_rows(
             match_type=match_type, date_from=_parse_date(date_from), date_to=_parse_date(date_to),
         )
-        engine, deltas = _replay_ratings(rows, focal_pk=member.pk)
-        r = engine.get(member.pk)
-        played = engine.games.get(member.pk, 0) > 0
+        race_active = race is not None and race != "all"
+        focal = (member.pk, race) if race_active else member.pk
+        engine, deltas = _replay_ratings(rows, focal=focal, by_race=race_active)
+        r = engine.get(focal)
+        played = engine.games.get(focal, 0) > 0
         return RatingHistoryResponse(
             deltas={mno: round(d, 1) for mno, d in deltas.items()},
             mu=round(r.mu, 1) if played else None,
             sigma=round(r.sigma, 1) if played else None,
             conservative=round(r.conservative, 1) if played else None,
-            games=engine.games.get(member.pk, 0),
-            provisional=engine.is_provisional(member.pk) if played else False,
+            games=engine.games.get(focal, 0),
+            provisional=engine.is_provisional(focal) if played else False,
         )
 
     async def get_stats_monthly(
