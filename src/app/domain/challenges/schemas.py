@@ -31,9 +31,6 @@ class ChallengeTargetOut(BaseModel):
     battletag: str
     avatar: str | None
     response: TargetResponse
-    # 응답(수락/거절) 한마디 — 전체 공개다(요청자가 아니어도 누구나 볼 수 있다). 아직
-    # 응답 안 했으면(response="pending") None.
-    response_message: str | None = Field(default=None, alias="responseMessage")
 
 
 class ChallengeOwnMemberOut(BaseModel):
@@ -53,7 +50,6 @@ class ChallengeHistoryEntry(BaseModel):
 
     id: int
     scheduled_at: datetime | None = Field(alias="scheduledAt")
-    message: str
     status: ChallengeStatus
     targets: list[ChallengeTargetOut]
     created_at: datetime = Field(alias="createdAt")
@@ -66,7 +62,6 @@ class ChallengeOut(BaseModel):
     id: int
     match_type: ChallengeMatchType = Field(alias="matchType")
     scheduled_at: datetime | None = Field(alias="scheduledAt")
-    message: str
     status: ChallengeStatus
     created_by: ChallengeAuthor = Field(alias="createdBy")
     targets: list[ChallengeTargetOut]
@@ -90,7 +85,6 @@ class ChallengeCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
-    message: str = ""
     target_member_ids: list[str] = Field(alias="targetMemberIds", min_length=1, max_length=4)
     # 도전자 본인은 자동 포함(뺄 수 없음)이라 여기엔 "본인 제외 나머지 내 팀원"만 담는다
     # — 본인 포함 최대 4명이라 이 목록 자체는 최대 3명. (지금 UI는 1:1만 신청하므로 항상
@@ -115,11 +109,6 @@ class ChallengeRespondIn(BaseModel):
 
     # discarded = 사유 없이 버림(휴지통행) — 편지봉투의 "버리기"에서 온다.
     response: Literal["accepted", "rejected", "discarded"]
-    # 응답 한마디 — API 자체는 선택으로 둔다(경기결과 화면 목록의 빠른 승락/거절
-    # 버튼은 메시지 없이 한 번에 응답하는 흐름을 그대로 유지해야 한다). "필수화" 요청은
-    # 인박스(편지지) 화면에서만 적용되고, 그쪽은 프론트에서 빈 값이면 제출 버튼 자체를
-    # 막는다(ChallengeInboxModal.tsx 참고).
-    reason: str | None = None
     # 도전장 작성 시 "시간 지정"을 끄면(scheduled_at=None) "상대가 정해도 된다"는
     # 뜻인데, 그 이후 아무도 시간을 채워 넣을 방법이 없어서 시간 미정인 채로 영원히
     # "승락" 상태에 박제되는 문제가 있었다(요청: "도전자/상대 모두 시간을 지정하지
@@ -131,12 +120,11 @@ class ChallengeRespondIn(BaseModel):
 
 class ChallengeRevengeIn(BaseModel):
     """완료된 대결에서 패배한 쪽이 같은 대진으로 재대결(설욕전)을 신청 — 원래 도전장은
-    손대지 않고 새 도전장을 만든다. 시간/메모는 비워서 보낼 수 있다."""
+    손대지 않고 새 도전장을 만든다. 시간은 비워서 보낼 수 있다."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
-    message: str | None = None
 
 
 class ChallengeResultIn(BaseModel):
