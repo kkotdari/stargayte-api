@@ -89,7 +89,6 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
     return ChallengeHistoryEntry(
         id=challenge.id,
         scheduledAt=challenge.scheduled_at,
-        message=challenge.message,
         status=_status_of(challenge),
         resultWinnerSide=challenge.result_winner_side,
         targets=[
@@ -99,7 +98,6 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
                 battletag=p.member.battletag,
                 avatar=p.member.avatar_url,
                 response=p.response,
-                responseMessage=p.response_message,
             )
             for p in targets
         ],
@@ -108,8 +106,6 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
 
 
 def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = None) -> ChallengeOut:
-    # 응답 한마디(수락/거절 모두)는 전체 공개다 — 요청자가 아니어도 누구나 볼 수 있다
-    # (예전엔 요청자만 봤지만, 요청에 따라 제한을 없앴다).
     targets = [p for p in challenge.participants if p.side == "target"]
     own_members = [
         p for p in challenge.participants if p.side == "creator" and p.member_pk != challenge.created_by
@@ -118,7 +114,6 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         id=challenge.id,
         matchType=challenge.match_type,
         scheduledAt=challenge.scheduled_at,
-        message=challenge.message,
         status=_status_of(challenge),
         createdBy=ChallengeAuthor(id=challenge.creator.id, nickname=challenge.creator.nickname),
         targets=[
@@ -128,7 +123,6 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
                 battletag=p.member.battletag,
                 avatar=p.member.avatar_url,
                 response=p.response,
-                responseMessage=p.response_message,
             )
             for p in targets
         ],
@@ -262,7 +256,6 @@ class ChallengeService:
         challenge = Challenge(
             match_type=match_type,
             scheduled_at=payload.scheduled_at,
-            message=payload.message,
             from_match_request=payload.from_match_request,
             created_by=actor.pk,
             updated_by=actor.pk,
@@ -327,7 +320,6 @@ class ChallengeService:
         response: str,
         *,
         actor: Member,
-        reason: str | None = None,
         scheduled_at: datetime | None = None,
     ) -> ChallengeOut:
         challenge = await self._repo.get(challenge_id)
@@ -352,14 +344,7 @@ class ChallengeService:
             challenge.updated_by = actor.pk
         target.response = response
         target.responded_at = datetime.now(UTC)
-        # 이제 수락에도 한마디를 받는다(요청: "편지지에 수락/거절 한줄 메시지 필수화")
-        # — 응답 종류와 무관하게 그대로 저장한다. 팀전에서 최초 응답자만 남길 수 있게
-        # 제한했던 적이 있는데(요청: "한마디는 최초응답자만 가능") 되돌렸다(요청: "수락시
-        # 메시지 한명만 받기로 했는데 전원 다 받을수 있게 해줘") — 지목된 전원이 각자
-        # 자기 한마디를 남긴다.
-        # 사유 없이 버리면(discarded) 한마디는 남기지 않는다 — 그 외(수락/거절)는 reason을 저장.
-        target.response_message = None if response == "discarded" else reason
-        # 명시적 거절(사유 있음)이든 버림(discarded, 사유 없음)이든 그 즉시 도전장을 폐기
+        # 명시적 거절이든 버림(discarded)이든 그 즉시 도전장을 폐기
         # (휴지통)로 넘긴다 — 팀전이라도 한 명이 거절/버리면 그 대결은 끝이다. discarded_at을
         # 찍고 날짜 그루핑용 스탬프까지 한다.
         if response in ("rejected", "discarded"):
@@ -408,7 +393,6 @@ class ChallengeService:
         *,
         actor: Member,
         scheduled_at: datetime | None = None,
-        message: str | None = None,
     ) -> ChallengeOut:
         """결과가 입력된 확정 대결에서, 패배한 쪽 참가자가 같은 대진으로 설욕전을
         신청한다(요청: "완료시 패배한 쪽에서 설욕전 신청 가능... 이경우 너나와 체인으로
@@ -433,7 +417,6 @@ class ChallengeService:
         new_challenge = Challenge(
             match_type=challenge.match_type,
             scheduled_at=scheduled_at,
-            message=message if message is not None else "",
             created_by=actor.pk,
             updated_by=actor.pk,
             reapplied_from_id=challenge.id,
