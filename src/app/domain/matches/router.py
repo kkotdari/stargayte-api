@@ -350,6 +350,17 @@ async def update_memo(
     return to_match_out(match, storage, await service.alias_by_player_name())
 
 
+@router.get("/{match_id}", response_model=MatchOut)
+async def get_match(
+    match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
+) -> MatchOut:
+    # 카카오톡 공유 링크가 여는 "이 경기만 보이는" 화면에서 단건 조회에 쓴다. 정적 GET
+    # 경로(/stats, /ranking 등)보다 아래에 선언해 int 경로변수가 그것들을 가리지 않게 한다.
+    service = MatchService(db, storage)
+    match = await service.get_match(match_id)
+    return to_match_out(match, storage, await service.alias_by_player_name())
+
+
 @router.delete("/{match_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_match(
     match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
