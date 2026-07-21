@@ -83,6 +83,10 @@ class MatchParticipant(AuditMixin, Base):
     eapm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cmd_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     effective_cmd_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 리플레이 커맨드 스트림에서 센 '생산' 지표 — 유닛 훈련/건물 건설/변태(저그) 커맨드
+    # 총합이다(build order 규모). apm 4형제와 마찬가지로 리플레이 파싱으로만 채워지고
+    # 수동 등록/과거 데이터는 NULL이다. 프론트 replayParser가 세서 슬롯에 실어 보낸다.
+    build_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     match: Mapped[Match] = relationship(back_populates="participants")
 

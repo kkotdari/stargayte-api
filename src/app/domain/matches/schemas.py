@@ -53,6 +53,8 @@ class MatchSlot(BaseModel):
     eapm: int | None = None
     cmd_count: int | None = Field(default=None, alias="cmdCount")
     effective_cmd_count: int | None = Field(default=None, alias="effectiveCmdCount")
+    # 리플레이 커맨드 스트림에서 센 '생산' 지표(유닛 훈련+건물 건설+변태 커맨드 수).
+    build_count: int | None = Field(default=None, alias="buildCount")
 
 
 class ReplayUpload(BaseModel):

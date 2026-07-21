@@ -634,3 +634,230 @@ async def test_delete_league_cascades(client, db_session):
     remaining_teams = (await db_session.execute(select(LeagueTeam))).scalars().all()
     assert remaining_leagues == []
     assert remaining_teams == []  # 로스터가 있던 팀도 리그 삭제로 같이 지워져야 한다
+
+
+async def _seed(client, headers, league_id: int, assignments: list[dict]):
+    return await client.put(
+        f"/api/leagues/{league_id}/bracket/seeding",
+        headers=headers, json={"assignments": assignments},
+    )
+
+
+async def test_bracket_seeding_batch_atomic_swap(client):
+    """1라운드 시드를 한 번에 저장하고, 두 팀을 맞바꾸는 편집도 원자적으로 반영되는지 —
+    자리별 순차 저장이면 '팀 이동' 자동비움이 이미 넣은 자리를 덮어써 깨지던 케이스."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, mode="team")
+    teams = await _add_teams(client, admin_headers, league["id"], 4)  # A, B, C, D
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
+
+    # 최초 시드: m0=(A,B), m1=(C,D)
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[3]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert _match(lg, 1, 0)["teamA"]["id"] == teams[0]["id"]
+    assert _match(lg, 1, 0)["teamB"]["id"] == teams[1]["id"]
+    assert _match(lg, 1, 1)["teamA"]["id"] == teams[2]["id"]
+    assert _match(lg, 1, 1)["teamB"]["id"] == teams[3]["id"]
+
+    # A <-> C 스왑: m0.a=C, m1.a=A (나머지 그대로). 최종 상태가 정확히 반영돼야 한다.
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[3]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert _match(lg, 1, 0)["teamA"]["id"] == teams[2]["id"]
+    assert _match(lg, 1, 0)["teamB"]["id"] == teams[1]["id"]
+    assert _match(lg, 1, 1)["teamA"]["id"] == teams[0]["id"]
+    assert _match(lg, 1, 1)["teamB"]["id"] == teams[3]["id"]
+
+
+async def test_bracket_seeding_batch_resolves_bye(client):
+    """일괄 저장에서도 부전승 자동 처리가 마지막에 한 번 돌아 다음 라운드로 전파되는지."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, mode="team")
+    teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
+    res = await _generate_bracket(client, admin_headers, league["id"], 3)
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    # draw_size=4, byes=1 → slot0은 부전 자리(side a만 실제팀), slot1은 실제 경기.
+    m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[2]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    # A는 부전승으로 결승 진출.
+    assert _match(lg, 1, 0)["winnerTeamId"] == teams[0]["id"]
+    assert _match(lg, 2, 0)["teamA"]["id"] == teams[0]["id"]
+
+
+async def test_bracket_seeding_rejects_duplicate_team_and_locked(client):
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, mode="team")
+    teams = await _add_teams(client, admin_headers, league["id"], 4)
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    lg = res.json()
+    m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
+
+    # 같은 팀을 두 자리에 → 거부.
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[0]["id"]},
+    ])
+    assert res.status_code == 400, res.text
+
+    # 정상 저장 후 대진 확정 → 그 뒤 일괄 저장은 잠겨서 거부.
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[3]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    await _confirm_bracket(client, admin_headers, league["id"])
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[1]["id"]},
+    ])
+    assert res.status_code == 409, res.text
+
+
+async def _set_composition(client, headers, league_id: int, teams: list[dict]):
+    return await client.put(
+        f"/api/leagues/{league_id}/teams", headers=headers, json={"teams": teams},
+    )
+
+
+async def test_team_composition_batch_create_and_move_member(client):
+    """새 팀 생성+로스터 지정을 한 번에, 그리고 멤버를 팀 사이로 옮기는 편집이 (league_id,
+    member_pk) 유니크 충돌 없이 원자적으로 반영되는지."""
+    admin_headers, _ = await _bootstrap(client, 3)  # m0, m1, m2
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0", "m1"]},
+        {"id": None, "roster": ["m2"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert [t["label"] for t in lg["teams"]] == ["A", "B"]
+    a, b = lg["teams"][0], lg["teams"][1]
+    assert [r["memberId"] for r in a["roster"]] == ["m0", "m1"]
+    assert [r["memberId"] for r in b["roster"]] == ["m2"]
+
+    # m1을 A -> B로 이동. 기존 팀 id는 유지.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0"]},
+        {"id": b["id"], "roster": ["m2", "m1"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    ta = next(t for t in lg["teams"] if t["id"] == a["id"])
+    tb = next(t for t in lg["teams"] if t["id"] == b["id"])
+    assert [r["memberId"] for r in ta["roster"]] == ["m0"]
+    assert [r["memberId"] for r in tb["roster"]] == ["m2", "m1"]
+
+
+async def test_team_composition_batch_delete_relabels(client):
+    admin_headers, _ = await _bootstrap(client, 3)
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m1"]},
+        {"id": None, "roster": ["m2"]},
+    ])
+    lg = res.json()
+    a, _b, c = lg["teams"]  # A, B, C
+    # B 삭제(payload에서 뺌) → 남은 A, C가 A, B로 재라벨.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0"]},
+        {"id": c["id"], "roster": ["m2"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert [t["label"] for t in lg["teams"]] == ["A", "B"]
+    assert lg["teams"][0]["id"] == a["id"]
+    assert lg["teams"][1]["id"] == c["id"]  # C였던 팀이 살아남아 B 라벨
+
+
+async def test_team_composition_rejects_member_in_two_teams(client):
+    admin_headers, _ = await _bootstrap(client, 1)
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m0"]},
+    ])
+    assert res.status_code == 409, res.text
+
+
+async def test_team_composition_individual_rejects_multi(client):
+    admin_headers, _ = await _bootstrap(client, 2)
+    league = await _create_league(client, admin_headers, mode="individual")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0", "m1"]},
+    ])
+    assert res.status_code == 400, res.text
+
+
+async def test_team_composition_protects_decided_team(client):
+    admin_headers, _ = await _bootstrap(client, 3)
+    league = await _create_league(client, admin_headers, mode="team", best_of=1)
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m1"]},
+    ])
+    lg = res.json()
+    a, b = lg["teams"]
+    res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    m0 = _match(res.json(), 1, 0)
+    await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": a["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": b["id"]},
+    ])
+    res = await _enter_result(client, admin_headers, league["id"], m0["id"], 1, 0)
+    assert res.status_code == 200, res.text
+
+    # A는 결과가 난 팀 — 삭제 시도 거부.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": b["id"], "roster": ["m1"]},
+    ])
+    assert res.status_code == 400, res.text
+    # 로스터 변경 시도도 거부.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0", "m2"]},
+        {"id": b["id"], "roster": ["m1"]},
+    ])
+    assert res.status_code == 400, res.text
+
+
+async def test_team_composition_respects_planned_teams(client):
+    admin_headers, _ = await _bootstrap(client, 4)
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m1"]},
+    ])
+    lg = res.json()
+    a, b = lg["teams"]
+    # 2팀짜리 대진표 생성 → planned_teams=2.
+    res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    assert res.status_code == 200, res.text
+    # 예약(2)을 넘는 3팀 시도 → 거부.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0"]},
+        {"id": b["id"], "roster": ["m1"]},
+        {"id": None, "roster": ["m2"]},
+    ])
+    assert res.status_code == 400, res.text

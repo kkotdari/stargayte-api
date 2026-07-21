@@ -351,6 +351,7 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
         eapm=p.eapm,
         cmd_count=p.cmd_count,
         effective_cmd_count=p.effective_cmd_count,
+        build_count=p.build_count,
     )
 
 
@@ -1187,6 +1188,7 @@ class MatchService:
                 eapm=slot.eapm,
                 cmd_count=slot.cmd_count,
                 effective_cmd_count=slot.effective_cmd_count,
+                build_count=slot.build_count,
                 created_by=actor_pk,
                 updated_by=actor_pk,
             )
@@ -1202,6 +1204,7 @@ class MatchService:
                 eapm=slot.eapm,
                 cmd_count=slot.cmd_count,
                 effective_cmd_count=slot.effective_cmd_count,
+                build_count=slot.build_count,
                 created_by=actor_pk,
                 updated_by=actor_pk,
             )
