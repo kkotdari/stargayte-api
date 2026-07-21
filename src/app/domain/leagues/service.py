@@ -116,6 +116,7 @@ def to_league_out(league: League) -> LeagueOut:
     return LeagueOut(
         id=league.id, name=league.name, mode=league.mode, bestOf=league.best_of,
         status=_status_of(league), drawSize=league.draw_size, plannedTeams=league.planned_teams,
+        bracketLocked=league.bracket_locked_at is not None,
         teams=[to_team_out(t) for t in league.teams],
         matches=[to_match_out(m) for m in league.matches],
         createdAt=league.created_at,
@@ -304,6 +305,8 @@ class LeagueService:
         self, league_id: int, payload: LeagueBracketGenerateIn, *, actor: Member,
     ) -> LeagueOut:
         league = await self._get_or_404(league_id)
+        if league.bracket_locked_at is not None:
+            raise ConflictError("대진이 확정돼 규모를 바꿀 수 없습니다.")
         team_count = payload.team_count
         if team_count < len(league.teams):
             raise ValidationError("이미 만들어진 팀 수보다 적게는 잡을 수 없습니다.")
@@ -471,29 +474,81 @@ class LeagueService:
         match.result_entered_at = datetime.now(UTC)
         self._propagate_winner(by_round_slot, total_rounds, match.round, match.slot_in_round, winner)
 
+    def _undo_decided(
+        self, match: LeagueMatch, by_round_slot: dict[tuple[int, int], LeagueMatch],
+        total_rounds: int, actor: Member,
+    ) -> None:
+        """이 경기의 결정(부전승이든 실제 결과든)을 취소하고, 거기서 다음 라운드로
+        전파됐던 결과까지 재귀적으로 함께 취소한다. clear_match_result(공개 API,
+        실제 결과만 취소 가능)와 set_match_slot(대진 확정 전 시드 변경 — 부전승 결정도
+        취소 가능, 요청: "그전엔 부전승팀도 수정 가능해야해")이 같이 쓴다."""
+        match.winner_team_id = None
+        match.sets_won_a = None
+        match.sets_won_b = None
+        match.result_entered_by = None
+        match.result_entered_at = None
+        match.substitutions = []
+        match.updated_by = actor.pk
+        if match.round < total_rounds:
+            next_round, next_slot = match.round + 1, match.slot_in_round // 2
+            side = "team_a_id" if match.slot_in_round % 2 == 0 else "team_b_id"
+            target = by_round_slot.get((next_round, next_slot))
+            if target is not None:
+                setattr(target, side, None)
+                if target.winner_team_id is not None:
+                    self._undo_decided(target, by_round_slot, total_rounds, actor)
+
+    async def confirm_bracket(self, league_id: int, *, actor: Member) -> LeagueOut:
+        """대진(시드)을 확정한다 — 그 뒤로는 set_match_slot으로 1라운드 시드를 더는
+        바꿀 수 없다(요청: "대진 확정 버튼을 추가해주고 그걸 누르면 그때부터 시드는
+        변경 못하게"). 확정 전까지는 부전승으로 이미 결정된 자리도 자유롭게 다시 배정할
+        수 있다."""
+        league = await self._get_or_404(league_id)
+        if league.draw_size is None:
+            raise ValidationError("아직 대진표가 없습니다.")
+        if league.bracket_locked_at is None:
+            league.bracket_locked_at = datetime.now(UTC)
+            league.updated_by = actor.pk
+            await self._session.commit()
+            await self._session.refresh(league, attribute_names=["teams", "matches"])
+        return to_league_out(league)
+
     async def set_match_slot(
         self, league_id: int, match_id: int, payload: LeagueMatchSlotIn, *, actor: Member,
     ) -> LeagueOut:
         league = await self._get_or_404(league_id)
         match = self._get_match_or_404(league, match_id)
-        if match.winner_team_id is not None:
+        if league.bracket_locked_at is not None:
+            raise ConflictError("대진이 확정돼 더 이상 시드를 바꿀 수 없습니다.")
+        if match.sets_won_a is not None:
             raise ConflictError("이미 결과가 입력된 경기는 슬롯을 바꿀 수 없습니다.")
         if match.is_dead:
             raise ValidationError("이 자리는 구조적으로 비어있어(부전) 팀을 배정할 수 없습니다.")
+
+        total_rounds = _total_rounds(league.draw_size) if league.draw_size else 0
+        by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
+
+        # 이 자리가 부전승으로 이미 결정돼 있었다면(위에서 실제 결과는 걸러졌으니 여기
+        # 남은 건 부전승뿐이다) 슬롯을 바꾸는 순간 그 결정 자체가 무효가 되므로, 전파된
+        # 결과까지 포함해 먼저 취소한다.
+        if match.winner_team_id is not None:
+            self._undo_decided(match, by_round_slot, total_rounds, actor)
 
         team: LeagueTeam | None = None
         if payload.team_id is not None:
             team = self._get_team_or_404(league, payload.team_id)
             # 이미 이 라운드 다른 자리에 배정된 팀을 고르면 거부하지 않고 그 자리를
             # 비우고 옮긴다(요청: "이미 지정된 팀도 드롭다운에 나오고 새로 지정하면
-            # 기존 지정된 슬롯을 미지정으로 지우는 식") — 단, 그 자리 경기가 이미
-            # 결과(부전승 포함)로 결정됐으면 옮기면 결과가 붕 떠버리니 거부한다.
+            # 기존 지정된 슬롯을 미지정으로 지우는 식"). 그 자리가 실제 결과로 결정돼
+            # 있었으면 거부하고, 부전승으로만 결정돼 있었으면 그 결정도 함께 취소한다.
             for m in league.matches:
                 if m.id == match.id or m.round != match.round:
                     continue
                 if m.team_a_id == team.id or m.team_b_id == team.id:
-                    if m.winner_team_id is not None:
+                    if m.sets_won_a is not None:
                         raise ConflictError(f"{team.label}팀은 이미 결과가 정해진 경기에 배정돼 있어 옮길 수 없습니다.")
+                    if m.winner_team_id is not None:
+                        self._undo_decided(m, by_round_slot, total_rounds, actor)
                     if m.team_a_id == team.id:
                         m.team_a_id = None
                     else:
@@ -510,8 +565,6 @@ class LeagueService:
         # 팀을 배정한 경우에만 부전승 자동 처리를 확인한다(비우는 동작은 대상이 아니다).
         # 1라운드/2라운드 이상 판정 기준이 서로 달라 헬퍼를 나눠 쓴다(각 헬퍼 문서 참고).
         if team is not None:
-            total_rounds = _total_rounds(league.draw_size) if league.draw_size else 0
-            by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
             if match.round == 1:
                 self._maybe_auto_resolve_round1(league, by_round_slot, total_rounds, match)
             else:
@@ -600,25 +653,8 @@ class LeagueService:
 
         total_rounds = _total_rounds(league.draw_size)
         by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
+        self._undo_decided(match, by_round_slot, total_rounds, actor)
 
-        def clear(m: LeagueMatch) -> None:
-            m.winner_team_id = None
-            m.sets_won_a = None
-            m.sets_won_b = None
-            m.result_entered_by = None
-            m.result_entered_at = None
-            m.substitutions = []
-            m.updated_by = actor.pk
-            if m.round < total_rounds:
-                next_round, next_slot = m.round + 1, m.slot_in_round // 2
-                side = "team_a_id" if m.slot_in_round % 2 == 0 else "team_b_id"
-                target = by_round_slot.get((next_round, next_slot))
-                if target is not None:
-                    setattr(target, side, None)
-                    if target.winner_team_id is not None:
-                        clear(target)
-
-        clear(match)
         await self._session.commit()
         await self._session.refresh(league, attribute_names=["teams", "matches"])
         await self._refresh_match_relations(league.matches)

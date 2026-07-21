@@ -44,6 +44,14 @@ class League(AuditMixin, TimestampMixin, Base):
     # 있음)"으로 두고, draw_size(2의 거듭제곱)를 채우기 위한 패딩만 진짜 부전승(is_dead)
     # 처리한다. bracket/generate 전엔 NULL.
     planned_teams: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # 대진(시드) 확정 시각 — NULL이면 아직 관리자가 1라운드 시드를 자유롭게 바꿀 수
+    # 있고(부전승으로 이미 결정된 자리도 포함), 값이 있으면 그 뒤로는 시드 변경 API
+    # (set_match_slot) 자체를 막는다(요청: "대진 확정 버튼을 추가해주고 그걸 누르면
+    # 그때부터 시드는 변경 못하게... 그전엔 부전승팀도 수정 가능해야해"). 실제 경기
+    # 결과(sets_won_a가 있는 경기)는 확정 여부와 무관하게 애초에 슬롯 변경 대상이
+    # 아니다 — 이건 그것과 별개로 "아직 아무도 안 붙어본 시드 배치" 자체를 잠그는
+    # 스위치다.
+    bracket_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     teams: Mapped[list["LeagueTeam"]] = relationship(
         back_populates="league", cascade="all, delete-orphan", lazy="selectin",

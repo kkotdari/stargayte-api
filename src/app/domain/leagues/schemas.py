@@ -69,6 +69,7 @@ class LeagueOut(BaseModel):
     status: LeagueStatus
     draw_size: int | None = Field(alias="drawSize")
     planned_teams: int | None = Field(alias="plannedTeams")
+    bracket_locked: bool = Field(alias="bracketLocked")
     teams: list[LeagueTeamOut]
     matches: list[LeagueMatchOut]
     created_at: datetime = Field(alias="createdAt")

@@ -87,6 +87,10 @@ async def _assign_slot(client, headers, league_id: int, match_id: int, side: str
     )
 
 
+async def _confirm_bracket(client, headers, league_id: int):
+    return await client.post(f"/api/leagues/{league_id}/bracket/confirm", headers=headers)
+
+
 def _match(league: dict, round_: int, slot: int) -> dict:
     m = next(m for m in league["matches"] if m["round"] == round_ and m["slotInRound"] == slot)
     return m
@@ -479,6 +483,58 @@ async def test_slot_reassign_moves_team_and_blocks_after_decided(client):
 
     res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[0]["id"])
     assert res.status_code == 409, res.text
+
+
+async def test_bye_seed_reassignable_before_confirm_and_cascade_clears_propagation(client):
+    """대진 확정 전에는 부전승으로 이미 결정된 자리도 자유롭게 다시 배정할 수 있고
+    (요청: "그전엔 부전승팀도 수정 가능해야해"), 그 결정이 이미 다음 라운드로
+    전파돼 있었다면 슬롯을 바꾸는 순간 그 전파도 함께 취소된다."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, best_of=1)
+    teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
+    res = await _generate_bracket(client, admin_headers, league["id"], 3)
+    body = res.json()
+    slot0 = _match(body, 1, 0)  # byes=1이라 슬롯0이 부전승 자리
+
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _match(body, 1, 0)["winnerTeamId"] == teams[0]["id"]  # A 자동 부전승
+    final = _match(body, 2, 0)
+    assert final["teamA"]["label"] == "A"  # 결승까지 전파돼 있음
+
+    # A 대신 C를 그 부전승 자리에 다시 배정하면, A의 부전승 결정과 결승으로의 전파가
+    # 함께 취소되고 C가 새로 부전승을 받는다.
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[2]["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()
+    slot0 = _match(body, 1, 0)
+    assert slot0["teamA"]["label"] == "C" and slot0["winnerTeamId"] == teams[2]["id"]
+    final = _match(body, 2, 0)
+    assert final["teamA"]["label"] == "C"
+    assert final["winnerTeamId"] is None
+
+
+async def test_confirm_bracket_locks_seed_changes(client):
+    """대진 확정 버튼을 누르면 그 뒤로는 시드(슬롯) 변경 자체가 막힌다(요청: "대진
+    확정 버튼을 추가해주고 그걸 누르면 그때부터 시드는 변경 못하게")."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, best_of=1)
+    teams = await _add_teams(client, admin_headers, league["id"], 2)
+    res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    body = res.json()
+    assert body["bracketLocked"] is False
+    slot0 = _match(body, 1, 0)
+
+    res = await _confirm_bracket(client, admin_headers, league["id"])
+    assert res.status_code == 200, res.text
+    assert res.json()["bracketLocked"] is True
+
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
+    assert res.status_code == 409, res.text
+
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    assert res.status_code == 409, res.text  # 규모 변경도 확정 후엔 막힌다
 
 
 async def test_result_set_score_validation_against_best_of(client):

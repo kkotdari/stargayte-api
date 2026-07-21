@@ -74,6 +74,11 @@ async def generate_bracket(
     return await LeagueService(db).generate_bracket(league_id, payload, actor=current)
 
 
+@router.post("/{league_id}/bracket/confirm", response_model=LeagueOut)
+async def confirm_bracket(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
+    return await LeagueService(db).confirm_bracket(league_id, actor=current)
+
+
 @router.patch("/{league_id}/matches/{match_id}/slot", response_model=LeagueOut)
 async def set_match_slot(
     league_id: int, match_id: int, payload: LeagueMatchSlotIn, db: DbSession, current: CurrentAdmin,
