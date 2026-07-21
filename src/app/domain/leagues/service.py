@@ -164,11 +164,15 @@ class LeagueService:
             await self._session.refresh(m, attribute_names=["team_a", "team_b", "substitutions"])
 
     def _team_has_decided_match(self, league: League, team_id: int) -> bool:
-        """이 팀이 이미 결과(실제 경기든 부전승이든)가 난 경기에 참가한 적이 있는지 —
-        있으면 팀 삭제/로스터 변경으로 이미 확정된 대진 이력을 건드리게 되므로 막는다.
-        대진표 생성 전(draw_size is None)에는 애초에 어떤 경기도 없어 항상 False다."""
+        """이 팀이 이미 "실제로 치른" 경기 결과가 난 적이 있는지 — 있으면 팀 삭제/로스터
+        변경으로 이미 확정된 대진 이력을 건드리게 되므로 막는다. 부전승으로만 이긴
+        경우는 세지 않는다(요청: "A팀이 수정 불가능한 문제가 있음" — 상대가 구조적으로
+        없었을 뿐 실제로 아무도 안 붙어봤는데 로스터가 잠기는 건 과했다). 실제 결과가
+        입력된 경기만 sets_won_a가 채워진다(부전승 자동 처리는 세트 스코어를 남기지
+        않는다) — 그래서 winner_team_id 대신 sets_won_a로 구분한다. 대진표 생성 전
+        (draw_size is None)에는 애초에 어떤 경기도 없어 항상 False다."""
         return any(
-            m.winner_team_id is not None and (m.team_a_id == team_id or m.team_b_id == team_id)
+            m.sets_won_a is not None and (m.team_a_id == team_id or m.team_b_id == team_id)
             for m in league.matches
         )
 
@@ -307,21 +311,29 @@ class LeagueService:
         # 팀수/대진표 규모는 상한이 없다(요청: "팀수 무제한 개인전 선수 무제한 대진표
         # 슬롯 무제한"). 이미 대진표가 있어도 규모를 다시 잡을 수 있다(요청: "팀수,
         # 대진표 슬롯 수 다 수정가능해야돼") — 단 실제 경기 결과가 하나라도 들어갔으면
-        # 재생성이 그 진행 상황을 지워버리므로 막는다.
+        # 재생성이 그 진행 상황을 지워버리므로 막는다. 1라운드에 이미 배정해둔 팀은
+        # 그대로 살리고 규모만 다시 잡는다(요청: "참가팀수 늘릴때 기존 지정된건
+        # 리셋하지 말아줘") — 결과가 하나도 없다는 게 이미 위에서 보장되므로 2라운드
+        # 이상은 전부 "미정"이었을 수밖에 없어, 그 라운드들만 구조가 바뀌는 김에 새로
+        # 만든다.
+        old_round1_by_slot: dict[int, LeagueMatch] = {}
         if league.draw_size is not None:
             if any(m.winner_team_id is not None for m in league.matches):
                 raise ValidationError("이미 결과가 입력된 경기가 있어 대진표 규모를 바꿀 수 없습니다.")
             for m in list(league.matches):
-                league.matches.remove(m)
+                if m.round == 1:
+                    old_round1_by_slot[m.slot_in_round] = m
+                else:
+                    league.matches.remove(m)
             await self._repo.flush()
 
         # 대진표는 빈 채로 만든다 — 지금 있는 팀을 자동으로 채워 넣지 않고, 어느 팀이
-        # 어느 칸에 들어갈지는 관리자가 슬롯 API(set_match_slot, 다음 단계엔 드래그앤드랍)
-        # 로 직접 정한다(요청: "대진표 생성 누르면 빈 대진표가 생기고 각 칸에 누가
-        # 들어갈지 정할 수 있는 시스템으로"). team_count(관리자가 미리 정한 규모) 미만
-        # 자리는 나중에 팀이 배정될 수 있는 "예약"이고, 그 이상(draw_size까지의 패딩)만
-        # 구조적으로 영원히 빈 자리(is_dead)다 — 부전승 자동 처리는 실제로 슬롯에 팀이
-        # 배정되는 순간(set_match_slot)에 일어난다.
+        # 어느 칸에 들어갈지는 관리자가 슬롯 API(set_match_slot)로 직접 정한다(요청:
+        # "대진표 생성 누르면 빈 대진표가 생기고 각 칸에 누가 들어갈지 정할 수 있는
+        # 시스템으로"). team_count(관리자가 미리 정한 규모) 미만 자리는 나중에 팀이
+        # 배정될 수 있는 "예약"이고, 그 이상(draw_size까지의 패딩)만 구조적으로 영원히
+        # 빈 자리(is_dead)다 — 부전승 자동 처리는 실제로 슬롯에 팀이 배정되는 순간
+        # (set_match_slot)에 일어난다.
         draw_size = _next_pow2(team_count)
         total_rounds = _total_rounds(draw_size)
         league.draw_size = draw_size
@@ -342,7 +354,24 @@ class LeagueService:
             dead[r] = [dead[r - 1][2 * s] and dead[r - 1][2 * s + 1] for s in range(draw_size // (2 ** r))]
 
         by_round_slot: dict[tuple[int, int], LeagueMatch] = {}
-        for r in range(1, total_rounds + 1):
+        for slot in range(draw_size // 2):
+            m = old_round1_by_slot.pop(slot, None)
+            if m is not None:
+                m.is_dead = dead[1][slot]
+                m.updated_by = actor.pk
+            else:
+                m = LeagueMatch(
+                    league_id=league.id, round=1, slot_in_round=slot,
+                    is_dead=dead[1][slot],
+                    created_by=actor.pk, updated_by=actor.pk,
+                )
+                league.matches.append(m)
+            by_round_slot[(1, slot)] = m
+        # 규모가 줄어들어 더는 필요 없어진 1라운드 슬롯은(있었다면) 배정된 팀째로 버려진다.
+        for leftover in old_round1_by_slot.values():
+            league.matches.remove(leftover)
+
+        for r in range(2, total_rounds + 1):
             count = draw_size // (2 ** r)
             for slot in range(count):
                 m = LeagueMatch(

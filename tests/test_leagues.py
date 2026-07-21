@@ -252,6 +252,33 @@ async def test_generate_bracket_can_be_resized_before_results_but_not_after(clie
     assert res.status_code == 400, res.text
 
 
+async def test_generate_bracket_resize_preserves_round1_assignments(client):
+    """참가팀수를 늘려 규모를 다시 잡아도 이미 1라운드에 배정해둔 팀은 그대로 남는다
+    (요청: "참가팀수 늘릴때 기존 지정된건 리셋하지 말아줘") — 결과가 없으니 2라운드
+    이상은 구조가 바뀌는 김에 새로 만들어져도 손실이 없다."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, best_of=1)
+    teams = await _add_teams(client, admin_headers, league["id"], 4)  # A, B, C, D
+
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    slot0 = _match(body, 1, 0)
+    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
+    assert res.status_code == 200, res.text
+
+    # 4 -> 6팀으로 늘리면 draw_size가 4에서 8로 커진다 — 슬롯0(A vs B)은 그대로 남고,
+    # 새로 생긴 슬롯(2,3)만 빈 채로 추가된다.
+    res = await _generate_bracket(client, admin_headers, league["id"], 6)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["drawSize"] == 8
+    slot0 = _match(body, 1, 0)
+    assert slot0["teamA"]["label"] == "A" and slot0["teamB"]["label"] == "B"
+    assert _match(body, 1, 2)["teamA"] is None and _match(body, 1, 3)["teamA"] is None
+
+
 async def test_bracket_generates_empty_and_slots_are_assigned_manually(client):
     """대진표는 팀이 있건 없건, 있어도 자동으로 채워 넣지 않고 항상 빈 채로 생성된다 —
     각 칸에 누가 들어갈지는 슬롯 API로 직접 정한다(요청: "대진표 생성 누르면 빈 대진표가
