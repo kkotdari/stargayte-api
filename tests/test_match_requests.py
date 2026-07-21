@@ -113,7 +113,8 @@ async def test_recommend_sort_and_complete(client):
     assert [it["id"] for it in left["items"]] == [id2]
 
 
-async def test_pagination_five_per_page(client):
+async def test_pagination_three_per_page(client):
+    # 요청 목록은 3개씩 페이징한다(요청: "너무 많은 공간을 차지하지 않게 3개씩").
     a = await _signup(client, "alice", "Alice#1001")
     for i in range(7):
         res = await client.post(
@@ -121,9 +122,12 @@ async def test_pagination_five_per_page(client):
         )
         assert res.status_code == 200, res.text
     p0 = (await client.get("/api/match-requests?page=0", headers=_h(a))).json()
-    assert len(p0["items"]) == 5
+    assert len(p0["items"]) == 3
     assert p0["total"] == 7
     assert p0["hasMore"] is True
     p1 = (await client.get("/api/match-requests?page=1", headers=_h(a))).json()
-    assert len(p1["items"]) == 2
-    assert p1["hasMore"] is False
+    assert len(p1["items"]) == 3
+    assert p1["hasMore"] is True
+    p2 = (await client.get("/api/match-requests?page=2", headers=_h(a))).json()
+    assert len(p2["items"]) == 1
+    assert p2["hasMore"] is False
