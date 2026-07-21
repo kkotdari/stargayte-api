@@ -353,6 +353,26 @@ class ChallengeService:
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
+    async def reschedule(
+        self, challenge_id: int, scheduled_at: datetime, *, actor: Member,
+    ) -> ChallengeOut:
+        """성사(진행중)된 대결의 예정 일시를 바꾼다(요청: "너나와 목록에서 진행중인건은
+        날짜와 시간 수정이 가능하게"). 참가자(도전자편/상대편 무관) 또는 운영자만 —
+        구경꾼이 남의 대결 시간을 바꿀 수는 없다."""
+        challenge = await self._repo.get(challenge_id)
+        if challenge is None:
+            raise NotFoundError("도전장을 찾을 수 없습니다.")
+        if _status_of(challenge) != "confirmed":
+            raise ValidationError("성사된 대결만 일정을 수정할 수 있습니다.")
+        is_participant = any(p.member_pk == actor.pk for p in challenge.participants)
+        if not is_participant and not actor.has_any_role("0202"):
+            raise ForbiddenError("참가자 또는 운영자만 일정을 수정할 수 있습니다.")
+        challenge.scheduled_at = scheduled_at
+        challenge.updated_by = actor.pk
+        await self._session.commit()
+        await self._session.refresh(challenge, attribute_names=["participants"])
+        return to_challenge_out(challenge, history=await self._history_chain(challenge))
+
     async def enter_result(
         self, challenge_id: int, winner_side: str, *, actor: Member,
     ) -> ChallengeOut:

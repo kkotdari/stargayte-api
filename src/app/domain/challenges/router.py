@@ -5,6 +5,7 @@ from app.domain.challenges.schemas import (
     ChallengeCreate,
     ChallengeListOut,
     ChallengeOut,
+    ChallengeRescheduleIn,
     ChallengeRespondIn,
     ChallengeResultIn,
     ChallengeRevengeIn,
@@ -46,6 +47,15 @@ async def respond_to_challenge(
     return await ChallengeService(db).respond(
         challenge_id, payload.response, actor=current,
         scheduled_at=payload.scheduled_at,
+    )
+
+
+@router.patch("/{challenge_id}/schedule", response_model=ChallengeOut)
+async def reschedule_challenge(
+    challenge_id: int, payload: ChallengeRescheduleIn, db: DbSession, current: CurrentMember
+) -> ChallengeOut:
+    return await ChallengeService(db).reschedule(
+        challenge_id, payload.scheduled_at, actor=current
     )
 
 
