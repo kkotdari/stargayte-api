@@ -4,6 +4,8 @@
 자동 부전승이 연쇄되는 경우), 슬롯 오버라이드, 결과 입력+진출 전파, 대타 기록, 결과 취소,
 비운영자 403."""
 
+import string
+
 from sqlalchemy import select
 
 from app.domain.leagues.models import League, LeagueTeam
@@ -128,27 +130,24 @@ async def test_create_get_update_delete_league(client):
     assert res.status_code == 404
 
 
-async def test_team_creation_labels_and_max_six_for_team_league(client):
+async def test_team_creation_labels_unlimited_and_multichar_after_26(client):
+    """팀/선수 수는 상한이 없다(요청: "팀수 무제한 개인전 선수 무제한 대진표 슬롯
+    무제한"). 26개(Z)를 넘어가면 라벨이 스프레드시트 열 이름 방식(AA, AB..)으로
+    이어진다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, mode="team")
-    teams = await _add_teams(client, admin_headers, league["id"], 6)
-    assert [t["label"] for t in teams] == list("ABCDEF")
+    teams = await _add_teams(client, admin_headers, league["id"], 28)
+    assert [t["label"] for t in teams[:26]] == list(string.ascii_uppercase)
+    assert teams[26]["label"] == "AA"
+    assert teams[27]["label"] == "AB"
 
-    res = await client.post(f"/api/leagues/{league['id']}/teams", headers=admin_headers)
-    assert res.status_code == 400, res.text
 
-
-async def test_individual_league_allows_up_to_24(client):
-    """개인리그는 "팀"이 곧 선수 1명이라 훨씬 많이 참가할 수 있어야 한다(요청: "개인전은
-    최대 24명까지 가능하게")."""
+async def test_individual_league_allows_more_than_24(client):
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, mode="individual")
-    teams = await _add_teams(client, admin_headers, league["id"], 24)
-    assert len(teams) == 24
-    assert teams[-1]["label"] == "X"  # 알파벳 24번째
-
-    res = await client.post(f"/api/leagues/{league['id']}/teams", headers=admin_headers)
-    assert res.status_code == 400, res.text
+    teams = await _add_teams(client, admin_headers, league["id"], 30)
+    assert len(teams) == 30
+    assert teams[29]["label"] == "AD"
 
 
 async def test_team_delete_relabels_remaining(client):
@@ -210,18 +209,46 @@ async def test_bracket_generate_team_count_validation(client):
     league = await _create_league(client, admin_headers)
     await _add_teams(client, admin_headers, league["id"], 3)
 
-    # teamCount는 스키마 레벨에서 2~24만 허용.
+    # teamCount는 스키마 레벨에서 2 이상만 강제한다 — 상한은 없다(요청: "대진표 슬롯
+    # 무제한").
     res = await _generate_bracket(client, admin_headers, league["id"], 1)
     assert res.status_code == 422, res.text
-    res = await _generate_bracket(client, admin_headers, league["id"], 25)
-    assert res.status_code == 422, res.text
-
-    # 팀리그는 서비스 레벨에서 6개 상한.
-    res = await _generate_bracket(client, admin_headers, league["id"], 7)
-    assert res.status_code == 400, res.text
 
     # 이미 만들어진 팀(3개)보다 적게는 예약할 수 없다.
     res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    assert res.status_code == 400, res.text
+
+    # 상한 없이 큰 규모도 허용된다(팀리그라도 더는 6개로 막지 않는다).
+    res = await _generate_bracket(client, admin_headers, league["id"], 25)
+    assert res.status_code == 200, res.text
+
+
+async def test_generate_bracket_can_be_resized_before_results_but_not_after(client):
+    """팀수/대진표 슬롯 수는 대진표 생성 후에도 다시 잡을 수 있다(요청: "팀수, 대진표
+    슬롯 수 다 수정가능해야돼") — 단, 실제 경기 결과가 하나라도 들어갔으면 재생성이
+    그 진행 상황을 지워버리므로 막는다."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, best_of=1)
+    teams = await _add_teams(client, admin_headers, league["id"], 2)
+
+    res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    assert res.status_code == 200, res.text
+    assert res.json()["drawSize"] == 2
+
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["drawSize"] == 4
+    assert body["plannedTeams"] == 4
+
+    slot0 = _match(body, 1, 0)
+    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
+    assert res.status_code == 200, res.text
+    res = await _enter_result(client, admin_headers, league["id"], slot0["id"], 1, 0)
+    assert res.status_code == 200, res.text
+
+    res = await _generate_bracket(client, admin_headers, league["id"], 8)
     assert res.status_code == 400, res.text
 
 
@@ -389,9 +416,9 @@ async def test_six_team_bracket_byes_spread_and_round2_is_real_match(client):
     assert res.json()["status"] == "completed"
 
 
-async def test_slot_override_and_round_conflict(client):
+async def test_slot_reassign_moves_team_and_blocks_after_decided(client):
     admin_headers, members = await _bootstrap(client, 4)
-    league = await _create_league(client, admin_headers)
+    league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 4)
     for t, mid in zip(teams, [f"m{i}" for i in range(4)]):
         assert (await _set_roster(client, admin_headers, league["id"], t["id"], [mid])).status_code == 200
@@ -402,14 +429,29 @@ async def test_slot_override_and_round_conflict(client):
     res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
     assert res.status_code == 200, res.text
 
-    # 이미 슬롯0에 배정된 팀(teams[0]=A)을 슬롯1에도 넣으려 하면 충돌.
+    # 이미 슬롯0에 배정된 팀(teams[0]=A)을 슬롯1에 다시 배정하면 슬롯0에서 자동으로
+    # 빠지고 슬롯1로 옮겨간다(요청: "이미 지정된 팀도 드롭다운에 나오고 새로 지정하면
+    # 기존 지정된 슬롯을 미지정으로 지우는 식").
     res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[0]["id"])
-    assert res.status_code == 409, res.text
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _match(body, 1, 0)["teamA"] is None
+    assert _match(body, 1, 1)["teamA"]["label"] == "A"
 
     # 슬롯 비우기는 허용.
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", None)
+    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", None)
     assert res.status_code == 200, res.text
-    assert _match(res.json(), 1, 0)["teamA"] is None
+    assert _match(res.json(), 1, 1)["teamA"] is None
+
+    # 이미 결과가 정해진 경기에 배정된 팀은 다른 자리로 옮길 수 없다.
+    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
+    assert res.status_code == 200, res.text
+    res = await _enter_result(client, admin_headers, league["id"], slot0["id"], 1, 0)
+    assert res.status_code == 200, res.text
+
+    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[0]["id"])
+    assert res.status_code == 409, res.text
 
 
 async def test_result_set_score_validation_against_best_of(client):

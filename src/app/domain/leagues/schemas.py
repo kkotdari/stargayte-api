@@ -124,13 +124,12 @@ class LeagueTeamRosterIn(BaseModel):
 class LeagueBracketGenerateIn(BaseModel):
     """대진표를 몇 팀(개인리그면 몇 명)짜리로 잡을지 — 실제 지금 만들어진 팀 수
     (len(teams))와 달라도 된다(요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수 미리
-    설정 가능"). 이미 있는 팀보다 작게는 잡을 수 없다. 상한은 모드에 따라 다르다(팀리그
-    6/개인리그 24, 요청: "개인전은 최대 24명까지") — 스키마는 둘 중 더 넉넉한 상한(24)만
-    걸고, 실제 모드별 상한은 서비스에서 검증한다(리그의 mode를 알아야 하므로)."""
+    설정 가능"). 이미 있는 팀보다 작게는 잡을 수 없다. 상한은 없다(요청: "팀수 무제한
+    개인전 선수 무제한 대진표 슬롯 무제한")."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    team_count: int = Field(alias="teamCount", ge=2, le=24)
+    team_count: int = Field(alias="teamCount", ge=2)
 
 
 class LeagueMatchSlotIn(BaseModel):

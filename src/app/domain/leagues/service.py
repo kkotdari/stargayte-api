@@ -27,16 +27,19 @@ from app.domain.members.repository import MemberRepository
 
 import string
 
-# 팀리그는 최대 6팀(A~F) 고정이지만, 개인리그는 "팀"이 곧 선수 1명이라 훨씬 많은 인원이
-# 참가할 수 있어야 한다(요청: "개인전은 최대 24명까지 가능하게"). 라벨은 두 모드 다
-# 알파벳 한 글자(A~X, 24개)를 그대로 쓰고 상한만 모드별로 다르게 둔다.
-TEAM_LABELS = string.ascii_uppercase[:24]
-MAX_TEAMS_TEAM = 6
-MAX_TEAMS_INDIVIDUAL = 24
-
-
-def _max_teams(league_mode: str) -> int:
-    return MAX_TEAMS_TEAM if league_mode == "team" else MAX_TEAMS_INDIVIDUAL
+# 팀/선수/대진표 규모는 상한 없이 무제한이다(요청: "팀수 무제한 개인전 선수 무제한
+# 대진표 슬롯 무제한"). 라벨은 A, B, ... Z, AA, AB, ...처럼 스프레드시트 열 이름
+# 방식으로 26개를 넘어가도 계속 이어진다.
+def _team_label(index: int) -> str:
+    letters = string.ascii_uppercase
+    label = ""
+    n = index
+    while True:
+        n, r = divmod(n, 26)
+        label = letters[r] + label
+        if n == 0:
+            return label
+        n -= 1
 
 
 def _next_pow2(n: int) -> int:
@@ -209,17 +212,14 @@ class LeagueService:
 
     async def add_team(self, league_id: int, *, actor: Member) -> LeagueTeamOut:
         league = await self._get_or_404(league_id)
-        # 대진표 생성 전엔 모드별 상한(팀리그 6/개인리그 24)까지 자유롭게, 생성 후엔 그때
-        # 예약해둔 자리(planned_teams)만큼만 — 초과分은 애초에 대진판에 자리가 없다
-        # (요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수 미리 설정 가능" — 예약된
-        # 자리는 나중에 슬롯 배정으로 채운다).
-        max_teams = _max_teams(league.mode)
-        cap = max_teams if league.draw_size is None else (league.planned_teams or 0)
-        if len(league.teams) >= cap:
-            msg = f"{'팀' if league.mode == 'team' else '선수'}은 최대 {max_teams}개까지 만들 수 있습니다." if league.draw_size is None else "이 대진표에 예약된 자리가 다 찼습니다."
-            raise ValidationError(msg)
+        # 팀/선수 수 자체는 상한이 없다(요청: "팀수 무제한 개인전 선수 무제한"). 다만
+        # 대진표가 이미 생성돼 있으면 그때 예약해둔 자리(planned_teams)만큼만 — 초과分은
+        # 애초에 대진판에 자리가 없다(요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수
+        # 미리 설정 가능" — 예약된 자리는 나중에 슬롯 배정으로 채운다).
+        if league.draw_size is not None and len(league.teams) >= (league.planned_teams or 0):
+            raise ValidationError("이 대진표에 예약된 자리가 다 찼습니다.")
         team = LeagueTeam(
-            league_id=league.id, label=TEAM_LABELS[len(league.teams)],
+            league_id=league.id, label=_team_label(len(league.teams)),
             created_by=actor.pk, updated_by=actor.pk,
         )
         league.teams.append(team)
@@ -241,9 +241,12 @@ class LeagueService:
         await self._session.flush()
         # 라벨 재정렬 — 한 팀씩 순서대로 flush해 UniqueConstraint(league_id, label)와
         # 일시적으로 충돌하지 않게 한다(예: C→B로 옮길 때 기존 B가 먼저 비워져 있어야 함).
-        remaining = sorted(league.teams, key=lambda t: t.label)
+        # 라벨이 26개(Z)를 넘어가면 여러 글자(AA, AB..)가 섞이는데, 문자열 그대로
+        # 정렬하면 "AA" < "B"가 돼버려(길이 다른 문자열의 사전식 비교) 순서가 깨진다 —
+        # (길이, 문자열) 튜플로 정렬해야 원래 부여 순서(A..Z, AA..)가 유지된다.
+        remaining = sorted(league.teams, key=lambda t: (len(t.label), t.label))
         for i, t in enumerate(remaining):
-            new_label = TEAM_LABELS[i]
+            new_label = _team_label(i)
             if t.label != new_label:
                 t.label = new_label
                 t.updated_by = actor.pk
@@ -297,14 +300,20 @@ class LeagueService:
         self, league_id: int, payload: LeagueBracketGenerateIn, *, actor: Member,
     ) -> LeagueOut:
         league = await self._get_or_404(league_id)
-        if league.draw_size is not None:
-            raise ValidationError("이미 대진표가 생성됐습니다.")
         team_count = payload.team_count
         if team_count < len(league.teams):
             raise ValidationError("이미 만들어진 팀 수보다 적게는 잡을 수 없습니다.")
-        max_teams = _max_teams(league.mode)
-        if team_count > max_teams:
-            raise ValidationError(f"{'팀' if league.mode == 'team' else '선수'}은 최대 {max_teams}개까지 잡을 수 있습니다.")
+
+        # 팀수/대진표 규모는 상한이 없다(요청: "팀수 무제한 개인전 선수 무제한 대진표
+        # 슬롯 무제한"). 이미 대진표가 있어도 규모를 다시 잡을 수 있다(요청: "팀수,
+        # 대진표 슬롯 수 다 수정가능해야돼") — 단 실제 경기 결과가 하나라도 들어갔으면
+        # 재생성이 그 진행 상황을 지워버리므로 막는다.
+        if league.draw_size is not None:
+            if any(m.winner_team_id is not None for m in league.matches):
+                raise ValidationError("이미 결과가 입력된 경기가 있어 대진표 규모를 바꿀 수 없습니다.")
+            for m in list(league.matches):
+                league.matches.remove(m)
+            await self._repo.flush()
 
         # 대진표는 빈 채로 만든다 — 지금 있는 팀을 자동으로 채워 넣지 않고, 어느 팀이
         # 어느 칸에 들어갈지는 관리자가 슬롯 API(set_match_slot, 다음 단계엔 드래그앤드랍)
@@ -446,11 +455,21 @@ class LeagueService:
         team: LeagueTeam | None = None
         if payload.team_id is not None:
             team = self._get_team_or_404(league, payload.team_id)
+            # 이미 이 라운드 다른 자리에 배정된 팀을 고르면 거부하지 않고 그 자리를
+            # 비우고 옮긴다(요청: "이미 지정된 팀도 드롭다운에 나오고 새로 지정하면
+            # 기존 지정된 슬롯을 미지정으로 지우는 식") — 단, 그 자리 경기가 이미
+            # 결과(부전승 포함)로 결정됐으면 옮기면 결과가 붕 떠버리니 거부한다.
             for m in league.matches:
                 if m.id == match.id or m.round != match.round:
                     continue
                 if m.team_a_id == team.id or m.team_b_id == team.id:
-                    raise ConflictError(f"{team.label}팀이 이미 이 라운드의 다른 자리에 배정돼 있습니다.")
+                    if m.winner_team_id is not None:
+                        raise ConflictError(f"{team.label}팀은 이미 결과가 정해진 경기에 배정돼 있어 옮길 수 없습니다.")
+                    if m.team_a_id == team.id:
+                        m.team_a_id = None
+                    else:
+                        m.team_b_id = None
+                    m.updated_by = actor.pk
 
         if payload.side == "a":
             match.team_a_id = team.id if team else None

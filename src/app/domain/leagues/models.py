@@ -57,20 +57,20 @@ class League(AuditMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("best_of >= 1", name="ck_leagues_best_of_positive"),
         CheckConstraint("mode IN ('team', 'individual')", name="ck_leagues_mode_valid"),
-        # 상한은 팀리그 6/개인리그 24(요청: "개인전은 최대 24명까지") 중 더 넉넉한 쪽으로
-        # 여기서는 24까지만 허용하고, 모드별 정확한 상한은 서비스 레이어(_max_teams)에서
-        # 검증한다 — CHECK 제약은 mode 컬럼과 조건부로 엮기 번거로워 느슨한 상한만 건다.
+        # 팀 수/대진표 규모 상한 없음(요청: "팀수 무제한 개인전 선수 무제한 대진표 슬롯
+        # 무제한") — 대진표를 짤 수 있으려면 최소 2팀은 있어야 하니 하한만 건다.
         CheckConstraint(
-            "planned_teams IS NULL OR (planned_teams >= 2 AND planned_teams <= 24)",
+            "planned_teams IS NULL OR planned_teams >= 2",
             name="ck_leagues_planned_teams_range",
         ),
     )
 
 
 class LeagueTeam(AuditMixin, TimestampMixin, Base):
-    """리그 안의 팀 하나 — 라벨은 A~F로 고정, 커스텀 이름은 없다(요청: "팀은 A~F 팀으로
-    일단 고정(이름 지정 X)"). 서비스가 생성 순서로 라벨을 부여하고, 팀 삭제 시 남은
-    팀들을 다시 A부터 빈틈 없이 재정렬한다."""
+    """리그 안의 팀 하나 — 라벨은 A, B, ... Z, AA, AB, ...처럼 스프레드시트 열 이름
+    방식으로 자동 부여되고(요청: "팀수 무제한" — 26개를 넘어가도 계속 이어져야 한다),
+    커스텀 이름은 없다(요청: "팀은 A~F 팀으로 일단 고정(이름 지정 X)"). 서비스가 생성
+    순서로 라벨을 부여하고, 팀 삭제 시 남은 팀들을 다시 A부터 빈틈 없이 재정렬한다."""
 
     __tablename__ = "league_teams"
     __table_args__ = (
@@ -81,7 +81,7 @@ class LeagueTeam(AuditMixin, TimestampMixin, Base):
     league_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("leagues.id", ondelete="CASCADE"), nullable=False
     )
-    label: Mapped[str] = mapped_column(String(1), nullable=False)
+    label: Mapped[str] = mapped_column(String(4), nullable=False)
 
     league: Mapped[League] = relationship(back_populates="teams")
     roster: Mapped[list["LeagueTeamMember"]] = relationship(
