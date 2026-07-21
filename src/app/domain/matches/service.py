@@ -16,6 +16,7 @@ from app.domain.matches.schemas import (
     UNREGISTERED_ID_PREFIX,
     MatchAuthor,
     MatchOut,
+    MatchReplayMerge,
     MatchSlot,
     MatchWrite,
     ReplayOut,
@@ -1112,6 +1113,57 @@ class MatchService:
         else:
             await self._apply_replay(match, payload.replay, actor_pk=actor.pk)
 
+        await self._session.commit()
+        return await self._repo.refresh(match)
+
+    async def merge_replay(self, payload: MatchReplayMerge, *, actor: Member) -> Match | None:
+        """이미 등록된 경기(game_started_at 일치)에 리플레이 내부 정보만 다시 덮어쓴다(요청:
+        중복 리플레이 재등록 시 새 컬럼 백필). 지표(APM/커맨드/생산)·맵·플레이시간은 항상,
+        승패는 리플레이가 승자를 확실히 가린 경우(payload.result is not None)에만 갱신한다.
+        경기번호·등록자·등록일시·메모·match_date·match_type·참가자 회원연결은 절대 건드리지
+        않는다. 참가자는 player_name(리플레이 원본 게임 아이디)으로 매칭한다.
+
+        기존 값을 실수로 지우지 않도록, 지표/종족은 '새 값이 있을 때만' 덮어쓴다 — build_count
+        처럼 예전엔 없던 컬럼(NULL)이 이번에 채워지는 백필은 되지만, 어쩌다 파싱이 한 지표를
+        못 읽어 None으로 와도 기존 정상값을 날리지 않는다. 게임 시각이 매칭되는 경기가 없으면
+        None을 돌려준다(중복이 아니었던 것 — 호출부가 조용히 건너뛴다)."""
+        target = _to_utc_naive(payload.game_started_at)
+        rows = await self._repo.list_match_id_game_started_ats()
+        match_id = next((mid for mid, dt in rows if dt is not None and _to_utc_naive(dt) == target), None)
+        if match_id is None:
+            return None
+        match = await self._repo.get(match_id)
+        if match is None or match.result_row is None:
+            return None
+
+        rr = match.result_row
+        if payload.map_name is not None:
+            rr.map_name = payload.map_name
+        if payload.duration_seconds is not None:
+            rr.duration_seconds = payload.duration_seconds
+        if payload.result is not None:
+            rr.result = payload.result
+
+        by_name = {s.player_name: s for s in payload.players}
+        for p in match.participants:
+            s = by_name.get(p.player_name)
+            if s is None:
+                continue
+            if s.race:
+                p.race = s.race
+            if s.apm is not None:
+                p.apm = s.apm
+            if s.eapm is not None:
+                p.eapm = s.eapm
+            if s.cmd_count is not None:
+                p.cmd_count = s.cmd_count
+            if s.effective_cmd_count is not None:
+                p.effective_cmd_count = s.effective_cmd_count
+            if s.build_count is not None:
+                p.build_count = s.build_count
+            p.updated_by = actor.pk
+
+        match.updated_by = actor.pk
         await self._session.commit()
         return await self._repo.refresh(match)
 
