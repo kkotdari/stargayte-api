@@ -19,6 +19,8 @@ from app.domain.leagues.schemas import (
     LeagueMatchTeamRefOut,
     LeagueOut,
     LeagueRosterMemberOut,
+    LeagueTeamCompositionEntry,
+    LeagueTeamCompositionIn,
     LeagueTeamOut,
     LeagueTeamRosterIn,
     LeagueUpdateIn,
@@ -301,6 +303,119 @@ class LeagueService:
         await self._session.commit()
         await self._session.refresh(team, attribute_names=["roster"])
         return to_team_out(team)
+
+    async def set_team_composition(
+        self, league_id: int, payload: LeagueTeamCompositionIn, *, actor: Member,
+    ) -> LeagueOut:
+        """리그의 팀/선수 구성을 한 번에 저장한다(요청: "팀구성 따로 배치 저장"). teams는
+        원하는 '전체' 구성(순서=라벨 순서)이다 — 기존 팀은 로스터만 갱신, 빠진 팀은 삭제,
+        id=None은 새로 만들고, 라벨을 순서대로 다시 매긴다. add_team/delete_team/set_roster를
+        자리마다 부르던 방식(매번 서버 왕복+리로드)을 대체하며, 멤버를 팀 사이로 옮기는
+        편집도 (league_id, member_pk) 유니크 충돌 없이 원자적으로 반영한다. 저장 뒤 프론트가
+        리그를 다시 불러와 대진표도 새 팀 구성으로 갱신한다."""
+        league = await self._get_or_404(league_id)
+
+        # 대진표가 이미 있으면 예약된 자리(planned_teams)를 넘는 팀은 담을 수 없다(add_team과
+        # 같은 규칙 — 대진판에 자리가 없다).
+        if league.draw_size is not None and len(payload.teams) > (league.planned_teams or 0):
+            raise ValidationError("이 대진표에 예약된 자리보다 많은 팀을 둘 수 없습니다.")
+
+        existing_by_id = {t.id: t for t in league.teams}
+        payload_ids = [e.id for e in payload.teams if e.id is not None]
+        if len(set(payload_ids)) != len(payload_ids):
+            raise ValidationError("같은 팀이 중복으로 들어왔습니다.")
+        for tid in payload_ids:
+            if tid not in existing_by_id:
+                raise NotFoundError("존재하지 않는 팀입니다.")
+
+        # 로스터 회원 로드 + 검증(개인전 인원수, 회원 존재, 팀 간 중복). resolved에 팀 순서대로
+        # (엔트리, 회원목록)을 쌓아 이후 반영에 그대로 쓴다.
+        seen_member_pks: set[int] = set()
+        resolved: list[tuple[LeagueTeamCompositionEntry, list[Member]]] = []
+        for entry in payload.teams:
+            if league.mode == "individual" and len(entry.roster) > 1:
+                raise ValidationError("개인리그는 선수를 1명으로만 구성할 수 있습니다.")
+            members: list[Member] = []
+            for member_id in entry.roster:
+                m = await self._member_repo.get_by_login_id(member_id)
+                if m is None:
+                    raise NotFoundError(f"존재하지 않는 회원입니다: {member_id}")
+                if m.pk in seen_member_pks:
+                    raise ConflictError(f"한 회원이 두 팀에 들어갈 수 없습니다: {m.nickname}")
+                seen_member_pks.add(m.pk)
+                members.append(m)
+            resolved.append((entry, members))
+
+        # 이미 결과가 난 팀은 삭제·로스터 변경을 막는다(set_roster/delete_team과 같은 원칙).
+        for t in league.teams:
+            if not self._team_has_decided_match(league, t.id):
+                continue
+            entry = next((e for e in payload.teams if e.id == t.id), None)
+            if entry is None:
+                raise ValidationError(f"{t.label}팀은 이미 결과가 나온 경기에 참가해 삭제할 수 없습니다.")
+            old_roster = [ltm.member.id for ltm in sorted(t.roster, key=lambda x: x.position)]
+            if old_roster != list(entry.roster):
+                raise ValidationError(f"{t.label}팀은 이미 결과가 나온 경기에 참가해 로스터를 바꿀 수 없습니다.")
+
+        # 1) payload에 없는 기존 팀 삭제(대진 슬롯에 배정돼 있었다면 FK ON DELETE SET NULL이
+        #    그 자리를 자동으로 비운다).
+        keep_ids = set(payload_ids)
+        for t in list(league.teams):
+            if t.id not in keep_ids:
+                league.teams.remove(t)
+        await self._session.flush()
+
+        # 2) 남은 팀 로스터를 전부 비운다 — 멤버 이동 시 (league_id, member_pk) 유니크가
+        #    delete/insert 순서로 일시 충돌하는 걸 막으려면 먼저 다 지우고 flush해야 한다.
+        for t in league.teams:
+            for ltm in list(t.roster):
+                await self._session.delete(ltm)
+        await self._session.flush()
+
+        # 3) 새 팀 생성(임시 라벨) + 최종 순서 리스트 구성. 임시 라벨 "#i"는 문자 라벨(A,B..)과
+        #    절대 겹치지 않아 유니크(league_id,label) 충돌이 없다.
+        final: list[tuple[LeagueTeam, list[Member]]] = []
+        for i, (entry, members) in enumerate(resolved):
+            if entry.id is not None:
+                team = existing_by_id[entry.id]
+            else:
+                team = LeagueTeam(
+                    league_id=league.id, label=f"#{i}", created_by=actor.pk, updated_by=actor.pk,
+                )
+                league.teams.append(team)
+            final.append((team, members))
+        await self._session.flush()
+
+        # 4) 라벨 2단계 재부여: 먼저 전부 임시("#i")로 옮겨 유니크 충돌을 피하고, 그다음 최종
+        #    문자 라벨로. (팀 순서를 바꾸는 편집도 안전.)
+        for i, (team, _members) in enumerate(final):
+            team.label = f"#{i}"
+            team.updated_by = actor.pk
+        await self._session.flush()
+        for i, (team, _members) in enumerate(final):
+            team.label = _team_label(i)
+        await self._session.flush()
+
+        # 5) 로스터 삽입. team.roster 컬렉션에 대입하면 delete-orphan 비교를 위해 (아직 로드된
+        #    적 없는 새 팀의) 컬렉션을 지연 로드하려다 async 밖에서 MissingGreenlet이 난다 —
+        #    이미 step 2에서 남은 팀 로스터를 다 지웠고 새 팀은 비어 있으니, 관계 대입 대신
+        #    행을 세션에 직접 추가한다(FK로 팀에 연결, 컬렉션은 마지막 refresh에서 갱신).
+        for team, members in final:
+            for j, m in enumerate(members):
+                self._session.add(
+                    LeagueTeamMember(
+                        league_id=league.id, league_team_id=team.id, member_pk=m.pk, position=j,
+                    )
+                )
+        await self._session.commit()
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        # 새로 만든 팀은 refresh(league,["teams"])만으론 roster가 eager 로드되지 않아,
+        # 직렬화(to_team_out) 때 async 밖에서 지연 로드되며 MissingGreenlet이 난다 —
+        # set_roster처럼 팀별 roster를 명시적으로 새로고침한다(roster의 member는 selectin).
+        for t in league.teams:
+            await self._session.refresh(t, attribute_names=["roster"])
+        await self._refresh_match_relations(league.matches)
+        return to_league_out(league)
 
     async def generate_bracket(
         self, league_id: int, payload: LeagueBracketGenerateIn, *, actor: Member,

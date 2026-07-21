@@ -733,3 +733,131 @@ async def test_bracket_seeding_rejects_duplicate_team_and_locked(client):
         {"matchId": m0["id"], "side": "a", "teamId": teams[1]["id"]},
     ])
     assert res.status_code == 409, res.text
+
+
+async def _set_composition(client, headers, league_id: int, teams: list[dict]):
+    return await client.put(
+        f"/api/leagues/{league_id}/teams", headers=headers, json={"teams": teams},
+    )
+
+
+async def test_team_composition_batch_create_and_move_member(client):
+    """새 팀 생성+로스터 지정을 한 번에, 그리고 멤버를 팀 사이로 옮기는 편집이 (league_id,
+    member_pk) 유니크 충돌 없이 원자적으로 반영되는지."""
+    admin_headers, _ = await _bootstrap(client, 3)  # m0, m1, m2
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0", "m1"]},
+        {"id": None, "roster": ["m2"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert [t["label"] for t in lg["teams"]] == ["A", "B"]
+    a, b = lg["teams"][0], lg["teams"][1]
+    assert [r["memberId"] for r in a["roster"]] == ["m0", "m1"]
+    assert [r["memberId"] for r in b["roster"]] == ["m2"]
+
+    # m1을 A -> B로 이동. 기존 팀 id는 유지.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0"]},
+        {"id": b["id"], "roster": ["m2", "m1"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    ta = next(t for t in lg["teams"] if t["id"] == a["id"])
+    tb = next(t for t in lg["teams"] if t["id"] == b["id"])
+    assert [r["memberId"] for r in ta["roster"]] == ["m0"]
+    assert [r["memberId"] for r in tb["roster"]] == ["m2", "m1"]
+
+
+async def test_team_composition_batch_delete_relabels(client):
+    admin_headers, _ = await _bootstrap(client, 3)
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m1"]},
+        {"id": None, "roster": ["m2"]},
+    ])
+    lg = res.json()
+    a, _b, c = lg["teams"]  # A, B, C
+    # B 삭제(payload에서 뺌) → 남은 A, C가 A, B로 재라벨.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0"]},
+        {"id": c["id"], "roster": ["m2"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert [t["label"] for t in lg["teams"]] == ["A", "B"]
+    assert lg["teams"][0]["id"] == a["id"]
+    assert lg["teams"][1]["id"] == c["id"]  # C였던 팀이 살아남아 B 라벨
+
+
+async def test_team_composition_rejects_member_in_two_teams(client):
+    admin_headers, _ = await _bootstrap(client, 1)
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m0"]},
+    ])
+    assert res.status_code == 409, res.text
+
+
+async def test_team_composition_individual_rejects_multi(client):
+    admin_headers, _ = await _bootstrap(client, 2)
+    league = await _create_league(client, admin_headers, mode="individual")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0", "m1"]},
+    ])
+    assert res.status_code == 400, res.text
+
+
+async def test_team_composition_protects_decided_team(client):
+    admin_headers, _ = await _bootstrap(client, 3)
+    league = await _create_league(client, admin_headers, mode="team", best_of=1)
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m1"]},
+    ])
+    lg = res.json()
+    a, b = lg["teams"]
+    res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    m0 = _match(res.json(), 1, 0)
+    await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": a["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": b["id"]},
+    ])
+    res = await _enter_result(client, admin_headers, league["id"], m0["id"], 1, 0)
+    assert res.status_code == 200, res.text
+
+    # A는 결과가 난 팀 — 삭제 시도 거부.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": b["id"], "roster": ["m1"]},
+    ])
+    assert res.status_code == 400, res.text
+    # 로스터 변경 시도도 거부.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0", "m2"]},
+        {"id": b["id"], "roster": ["m1"]},
+    ])
+    assert res.status_code == 400, res.text
+
+
+async def test_team_composition_respects_planned_teams(client):
+    admin_headers, _ = await _bootstrap(client, 4)
+    league = await _create_league(client, admin_headers, mode="team")
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": None, "roster": ["m0"]},
+        {"id": None, "roster": ["m1"]},
+    ])
+    lg = res.json()
+    a, b = lg["teams"]
+    # 2팀짜리 대진표 생성 → planned_teams=2.
+    res = await _generate_bracket(client, admin_headers, league["id"], 2)
+    assert res.status_code == 200, res.text
+    # 예약(2)을 넘는 3팀 시도 → 거부.
+    res = await _set_composition(client, admin_headers, league["id"], [
+        {"id": a["id"], "roster": ["m0"]},
+        {"id": b["id"], "roster": ["m1"]},
+        {"id": None, "roster": ["m2"]},
+    ])
+    assert res.status_code == 400, res.text

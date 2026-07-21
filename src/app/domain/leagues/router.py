@@ -11,6 +11,7 @@ from app.domain.leagues.schemas import (
     LeagueMatchScheduleIn,
     LeagueMatchSlotIn,
     LeagueOut,
+    LeagueTeamCompositionIn,
     LeagueTeamOut,
     LeagueTeamRosterIn,
     LeagueUpdateIn,
@@ -52,6 +53,13 @@ async def delete_league(league_id: int, db: DbSession, current: CurrentAdmin) ->
 @router.post("/{league_id}/teams", response_model=LeagueTeamOut)
 async def add_team(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueTeamOut:
     return await LeagueService(db).add_team(league_id, actor=current)
+
+
+@router.put("/{league_id}/teams", response_model=LeagueOut)
+async def set_team_composition(
+    league_id: int, payload: LeagueTeamCompositionIn, db: DbSession, current: CurrentAdmin,
+) -> LeagueOut:
+    return await LeagueService(db).set_team_composition(league_id, payload, actor=current)
 
 
 @router.put("/{league_id}/teams/{team_id}/roster", response_model=LeagueTeamOut)
