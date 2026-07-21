@@ -167,15 +167,14 @@ async def test_match_lifecycle_with_attachment(client):
     )
     assert create_res.status_code == 200, create_res.text
     match = create_res.json()
-    # 표시 이름은 서버가 '경기고유번호_맵_몇대몇.rep'로 생성한다(맵 없으면 map, 1:1이면 1대1).
-    assert match["replay"]["displayName"] == f"{match['matchNo']}_map_1대1.rep"
+    # 표시 이름은 프론트가 만들어 보낸 것을 그대로 쓴다(로스터 나열 형식).
+    assert match["replay"]["displayName"] == "replay.rep"
     assert match["replay"]["originalName"] == "replay.rep"
     assert match["replay"]["url"].startswith("http://testserver/uploads/replays/")
 
     download_res = await client.get(f"/api/matches/{match['id']}/replay", headers=headers)
     assert download_res.status_code == 200
-    # 한글('대')은 ASCII fallback에서 빠지지만 경기고유번호는 그대로 남는다.
-    assert match["matchNo"] in download_res.headers["content-disposition"]
+    assert "replay.rep" in download_res.headers["content-disposition"]
     assert len(download_res.content) > 0
 
     list_res = await client.get("/api/matches", headers=headers)
@@ -489,32 +488,3 @@ async def test_last_active_admin_cannot_withdraw(client):
         headers={"Authorization": f"Bearer {admin['accessToken']}"},
     )
     assert res.status_code == 409
-
-
-async def test_replay_display_name_uses_matchno_map_teamsize(client):
-    """리플레이 표시 이름은 프론트가 보낸 로스터 이름이 아니라 서버가 만든
-    '경기고유번호_맵_몇대몇.rep'이어야 한다(요청)."""
-    p1 = await _signup(client, "player01", "A#1001")
-    await _signup(client, "player02", "B#1002")
-    await _signup(client, "player03", "C#1003")
-    await _signup(client, "player04", "D#1004")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    res = await client.post(
-        "/api/matches",
-        headers=headers,
-        json={
-            "date": "2026-07-05",
-            "team1": [{"memberId": "player01", "race": "테란"}, {"memberId": "player02", "race": "저그"}],
-            "team2": [{"memberId": "player03", "race": "프로토스"}, {"memberId": "player04", "race": "테란"}],
-            "result": "team1", "note": "", "matchType": "0102", "mapName": "투혼",
-            "replay": {
-                "originalName": "abc.rep",
-                "displayName": "20260705_투혼_team1-정구,태섭_team2-Rex,민수.rep",
-                "url": TINY_PNG_DATA_URL,
-            },
-        },
-    )
-    assert res.status_code == 200, res.text
-    m = res.json()
-    assert m["replay"]["displayName"] == f"{m['matchNo']}_투혼_2대2.rep"
