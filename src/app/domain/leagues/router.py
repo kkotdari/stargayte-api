@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.deps import CurrentAdmin, DbSession
 from app.domain.leagues.schemas import (
+    LeagueBracketGenerateIn,
     LeagueCreateIn,
     LeagueListOut,
     LeagueMatchOut,
@@ -67,14 +68,16 @@ async def delete_team(
 
 
 @router.post("/{league_id}/bracket/generate", response_model=LeagueOut)
-async def generate_bracket(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
-    return await LeagueService(db).generate_bracket(league_id, actor=current)
+async def generate_bracket(
+    league_id: int, payload: LeagueBracketGenerateIn, db: DbSession, current: CurrentAdmin,
+) -> LeagueOut:
+    return await LeagueService(db).generate_bracket(league_id, payload, actor=current)
 
 
-@router.patch("/{league_id}/matches/{match_id}/slot", response_model=LeagueMatchOut)
+@router.patch("/{league_id}/matches/{match_id}/slot", response_model=LeagueOut)
 async def set_match_slot(
     league_id: int, match_id: int, payload: LeagueMatchSlotIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueMatchOut:
+) -> LeagueOut:
     return await LeagueService(db).set_match_slot(league_id, match_id, payload, actor=current)
 
 

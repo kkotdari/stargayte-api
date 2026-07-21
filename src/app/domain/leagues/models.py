@@ -38,6 +38,12 @@ class League(AuditMixin, TimestampMixin, Base):
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="team")
     best_of: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=3)
     draw_size: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # 대진표 생성 시 "몇 팀짜리로 잡을지" 미리 정한 값(요청: "대진표는 팀이 있건 없건
+    # 생성 가능하게, 팀수 미리 설정 가능") — 실제 참가 팀 수(len(teams))와 별개다. 팀이
+    # 아직 이만큼 안 채워졌어도 나머지 자리는 "예약됨(아직 비었지만 나중에 채워질 수
+    # 있음)"으로 두고, draw_size(2의 거듭제곱)를 채우기 위한 패딩만 진짜 부전승(is_dead)
+    # 처리한다. bracket/generate 전엔 NULL.
+    planned_teams: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
     teams: Mapped[list["LeagueTeam"]] = relationship(
         back_populates="league", cascade="all, delete-orphan", lazy="selectin",
@@ -51,6 +57,13 @@ class League(AuditMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("best_of >= 1", name="ck_leagues_best_of_positive"),
         CheckConstraint("mode IN ('team', 'individual')", name="ck_leagues_mode_valid"),
+        # 상한은 팀리그 6/개인리그 24(요청: "개인전은 최대 24명까지") 중 더 넉넉한 쪽으로
+        # 여기서는 24까지만 허용하고, 모드별 정확한 상한은 서비스 레이어(_max_teams)에서
+        # 검증한다 — CHECK 제약은 mode 컬럼과 조건부로 엮기 번거로워 느슨한 상한만 건다.
+        CheckConstraint(
+            "planned_teams IS NULL OR (planned_teams >= 2 AND planned_teams <= 24)",
+            name="ck_leagues_planned_teams_range",
+        ),
     )
 
 

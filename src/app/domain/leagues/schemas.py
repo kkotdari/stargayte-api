@@ -68,6 +68,7 @@ class LeagueOut(BaseModel):
     best_of: int = Field(alias="bestOf")
     status: LeagueStatus
     draw_size: int | None = Field(alias="drawSize")
+    planned_teams: int | None = Field(alias="plannedTeams")
     teams: list[LeagueTeamOut]
     matches: list[LeagueMatchOut]
     created_at: datetime = Field(alias="createdAt")
@@ -118,6 +119,18 @@ class LeagueTeamRosterIn(BaseModel):
         if len(set(self.member_ids)) != len(self.member_ids):
             raise ValueError("같은 회원을 두 번 넣을 수 없습니다.")
         return self
+
+
+class LeagueBracketGenerateIn(BaseModel):
+    """대진표를 몇 팀(개인리그면 몇 명)짜리로 잡을지 — 실제 지금 만들어진 팀 수
+    (len(teams))와 달라도 된다(요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수 미리
+    설정 가능"). 이미 있는 팀보다 작게는 잡을 수 없다. 상한은 모드에 따라 다르다(팀리그
+    6/개인리그 24, 요청: "개인전은 최대 24명까지") — 스키마는 둘 중 더 넉넉한 상한(24)만
+    걸고, 실제 모드별 상한은 서비스에서 검증한다(리그의 mode를 알아야 하므로)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    team_count: int = Field(alias="teamCount", ge=2, le=24)
 
 
 class LeagueMatchSlotIn(BaseModel):

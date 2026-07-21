@@ -6,6 +6,7 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.domain.leagues.models import League, LeagueMatch, LeagueMatchSubstitution, LeagueTeam, LeagueTeamMember
 from app.domain.leagues.repository import LeagueRepository
 from app.domain.leagues.schemas import (
+    LeagueBracketGenerateIn,
     LeagueCreateIn,
     LeagueListItemOut,
     LeagueListOut,
@@ -24,8 +25,18 @@ from app.domain.leagues.schemas import (
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
-TEAM_LABELS = "ABCDEF"
-MAX_TEAMS = 6
+import string
+
+# 팀리그는 최대 6팀(A~F) 고정이지만, 개인리그는 "팀"이 곧 선수 1명이라 훨씬 많은 인원이
+# 참가할 수 있어야 한다(요청: "개인전은 최대 24명까지 가능하게"). 라벨은 두 모드 다
+# 알파벳 한 글자(A~X, 24개)를 그대로 쓰고 상한만 모드별로 다르게 둔다.
+TEAM_LABELS = string.ascii_uppercase[:24]
+MAX_TEAMS_TEAM = 6
+MAX_TEAMS_INDIVIDUAL = 24
+
+
+def _max_teams(league_mode: str) -> int:
+    return MAX_TEAMS_TEAM if league_mode == "team" else MAX_TEAMS_INDIVIDUAL
 
 
 def _next_pow2(n: int) -> int:
@@ -101,7 +112,7 @@ def to_match_out(match: LeagueMatch) -> LeagueMatchOut:
 def to_league_out(league: League) -> LeagueOut:
     return LeagueOut(
         id=league.id, name=league.name, mode=league.mode, bestOf=league.best_of,
-        status=_status_of(league), drawSize=league.draw_size,
+        status=_status_of(league), drawSize=league.draw_size, plannedTeams=league.planned_teams,
         teams=[to_team_out(t) for t in league.teams],
         matches=[to_match_out(m) for m in league.matches],
         createdAt=league.created_at,
@@ -149,6 +160,15 @@ class LeagueService:
         for m in matches:
             await self._session.refresh(m, attribute_names=["team_a", "team_b", "substitutions"])
 
+    def _team_has_decided_match(self, league: League, team_id: int) -> bool:
+        """이 팀이 이미 결과(실제 경기든 부전승이든)가 난 경기에 참가한 적이 있는지 —
+        있으면 팀 삭제/로스터 변경으로 이미 확정된 대진 이력을 건드리게 되므로 막는다.
+        대진표 생성 전(draw_size is None)에는 애초에 어떤 경기도 없어 항상 False다."""
+        return any(
+            m.winner_team_id is not None and (m.team_a_id == team_id or m.team_b_id == team_id)
+            for m in league.matches
+        )
+
     async def list_leagues(self) -> LeagueListOut:
         leagues = await self._repo.list_all()
         return LeagueListOut(items=[to_list_item_out(l) for l in leagues])
@@ -189,10 +209,15 @@ class LeagueService:
 
     async def add_team(self, league_id: int, *, actor: Member) -> LeagueTeamOut:
         league = await self._get_or_404(league_id)
-        if league.draw_size is not None:
-            raise ValidationError("대진표 생성 후에는 팀을 추가할 수 없습니다.")
-        if len(league.teams) >= MAX_TEAMS:
-            raise ValidationError("팀은 최대 6개까지 만들 수 있습니다.")
+        # 대진표 생성 전엔 모드별 상한(팀리그 6/개인리그 24)까지 자유롭게, 생성 후엔 그때
+        # 예약해둔 자리(planned_teams)만큼만 — 초과分은 애초에 대진판에 자리가 없다
+        # (요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수 미리 설정 가능" — 예약된
+        # 자리는 나중에 슬롯 배정으로 채운다).
+        max_teams = _max_teams(league.mode)
+        cap = max_teams if league.draw_size is None else (league.planned_teams or 0)
+        if len(league.teams) >= cap:
+            msg = f"{'팀' if league.mode == 'team' else '선수'}은 최대 {max_teams}개까지 만들 수 있습니다." if league.draw_size is None else "이 대진표에 예약된 자리가 다 찼습니다."
+            raise ValidationError(msg)
         team = LeagueTeam(
             league_id=league.id, label=TEAM_LABELS[len(league.teams)],
             created_by=actor.pk, updated_by=actor.pk,
@@ -205,9 +230,13 @@ class LeagueService:
 
     async def delete_team(self, league_id: int, team_id: int, *, actor: Member) -> LeagueOut:
         league = await self._get_or_404(league_id)
-        if league.draw_size is not None:
-            raise ValidationError("대진표 생성 후에는 팀을 삭제할 수 없습니다.")
         team = self._get_team_or_404(league, team_id)
+        # 대진표 생성 자체는 더 이상 팀 삭제를 막지 않는다(요청 3 — 팀 없이도 대진표를
+        # 먼저 만들 수 있게 됐으니, 그 반대인 "팀 취소"도 자유로워야 앞뒤가 맞는다). 다만
+        # 이미 결과가 난 경기에 참가했던 팀은 이력이 깨지므로 막는다. 팀이 어떤 경기의
+        # 슬롯에 배정돼 있었다면 DB의 ON DELETE SET NULL이 그 슬롯을 자동으로 비운다.
+        if self._team_has_decided_match(league, team_id):
+            raise ValidationError("이미 결과가 나온 경기에 참가한 팀은 삭제할 수 없습니다.")
         league.teams.remove(team)
         await self._session.flush()
         # 라벨 재정렬 — 한 팀씩 순서대로 flush해 UniqueConstraint(league_id, label)와
@@ -227,9 +256,12 @@ class LeagueService:
         self, league_id: int, team_id: int, payload: LeagueTeamRosterIn, *, actor: Member,
     ) -> LeagueTeamOut:
         league = await self._get_or_404(league_id)
-        if league.draw_size is not None:
-            raise ValidationError("대진표 생성 후에는 로스터를 바꿀 수 없습니다.")
         team = self._get_team_or_404(league, team_id)
+        # delete_team과 같은 원칙 — 대진표 생성 여부가 아니라 "이미 결과가 난 경기에
+        # 참가했는지"로 막는다(요청 3의 연장: 대진표 생성 후에도 새로 추가한 팀엔
+        # 로스터를 넣을 수 있어야 한다).
+        if self._team_has_decided_match(league, team_id):
+            raise ValidationError("이미 결과가 나온 경기에 참가한 팀은 로스터를 바꿀 수 없습니다.")
         if league.mode == "individual" and len(payload.member_ids) != 1:
             raise ValidationError("개인리그는 로스터를 1명으로만 구성할 수 있습니다.")
 
@@ -261,33 +293,34 @@ class LeagueService:
         await self._session.refresh(team, attribute_names=["roster"])
         return to_team_out(team)
 
-    async def generate_bracket(self, league_id: int, *, actor: Member) -> LeagueOut:
+    async def generate_bracket(
+        self, league_id: int, payload: LeagueBracketGenerateIn, *, actor: Member,
+    ) -> LeagueOut:
         league = await self._get_or_404(league_id)
         if league.draw_size is not None:
             raise ValidationError("이미 대진표가 생성됐습니다.")
-        teams = sorted(league.teams, key=lambda t: t.label)
-        if len(teams) < 2:
-            raise ValidationError("최소 2팀이 있어야 대진표를 만들 수 있습니다.")
+        team_count = payload.team_count
+        if team_count < len(league.teams):
+            raise ValidationError("이미 만들어진 팀 수보다 적게는 잡을 수 없습니다.")
+        max_teams = _max_teams(league.mode)
+        if team_count > max_teams:
+            raise ValidationError(f"{'팀' if league.mode == 'team' else '선수'}은 최대 {max_teams}개까지 잡을 수 있습니다.")
 
-        draw_size = _next_pow2(len(teams))
+        # 대진표는 빈 채로 만든다 — 지금 있는 팀을 자동으로 채워 넣지 않고, 어느 팀이
+        # 어느 칸에 들어갈지는 관리자가 슬롯 API(set_match_slot, 다음 단계엔 드래그앤드랍)
+        # 로 직접 정한다(요청: "대진표 생성 누르면 빈 대진표가 생기고 각 칸에 누가
+        # 들어갈지 정할 수 있는 시스템으로"). team_count(관리자가 미리 정한 규모) 미만
+        # 자리는 나중에 팀이 배정될 수 있는 "예약"이고, 그 이상(draw_size까지의 패딩)만
+        # 구조적으로 영원히 빈 자리(is_dead)다 — 부전승 자동 처리는 실제로 슬롯에 팀이
+        # 배정되는 순간(set_match_slot)에 일어난다.
+        draw_size = _next_pow2(team_count)
         total_rounds = _total_rounds(draw_size)
         league.draw_size = draw_size
+        league.planned_teams = team_count
         league.updated_by = actor.pk
 
-        positions: list[LeagueTeam | None] = list(teams) + [None] * (draw_size - len(teams))
-
-        # is_dead(그 슬롯이 구조적으로 영원히 안 채워짐)를 리프(포지션)부터 전체 라운드에
-        # 걸쳐 미리 계산해둔다. 이걸 생성 시점에 한 라운드씩(runtime resolve 중에) "양쪽 다
-        # None이면 dead"로 즉석 판정하면, 아직 실제 경기 결과를 기다리는 중이라 None인 것과
-        # 구분이 안 된다 — 실제로 3팀(부전승 팀이 다음 라운드에서 실제 상대 없이 결승까지
-        # 자동 진출해버리는) 경우에서 이 오판이 발생함을 확인했다. 리프에서부터 "이 슬롯
-        # 아래 서브트리에 팀이 하나도 없다"만을 순수하게 각 라운드마다 접어 올려 계산하면,
-        # "아직 안 끝난 실제 경기"와 "영원히 안 채워짐"이 항상 명확히 구분된다.
         dead: dict[int, list[bool]] = {
-            1: [
-                positions[2 * s] is None and positions[2 * s + 1] is None
-                for s in range(draw_size // 2)
-            ],
+            1: [2 * s >= team_count and 2 * s + 1 >= team_count for s in range(draw_size // 2)],
         }
         for r in range(2, total_rounds + 1):
             dead[r] = [dead[r - 1][2 * s] and dead[r - 1][2 * s + 1] for s in range(draw_size // (2 ** r))]
@@ -296,20 +329,11 @@ class LeagueService:
         for r in range(1, total_rounds + 1):
             count = draw_size // (2 ** r)
             for slot in range(count):
-                if r == 1:
-                    a, b = positions[2 * slot], positions[2 * slot + 1]
-                    m = LeagueMatch(
-                        league_id=league.id, round=r, slot_in_round=slot,
-                        team_a_id=a.id if a else None, team_b_id=b.id if b else None,
-                        is_dead=dead[1][slot],
-                        created_by=actor.pk, updated_by=actor.pk,
-                    )
-                else:
-                    m = LeagueMatch(
-                        league_id=league.id, round=r, slot_in_round=slot,
-                        is_dead=dead[r][slot],
-                        created_by=actor.pk, updated_by=actor.pk,
-                    )
+                m = LeagueMatch(
+                    league_id=league.id, round=r, slot_in_round=slot,
+                    is_dead=dead[r][slot],
+                    created_by=actor.pk, updated_by=actor.pk,
+                )
                 league.matches.append(m)
                 by_round_slot[(r, slot)] = m
         await self._repo.flush()
@@ -319,14 +343,11 @@ class LeagueService:
         # MissingGreenlet 에러가 난다 — 미리 명시적으로 채워둔다.
         await self._refresh_match_relations(list(by_round_slot.values()))
 
-        for slot in range(draw_size // 2):
-            self._maybe_auto_resolve(by_round_slot, total_rounds, by_round_slot[(1, slot)])
-
         await self._session.commit()
         await self._session.refresh(league, attribute_names=["teams", "matches"])
-        # 부전승 전파(_maybe_auto_resolve)가 team_a_id/team_b_id를 관계 속성이 아니라
-        # 원시 FK 컬럼으로 직접 바꿔서, 그 대상이 된 매치들의 team_a/team_b가 여전히
-        # 예전 값(비어있음)으로 캐시돼 있을 수 있다 — 응답 직렬화 전에 다시 새로고침한다.
+        # 부전승 전파가 team_a_id/team_b_id를 관계 속성이 아니라 원시 FK 컬럼으로 직접
+        # 바꿔서, 그 대상이 된 매치들의 team_a/team_b가 여전히 예전 값(비어있음)으로
+        # 캐시돼 있을 수 있다 — 응답 직렬화 전에 다시 새로고침한다.
         await self._refresh_match_relations(league.matches)
         return to_league_out(league)
 
@@ -344,21 +365,52 @@ class LeagueService:
         setattr(target, side, winner_team_id)
         self._maybe_auto_resolve(by_round_slot, total_rounds, target)
 
+    def _maybe_auto_resolve_round1(
+        self, league: League, by_round_slot: dict[tuple[int, int], LeagueMatch],
+        total_rounds: int, match: LeagueMatch,
+    ) -> None:
+        """1라운드 전용 부전승 자동 처리 — set_match_slot으로 실제 팀이 슬롯에 배정되는
+        순간 호출된다. 반대쪽 리프가 team_count(예약 포함 몇 자리인지, league.planned_teams)
+        범위 밖이면 구조적으로 영원히 안 채워지는 자리이므로 그 즉시 부전승 처리하고,
+        범위 안이면(아직 팀이 안 들어왔을 뿐 나중에 배정될 수 있음) 그대로 둔다."""
+        if match.is_dead or match.winner_team_id is not None:
+            return
+        a, b = match.team_a_id, match.team_b_id
+        if a is not None and b is not None:
+            return
+        if a is None and b is None:
+            return
+        planned = league.planned_teams or 0
+        a_reserved = match.slot_in_round * 2 < planned
+        b_reserved = match.slot_in_round * 2 + 1 < planned
+        winner = None
+        if a is not None and b is None and not b_reserved:
+            winner = a
+        elif b is not None and a is None and not a_reserved:
+            winner = b
+        if winner is not None:
+            match.winner_team_id = winner
+            match.result_entered_at = datetime.now(UTC)
+            self._propagate_winner(by_round_slot, total_rounds, 1, match.slot_in_round, winner)
+
     def _maybe_auto_resolve(
         self, by_round_slot: dict[tuple[int, int], LeagueMatch], total_rounds: int, match: LeagueMatch,
     ) -> None:
         """반대쪽 자리가 영원히 안 채워지는 상태에서 한쪽만 채워지면 자동으로 부전승
-        처리하고 다음 라운드로 전파한다.
+        처리하고 다음 라운드로 전파한다. 2라운드 이상 전용이다(1라운드는 위
+        _maybe_auto_resolve_round1이 따로 처리 — league.planned_teams가 있어야
+        "비어있음"이 영구 공백인지 예약 자리인지 구분되는데, 그건 match 하나만 봐서는
+        알 수 없어 league가 필요하다).
 
-        1라운드는 team_a_id/team_b_id가 생성 시점에 확정돼 다시는 안 바뀌므로, 한쪽만
-        있으면 그건 무조건 영구 공백(대진판이 2의 거듭제곱이 아니라 생기는 패딩)이다.
-        하지만 2라운드 이상에서는 "비어있음"이 두 가지 뜻일 수 있다 — ①(그 자리를 먹이는
+        2라운드 이상에서는 "비어있음"이 두 가지 뜻일 수 있다 — ①(그 자리를 먹이는
         이전 라운드 경기 자체가 is_dead라서) 영원히 안 채워지거나, ②아직 그 이전 라운드의
         실제 경기 결과를 기다리는 중이거나. ②인데 ①처럼 자동 부전승 처리해버리면, 부전승
         팀이 다음 라운드에서 실제 상대와 붙어야 하는데도 그걸 건너뛰고 계속 자동
         진출해버리는 버그가 생긴다(실제로 발생 확인 — 3팀 대진표에서 부전승 팀이 결승
-        상대 없이 바로 우승 처리됨). 그래서 2라운드 이상에서는 비어있는 쪽을 먹이는
-        이전 라운드 경기의 is_dead를 직접 확인해, ①일 때만 자동 처리한다."""
+        상대 없이 바로 우승 처리됨). 그래서 비어있는 쪽을 먹이는 이전 라운드 경기의
+        is_dead를 직접 확인해, ①일 때만 자동 처리한다."""
+        if match.round == 1:
+            return  # generate_bracket이 leaf_present 기준으로 직접 처리 — 여기선 스킵.
         if match.is_dead or match.winner_team_id is not None:
             return
         a, b = match.team_a_id, match.team_b_id
@@ -366,11 +418,10 @@ class LeagueService:
             return  # 양쪽 다 실제 팀 — 진짜 경기를 치러야 함, 자동 처리 대상 아님
         if a is None and b is None:
             return  # 둘 다 아직 None — is_dead가 아니므로 언젠가 실제 경기로 채워질 예정
-        if match.round > 1:
-            empty_child_slot = match.slot_in_round * 2 + (1 if a is not None else 0)
-            feeder = by_round_slot.get((match.round - 1, empty_child_slot))
-            if feeder is None or not feeder.is_dead:
-                return  # 아직 실제 경기(위 ②) 결과를 기다리는 중 — 자동 처리하지 않는다
+        empty_child_slot = match.slot_in_round * 2 + (1 if a is not None else 0)
+        feeder = by_round_slot.get((match.round - 1, empty_child_slot))
+        if feeder is None or not feeder.is_dead:
+            return  # 아직 실제 경기(위 ②) 결과를 기다리는 중 — 자동 처리하지 않는다
         winner = a if a is not None else b
         match.winner_team_id = winner
         match.result_entered_at = datetime.now(UTC)
@@ -378,11 +429,13 @@ class LeagueService:
 
     async def set_match_slot(
         self, league_id: int, match_id: int, payload: LeagueMatchSlotIn, *, actor: Member,
-    ) -> LeagueMatchOut:
+    ) -> LeagueOut:
         league = await self._get_or_404(league_id)
         match = self._get_match_or_404(league, match_id)
         if match.winner_team_id is not None:
             raise ConflictError("이미 결과가 입력된 경기는 슬롯을 바꿀 수 없습니다.")
+        if match.is_dead:
+            raise ValidationError("이 자리는 구조적으로 비어있어(부전) 팀을 배정할 수 없습니다.")
 
         team: LeagueTeam | None = None
         if payload.team_id is not None:
@@ -397,11 +450,23 @@ class LeagueService:
             match.team_a_id = team.id if team else None
         else:
             match.team_b_id = team.id if team else None
-        match.is_dead = False
         match.updated_by = actor.pk
+        await self._repo.flush()
+
+        # 팀을 배정한 경우에만 부전승 자동 처리를 확인한다(비우는 동작은 대상이 아니다).
+        # 1라운드/2라운드 이상 판정 기준이 서로 달라 헬퍼를 나눠 쓴다(각 헬퍼 문서 참고).
+        if team is not None:
+            total_rounds = _total_rounds(league.draw_size) if league.draw_size else 0
+            by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
+            if match.round == 1:
+                self._maybe_auto_resolve_round1(league, by_round_slot, total_rounds, match)
+            else:
+                self._maybe_auto_resolve(by_round_slot, total_rounds, match)
+
         await self._session.commit()
-        await self._session.refresh(match, attribute_names=["team_a", "team_b"])
-        return to_match_out(match)
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        await self._refresh_match_relations(league.matches)
+        return to_league_out(league)
 
     async def set_match_schedule(
         self, league_id: int, match_id: int, payload: LeagueMatchScheduleIn, *, actor: Member,
