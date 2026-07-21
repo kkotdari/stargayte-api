@@ -12,7 +12,8 @@ from app.domain.matches.schemas import (
     DuplicateCheckResponse,
     EarliestDateResponse,
     MainRaceResponse,
-    MatchMemoWrite,
+    MatchCommentOut,
+    MatchCommentWrite,
     MatchOut,
     MatchPage,
     MatchReplayMerge,
@@ -46,7 +47,7 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 async def list_matches(
     db: DbSession,
     storage: StorageDep,
-    _current: CurrentMember,
+    current: CurrentMember,
     cursor: str | None = None,
     limit: int = Query(default=30, ge=1, le=100),
     sort: Literal["latest", "oldest"] = "latest",
@@ -91,8 +92,12 @@ async def list_matches(
     )
     # 목록 안의 매치 여러 개를 직렬화하는 동안 재사용 — 매치마다 다시 조회하지 않는다.
     alias_by_player_name = await service.alias_by_player_name()
+    is_admin = current.has_any_role("0202")
     return MatchPage(
-        items=[to_match_out(m, storage, alias_by_player_name) for m in matches],
+        items=[
+            to_match_out(m, storage, alias_by_player_name, actor_pk=current.pk, is_admin=is_admin)
+            for m in matches
+        ],
         next_cursor=next_cursor,
         has_more=has_more,
         total=total,
@@ -331,7 +336,10 @@ async def create_match(
 ) -> MatchOut:
     service = MatchService(db, storage)
     match = await service.create_match(payload, actor=current)
-    return to_match_out(match, storage, await service.alias_by_player_name())
+    return to_match_out(
+        match, storage, await service.alias_by_player_name(),
+        actor_pk=current.pk, is_admin=current.has_any_role("0202"),
+    )
 
 
 @router.put("/{match_id}", response_model=MatchOut)
@@ -344,31 +352,70 @@ async def update_match(
 ) -> MatchOut:
     service = MatchService(db, storage)
     match = await service.update_match(match_id, payload, actor=current)
-    return to_match_out(match, storage, await service.alias_by_player_name())
+    return to_match_out(
+        match, storage, await service.alias_by_player_name(),
+        actor_pk=current.pk, is_admin=current.has_any_role("0202"),
+    )
 
 
-@router.patch("/{match_id}/memo", response_model=MatchOut)
-async def update_memo(
+# ── 경기 댓글(메모) — 게시판 댓글처럼 회원 누구나 한 줄(최대 50자), 본인/운영자만 수정·삭제 ──
+@router.get("/{match_id}/comments", response_model=list[MatchCommentOut])
+async def list_match_comments(
+    match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
+) -> list[MatchCommentOut]:
+    return await MatchService(db, storage).list_comments(match_id, actor=current)
+
+
+@router.post("/{match_id}/comments", response_model=MatchCommentOut)
+async def create_match_comment(
     match_id: int,
-    payload: MatchMemoWrite,
+    payload: MatchCommentWrite,
     db: DbSession,
     storage: StorageDep,
     current: CurrentMember,
-) -> MatchOut:
-    service = MatchService(db, storage)
-    match = await service.update_memo(match_id, payload.note, actor=current)
-    return to_match_out(match, storage, await service.alias_by_player_name())
+) -> MatchCommentOut:
+    return await MatchService(db, storage).create_comment(
+        match_id, payload.text, payload.target_member_ids, actor=current
+    )
+
+
+@router.patch("/{match_id}/comments/{comment_id}", response_model=MatchCommentOut)
+async def update_match_comment(
+    match_id: int,
+    comment_id: int,
+    payload: MatchCommentWrite,
+    db: DbSession,
+    storage: StorageDep,
+    current: CurrentMember,
+) -> MatchCommentOut:
+    return await MatchService(db, storage).update_comment(
+        comment_id, payload.text, payload.target_member_ids, actor=current
+    )
+
+
+@router.delete("/{match_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_match_comment(
+    match_id: int,
+    comment_id: int,
+    db: DbSession,
+    storage: StorageDep,
+    current: CurrentMember,
+) -> None:
+    await MatchService(db, storage).delete_comment(comment_id, actor=current)
 
 
 @router.get("/{match_id}", response_model=MatchOut)
 async def get_match(
-    match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
+    match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
 ) -> MatchOut:
     # 카카오톡 공유 링크가 여는 "이 경기만 보이는" 화면에서 단건 조회에 쓴다. 정적 GET
     # 경로(/stats, /ranking 등)보다 아래에 선언해 int 경로변수가 그것들을 가리지 않게 한다.
     service = MatchService(db, storage)
     match = await service.get_match(match_id)
-    return to_match_out(match, storage, await service.alias_by_player_name())
+    return to_match_out(
+        match, storage, await service.alias_by_player_name(),
+        actor_pk=current.pk, is_admin=current.has_any_role("0202"),
+    )
 
 
 @router.delete("/{match_id}", status_code=status.HTTP_204_NO_CONTENT)

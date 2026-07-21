@@ -4,7 +4,13 @@ from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, o
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.domain.matches.models import Match, MatchParticipant, MatchResult, Replay
+from app.domain.matches.models import (
+    Match,
+    MatchComment,
+    MatchParticipant,
+    MatchResult,
+    Replay,
+)
 from app.domain.members.models import Member, ReplayAlias
 
 
@@ -17,6 +23,10 @@ class MatchRepository:
             selectinload(Match.participants),
             selectinload(Match.result_row).selectinload(MatchResult.replay),
             selectinload(Match.creator),
+            # 댓글(메모)과 그 안의 언급/작성자 — 목록/상세 응답에 함께 실어야 하므로 eager
+            # 로드한다(mentions/creator는 관계 자체가 lazy="selectin"이라 자동으로 딸려온다).
+            selectinload(Match.comments).selectinload(MatchComment.mentions),
+            selectinload(Match.comments).selectinload(MatchComment.creator),
         )
 
     async def get(self, match_id: int) -> Match | None:
@@ -25,6 +35,11 @@ class MatchRepository:
 
     async def get_by_match_no(self, match_no: str) -> Match | None:
         stmt = self._base_query().where(Match.match_no == match_no)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def get_comment(self, comment_id: int) -> MatchComment | None:
+        # mentions/creator는 관계가 lazy="selectin"이라 로드 시 자동으로 딸려온다.
+        stmt = select(MatchComment).where(MatchComment.id == comment_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def next_match_no_suffix(self, base: str) -> int:

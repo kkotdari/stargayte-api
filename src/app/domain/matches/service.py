@@ -1,6 +1,7 @@
 import base64
 import calendar
 import io
+import re
 import zipfile
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -8,13 +9,23 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.matches.models import Match, MatchParticipant, MatchResult, Replay
+from app.domain.matches.models import (
+    Match,
+    MatchComment,
+    MatchCommentMention,
+    MatchParticipant,
+    MatchResult,
+    Replay,
+)
 from app.domain.matches.rating import RatingEngine
 from app.domain.matches.repository import MatchRepository
 from app.domain.matches.schemas import (
     COMPUTER_ID_PREFIX,
     UNREGISTERED_ID_PREFIX,
     MatchAuthor,
+    MatchCommentAuthor,
+    MatchCommentMentionOut,
+    MatchCommentOut,
     MatchOut,
     MatchReplayMerge,
     MatchSlot,
@@ -136,6 +147,21 @@ def _month_range(month: str) -> tuple[date, date]:
 
 
 _KST = timezone(timedelta(hours=9))
+
+
+# 리플레이 표시 이름(replays.display_name)에 못 쓰는 문자만 정리 — 제어문자(맵 이름의 색상
+# 코드 등)와 파일명 금지문자(/ \ : * ? " < > |)를 _로 바꾸고, 너무 길면 자른다.
+_REPLAY_NAME_BAD = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+
+
+def _replay_display_name(match: Match) -> str:
+    """리플레이 파일명을 '경기고유번호_맵_몇대몇.rep'로 만든다(요청 — 팀 로스터 빼고 간단히).
+    경기고유번호(match_no)는 서버가 부여하는 값이라 프론트가 보낸 이름 대신 여기서 생성한다."""
+    map_name = (match.result_row.map_name if match.result_row else None) or "map"
+    safe_map = _REPLAY_NAME_BAD.sub("_", map_name).strip()[:40] or "map"
+    t1 = sum(1 for p in match.participants if p.team == "team1")
+    t2 = sum(1 for p in match.participants if p.team == "team2")
+    return f"{match.match_no}_{safe_map}_{t1}대{t2}.rep"
 
 
 def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
@@ -361,7 +387,39 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
     )
 
 
-def to_match_out(match: Match, storage: FileStorage, alias_by_player_name: dict[str, ReplayAlias]) -> MatchOut:
+def to_comment_out(comment: MatchComment, *, actor_pk: int | None, is_admin: bool) -> MatchCommentOut:
+    author = comment.creator
+    return MatchCommentOut(
+        id=comment.id,
+        match_id=comment.match_id,
+        text=comment.text,
+        author=MatchCommentAuthor(
+            memberId=author.id if author else "",
+            nickname=author.nickname if author else "(탈퇴한 회원)",
+            avatar=author.avatar_url if author else None,
+        ),
+        createdAt=comment.created_at,
+        updatedAt=comment.updated_at,
+        # 작성자 본인 또는 운영자만 수정·삭제할 수 있다.
+        canEdit=is_admin or (actor_pk is not None and comment.created_by == actor_pk),
+        mentions=[
+            MatchCommentMentionOut(
+                memberId=m.member.id if m.member else "",
+                nickname=m.member.nickname if m.member else "(탈퇴한 회원)",
+            )
+            for m in comment.mentions
+        ],
+    )
+
+
+def to_match_out(
+    match: Match,
+    storage: FileStorage,
+    alias_by_player_name: dict[str, ReplayAlias],
+    *,
+    actor_pk: int | None = None,
+    is_admin: bool = False,
+) -> MatchOut:
     team1 = [_to_match_slot(p, alias_by_player_name) for p in match.participants if p.team == "team1"]
     team2 = [_to_match_slot(p, alias_by_player_name) for p in match.participants if p.team == "team2"]
     author = None
@@ -387,12 +445,12 @@ def to_match_out(match: Match, storage: FileStorage, alias_by_player_name: dict[
         team2=team2,
         result=result_row.result,
         match_type=match.match_type,
-        note=match.note,
         replay=replay,
         created_by=author,
         map_name=result_row.map_name,
         game_started_at=result_row.game_started_at,
         duration_seconds=result_row.duration_seconds,
+        comments=[to_comment_out(c, actor_pk=actor_pk, is_admin=is_admin) for c in match.comments],
     )
 
 
@@ -1051,7 +1109,6 @@ class MatchService:
             match_no=f"{match_no_base}{match_no_suffix:02d}",
             match_date=match_date,
             match_type=payload.match_type,
-            note=payload.note,
             result_row=MatchResult(
                 result=payload.result,
                 map_name=payload.map_name,
@@ -1084,7 +1141,6 @@ class MatchService:
 
         match.match_date = date.fromisoformat(payload.date)
         match.match_type = payload.match_type
-        match.note = payload.note
         match.updated_by = actor.pk
 
         if match.result_row is None:
@@ -1194,14 +1250,78 @@ class MatchService:
         await self._session.commit()
         return count
 
-    async def update_memo(self, match_id: int, note: str, *, actor: Member) -> Match:
-        """정식 수정(update_match)과 달리 작성자/운영자 제한 없이 회원 누구나 남길 수 있는
-        가벼운 메모 — note 한 필드만 바꾼다."""
+    # ── 경기 댓글(메모) ─────────────────────────────────────────────────────
+    # 게시판 댓글처럼 회원 누구나 한 줄(최대 50자)을 남기고, 본인/운영자만 수정·삭제한다.
+    # 본문에 @닉네임으로 언급하면 그 회원을 mentions에 함께 저장해 렌더 시 칩으로 그린다.
+
+    async def _resolve_mentions(self, target_member_ids: list[str]) -> list[Member]:
+        seen: set[str] = set()
+        members: list[Member] = []
+        for member_id in target_member_ids:
+            if member_id in seen:
+                continue
+            seen.add(member_id)
+            m = await self._member_repo.get_by_login_id(member_id)
+            if m is None:
+                raise NotFoundError(f"존재하지 않는 회원입니다: {member_id}")
+            members.append(m)
+        return members
+
+    async def list_comments(self, match_id: int, *, actor: Member) -> list[MatchCommentOut]:
         match = await self.get_match(match_id)
-        match.note = note
-        match.updated_by = actor.pk
+        is_admin = actor.has_any_role("0202")
+        return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in match.comments]
+
+    async def create_comment(
+        self, match_id: int, text: str, target_member_ids: list[str], *, actor: Member
+    ) -> MatchCommentOut:
+        cleaned = text.strip()
+        if not cleaned:
+            raise ValidationError("댓글 내용을 입력해주세요.")
+        # 경기가 실제로 있는지 확인(없으면 NotFound). base_query로 로드하지만 여기선 존재 확인만.
+        await self.get_match(match_id)
+        mentions = await self._resolve_mentions(target_member_ids)
+        comment = MatchComment(
+            match_id=match_id, text=cleaned, created_by=actor.pk, updated_by=actor.pk
+        )
+        # member=m을 미리 채워 _to_out(mentions 직렬화)의 지연로드를 피한다.
+        comment.mentions = [MatchCommentMention(member_pk=m.pk, member=m) for m in mentions]
+        self._session.add(comment)
         await self._session.commit()
-        return await self._repo.refresh(match)
+        # 작성자(actor)를 명시로 넘겨 갓 만든 댓글의 viewonly creator 지연로드를 피한다.
+        refreshed = await self._repo.get_comment(comment.id)
+        assert refreshed is not None
+        return to_comment_out(refreshed, actor_pk=actor.pk, is_admin=actor.has_any_role("0202"))
+
+    async def update_comment(
+        self, comment_id: int, text: str, target_member_ids: list[str], *, actor: Member
+    ) -> MatchCommentOut:
+        cleaned = text.strip()
+        if not cleaned:
+            raise ValidationError("댓글 내용을 입력해주세요.")
+        comment = await self._get_comment_for_edit(comment_id, actor)
+        comment.text = cleaned
+        comment.updated_by = actor.pk
+        # 언급을 통째로 다시 만든다(delete-orphan cascade로 기존 것은 flush 때 삭제).
+        mentions = await self._resolve_mentions(target_member_ids)
+        comment.mentions = [MatchCommentMention(member_pk=m.pk, member=m) for m in mentions]
+        await self._session.commit()
+        refreshed = await self._repo.get_comment(comment.id)
+        assert refreshed is not None
+        return to_comment_out(refreshed, actor_pk=actor.pk, is_admin=actor.has_any_role("0202"))
+
+    async def delete_comment(self, comment_id: int, *, actor: Member) -> None:
+        comment = await self._get_comment_for_edit(comment_id, actor)
+        await self._session.delete(comment)
+        await self._session.commit()
+
+    async def _get_comment_for_edit(self, comment_id: int, actor: Member) -> MatchComment:
+        comment = await self._repo.get_comment(comment_id)
+        if comment is None:
+            raise NotFoundError("댓글을 찾을 수 없어요.")
+        if not actor.has_any_role("0202") and comment.created_by != actor.pk:
+            raise ForbiddenError("작성자 본인 또는 운영자만 수정·삭제할 수 있어요.")
+        return comment
 
     def _ensure_can_modify(self, match: Match, actor: Member) -> None:
         if not actor.has_any_role("0202") and match.created_by != actor.pk:
@@ -1349,10 +1469,15 @@ class MatchService:
 
         content, content_type = decode_data_url(payload.url)
         ext = guess_extension(content_type, payload.original_name)
+        # 표시 이름은 '경기고유번호_맵_몇대몇'으로 서버가 생성한다(요청) — 프론트가 보낸
+        # display_name(로스터 포함)은 무시한다. match_no/맵/참가자 수가 모두 정해진 뒤라 안전.
+        display_name = _replay_display_name(match) if match.match_no else (
+            payload.display_name or payload.original_name or f"replay{ext}"
+        )
         # 저장 파일명은 알아보기 쉬운 생성 이름(display_name)으로 — 다운로드 시 그대로 쓰인다.
         stored = await self._storage.save(
             subdir="replays",
-            filename=payload.display_name or payload.original_name or f"replay{ext}",
+            filename=display_name,
             content=content,
             content_type=content_type,
         )
@@ -1362,7 +1487,7 @@ class MatchService:
         if match.result_row.replay is not None:
             await self._storage.delete(match.result_row.replay.file_path)
             match.result_row.replay.original_name = payload.original_name
-            match.result_row.replay.display_name = payload.display_name
+            match.result_row.replay.display_name = display_name
             match.result_row.replay.file_path = stored.path
             match.result_row.replay.content_type = content_type
             match.result_row.replay.file_size = len(content)
@@ -1372,7 +1497,7 @@ class MatchService:
         else:
             match.result_row.replay = Replay(
                 original_name=payload.original_name,
-                display_name=payload.display_name,
+                display_name=display_name,
                 file_path=stored.path,
                 content_type=content_type,
                 file_size=len(content),
