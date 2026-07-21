@@ -2,6 +2,7 @@ import base64
 import calendar
 import io
 import zipfile
+from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -264,24 +265,27 @@ def _replay_order_key(game_started_at, match_date, match_no):
     return (ts, match_no or "")
 
 
-def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngine, dict[str, float]]:
+def _replay_ratings(
+    rows, focal=None, by_race: bool = False,
+) -> tuple[RatingEngine, dict[str, float], dict]:
     """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 TrueSkill을 누적한다.
 
     by_race=False면 레이팅 대상이 '회원'(member_pk)이고, True면 '(회원, 그 경기 종족)' 조합이다
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
     무슨 종족이든 상관없이, 각 참가자는 자기가 그 경기에서 낸 종족 레이팅으로 서로 겨뤄 갱신된다.
 
-    반환: (엔진, focal의 경기별 보수레이팅 변화). focal(회원 pk 또는 (pk,race) 조합)이 주어지면
-    그가 뛴 각 경기마다 갱신 전후 '보수레이팅(μ−3σ, 카드/순위에 노출되는 그 점수)' 차이를
-    match_no로 키잉해 돌려준다(랭킹 상세의 '경기당 Δ' 병기용) — 카드 점수를 순수 μ로
-    바꿨다가(요청: "랭킹 산정시 졌는데 +점수를 받는 이상현상 발생") "말이 안 된다"는
-    피드백으로 다시 보수레이팅으로 롤백했다(요청: "산정 로직은 기존으로 롤백해야겠어").
-    다만 "졌는데 +점수"는 여전히 이상하다는 지적은 유효해서(요청: "그래도 졌는데 +
-    받는건 아닌거 같은데") — 실제 레이팅 갱신(engine.update)은 그대로 두되, 이 화면
-    표시용 Δ만 승패 방향과 부호가 어긋나지 않게 아래에서 눌러준다(패배는 0 이하,
-    승리는 0 이상). σ 감소로 눌린 만큼만 깎이므로 그 경기의 경기별 Δ 합이 카드 점수와
-    아주 근소하게(보통 소수점 이하) 어긋날 수 있지만, "졌는데 +로 보임"보다는 훨씬
-    덜 혼란스럽다.
+    반환: (엔진, focal의 경기별 표시점수 변화, 전원의 누적 표시점수). 보수레이팅(μ−3σ)을
+    그대로 카드/순위 점수로 썼더니, σ가 크게 줄어드는 잠정 구간에서는 패배해도 μ−3σ가
+    순증가해 "졌는데 +점수"로 보이는 문제가 있었다(요청: "랭킹 산정시 졌는데 +점수를
+    받는 이상현상 발생"). 순수 실력치(μ)로 전부 바꿔도 봤지만 점수 체감이 "말이 안 된다"는
+    피드백으로 보수레이팅 기반은 유지하기로 했고(요청: "산정 로직은 기존으로 롤백해야겠어"),
+    대신 표시에 쓰는 화면용 점수 자체를 "경기마다의 보수레이팅 변화를 승패 방향에 맞게
+    눌러(패배 0 이하, 승리 0 이상) 누적한 값"으로 재정의했다(요청: "실제 계산도 패배는
+    0 이하 승리는 0 이상이어야하는데 아니야?" — 표시용 Δ만 눌러 화면상 모순은 없앴지만,
+    카드 점수(engine.conservative 원값)는 그대로라 "경기 이력 Δ의 합"과 "카드에 뜨는
+    실제 점수"가 여전히 어긋날 수 있었다. 이제 카드 점수 자체가 이 누적값이라 항상
+    정확히 일치한다). engine 자신(μ/σ)은 순수 TrueSkill 그대로 갱신되어 통계적으로
+    올바르고, 화면에 노출하는 숫자만 이 파생값을 쓴다.
     컴퓨터/비회원(member_pk=None)은 by_race와 무관하게 None으로 둬(레이팅 미대상) 갱신에서 빠진다."""
     def _ident(member_pk, race):
         if member_pk is None:
@@ -301,18 +305,22 @@ def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngi
 
     engine = RatingEngine()
     deltas: dict[str, float] = {}
+    running: dict = defaultdict(float)
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
-        involved = focal is not None and focal in (mm["team1"] + mm["team2"])
-        pre = engine.get(focal).conservative if involved else 0.0
+        participants = [p for p in (mm["team1"] + mm["team2"]) if p is not None]
+        pre = {p: engine.get(p).conservative for p in participants}
         engine.update(mm["team1"], mm["team2"], mm["result"])
-        if involved:
-            raw = engine.get(focal).conservative - pre
-            if mm["result"] in ("team1", "team2"):
-                won = focal in mm[mm["result"]]
-                raw = max(raw, 0.0) if won else min(raw, 0.0)
-            deltas[mm["match_no"]] = raw
-    return engine, deltas
+        is_decisive = mm["result"] in ("team1", "team2")
+        winners = set(mm[mm["result"]]) if is_decisive else set()
+        for p in participants:
+            raw = engine.get(p).conservative - pre[p]
+            if is_decisive:
+                raw = max(raw, 0.0) if p in winners else min(raw, 0.0)
+            running[p] += raw
+            if p == focal:
+                deltas[mm["match_no"]] = raw
+    return engine, deltas, dict(running)
 
 
 def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> MatchSlot:
@@ -642,16 +650,20 @@ class MatchService:
         def _rk(pk: int):
             return (pk, race) if race_active else pk
 
-        engine, _ = _replay_ratings(replay_rows, by_race=race_active)
-        # 카드/정렬에 쓰는 보수추정치 — 첫째 자리 반올림(동률 판정도 이 값으로). 잠정
-        # (경기수 적음) 선수를 낮게 잡아 소표본 인플레를 막는 안전장치다. 한때 순수
-        # 실력치(μ)로 바꿔봤지만(요청: "랭킹 산정시 졌는데 +점수를 받는 이상현상 발생")
-        # 실제로 로컬에서 돌려보니 점수 체감이 "말이 안 된다"는 피드백으로 다시
-        # 보수추정치로 롤백했다(요청: "산정 로직은 기존으로 롤백해야겠어") — "졌는데
-        # +점수" 자체는 위 _replay_ratings의 화면 표시용 Δ 쪽에서 따로 눌러 막는다.
-        # 종족 필터 시 overall.plays는 이미 그 종족 기준이라(get_stats), 0경기(그 종족
-        # 미플레이) 회원은 아래 _played 게이트로 지금처럼 공동 최하위로 내려간다(요청).
-        score = {m.pk: round(engine.get(_rk(m.pk)).conservative, 1) for _, m in pairs}
+        engine, _, running = _replay_ratings(replay_rows, by_race=race_active)
+        # 카드/정렬에 쓰는 점수 — 보수추정치(μ−3σ) 기반은 유지하되(요청: "산정 로직은
+        # 기존으로 롤백해야겠어" — 순수 실력치는 체감상 "말이 안 됨"), 원값(engine.
+        # conservative) 대신 _replay_ratings가 반환하는 "경기마다 승패 방향에 맞게 눌러
+        # 누적한" running 값을 쓴다. 원값을 그대로 쓰면 화면 Δ만 눈속임으로 눌러도 실제
+        # 카드 점수(패배 경기가 하나라도 순증가에 기여)는 그대로라, "많이 패배해서 승리
+        # 보다 점수를 더 쌓는" 실제 문제가 안 없어진다(요청: "실제 계산도 패배는 0 이하
+        # 승리는 0 이상이어야하는데 아니야?", "많이 패배해서 승리보다 점수를 쌓을수도
+        # 있는 문제가 있잖아") — running은 그 자체로 이미 이 규칙을 만족한다(잠정 선수를
+        # 낮게 잡는 안전장치도 그대로 유지된다 — 새 회원은 0에서 시작해 여전히 σ가 큰
+        # 동안은 표시 점수가 크게 못 오른다). 종족 필터 시 overall.plays는 이미 그 종족
+        # 기준이라(get_stats), 0경기(그 종족 미플레이) 회원은 아래 _played 게이트로
+        # 지금처럼 공동 최하위로 내려간다(요청).
+        score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
 
         # 참가 우선 — 이 기간에 1경기라도 뛴 사람(plays>0)은 레이팅이 아무리 낮아도 0경기
         # 회원보다 무조건 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
@@ -684,7 +696,7 @@ class MatchService:
             entry.equal_count = e
             entry.inferior_count = inf
             entry.person_score = s - inf  # 우열(우세-열세) — 상세 참고용
-            entry.rank_score = score[m.pk]  # 카드에 보여줄 보수레이팅(μ−3σ)
+            entry.rank_score = score[m.pk]  # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적)
             r = engine.get(_rk(m.pk))
             entry.mu = round(r.mu, 1)
             entry.sigma = round(r.sigma, 1)
@@ -726,14 +738,16 @@ class MatchService:
         )
         race_active = race is not None and race != "all"
         focal = (member.pk, race) if race_active else member.pk
-        engine, deltas = _replay_ratings(rows, focal=focal, by_race=race_active)
+        engine, deltas, running = _replay_ratings(rows, focal=focal, by_race=race_active)
         r = engine.get(focal)
         played = engine.games.get(focal, 0) > 0
         return RatingHistoryResponse(
             deltas={mno: round(d, 1) for mno, d in deltas.items()},
             mu=round(r.mu, 1) if played else None,
             sigma=round(r.sigma, 1) if played else None,
-            conservative=round(r.conservative, 1) if played else None,
+            # 카드에 뜨는 실제 점수(패배 비증가/승리 비감소 누적) — 원값(μ−3σ)이 아니라
+            # get_stats의 score와 같은 파생값이라야 "이력 Δ의 합 = 이 값"이 항상 맞는다.
+            conservative=round(running.get(focal, 0.0), 1) if played else None,
             games=engine.games.get(focal, 0),
             provisional=engine.is_provisional(focal) if played else False,
         )
