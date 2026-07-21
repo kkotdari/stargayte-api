@@ -292,6 +292,7 @@ class MatchRepository:
         apm_sum, apm_cnt = _avg_pair(MatchParticipant.apm)
         eapm_sum, eapm_cnt = _avg_pair(MatchParticipant.eapm)
         cmd_sum, cmd_cnt = _avg_pair(MatchParticipant.cmd_count)
+        build_sum, build_cnt = _avg_pair(MatchParticipant.build_count)
         ecmd_sum, _ecmd_cnt = _avg_pair(MatchParticipant.effective_cmd_count)
         # 유효커맨드는 총합이 아니라 "분당" 값으로 보여줘야 경기 길이가 제각각이어도 공정하게
         # 비교된다 — effective_cmd_count가 있는 행(=리플레이로 등록된 경기, 항상 duration_seconds도
@@ -317,6 +318,8 @@ class MatchRepository:
                 eapm_cnt.label("eapm_cnt"),
                 cmd_sum.label("cmd_sum"),
                 cmd_cnt.label("cmd_cnt"),
+                build_sum.label("build_sum"),
+                build_cnt.label("build_cnt"),
                 ecmd_sum.label("ecmd_sum"),
                 ecmd_duration_sum.label("ecmd_duration_sum"),
             )

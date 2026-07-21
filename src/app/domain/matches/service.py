@@ -171,7 +171,7 @@ class _RaceAgg:
     __slots__ = (
         "plays", "wins", "draws",
         "apm_sum", "apm_cnt", "eapm_sum", "eapm_cnt",
-        "cmd_sum", "cmd_cnt", "ecmd_sum", "ecmd_duration_sum",
+        "cmd_sum", "cmd_cnt", "build_sum", "build_cnt", "ecmd_sum", "ecmd_duration_sum",
     )
 
     def __init__(self) -> None:
@@ -184,6 +184,8 @@ class _RaceAgg:
         self.eapm_cnt = 0
         self.cmd_sum = 0
         self.cmd_cnt = 0
+        self.build_sum = 0
+        self.build_cnt = 0
         self.ecmd_sum = 0
         self.ecmd_duration_sum = 0
 
@@ -197,6 +199,8 @@ class _RaceAgg:
         self.eapm_cnt += row.eapm_cnt
         self.cmd_sum += row.cmd_sum
         self.cmd_cnt += row.cmd_cnt
+        self.build_sum += row.build_sum
+        self.build_cnt += row.build_cnt
         self.ecmd_sum += row.ecmd_sum
         self.ecmd_duration_sum += row.ecmd_duration_sum
 
@@ -218,6 +222,7 @@ class _RaceAgg:
             avg_eapm=round(self.eapm_sum / self.eapm_cnt) if self.eapm_cnt else None,
             avg_cmd=round(self.cmd_sum / self.cmd_cnt) if self.cmd_cnt else None,
             avg_ecmd=avg_ecmd,
+            avg_build=round(self.build_sum / self.build_cnt) if self.build_cnt else None,
         )
 
 
