@@ -634,3 +634,102 @@ async def test_delete_league_cascades(client, db_session):
     remaining_teams = (await db_session.execute(select(LeagueTeam))).scalars().all()
     assert remaining_leagues == []
     assert remaining_teams == []  # 로스터가 있던 팀도 리그 삭제로 같이 지워져야 한다
+
+
+async def _seed(client, headers, league_id: int, assignments: list[dict]):
+    return await client.put(
+        f"/api/leagues/{league_id}/bracket/seeding",
+        headers=headers, json={"assignments": assignments},
+    )
+
+
+async def test_bracket_seeding_batch_atomic_swap(client):
+    """1라운드 시드를 한 번에 저장하고, 두 팀을 맞바꾸는 편집도 원자적으로 반영되는지 —
+    자리별 순차 저장이면 '팀 이동' 자동비움이 이미 넣은 자리를 덮어써 깨지던 케이스."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, mode="team")
+    teams = await _add_teams(client, admin_headers, league["id"], 4)  # A, B, C, D
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
+
+    # 최초 시드: m0=(A,B), m1=(C,D)
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[3]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert _match(lg, 1, 0)["teamA"]["id"] == teams[0]["id"]
+    assert _match(lg, 1, 0)["teamB"]["id"] == teams[1]["id"]
+    assert _match(lg, 1, 1)["teamA"]["id"] == teams[2]["id"]
+    assert _match(lg, 1, 1)["teamB"]["id"] == teams[3]["id"]
+
+    # A <-> C 스왑: m0.a=C, m1.a=A (나머지 그대로). 최종 상태가 정확히 반영돼야 한다.
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[3]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    assert _match(lg, 1, 0)["teamA"]["id"] == teams[2]["id"]
+    assert _match(lg, 1, 0)["teamB"]["id"] == teams[1]["id"]
+    assert _match(lg, 1, 1)["teamA"]["id"] == teams[0]["id"]
+    assert _match(lg, 1, 1)["teamB"]["id"] == teams[3]["id"]
+
+
+async def test_bracket_seeding_batch_resolves_bye(client):
+    """일괄 저장에서도 부전승 자동 처리가 마지막에 한 번 돌아 다음 라운드로 전파되는지."""
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, mode="team")
+    teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
+    res = await _generate_bracket(client, admin_headers, league["id"], 3)
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    # draw_size=4, byes=1 → slot0은 부전 자리(side a만 실제팀), slot1은 실제 경기.
+    m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[2]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    lg = res.json()
+    # A는 부전승으로 결승 진출.
+    assert _match(lg, 1, 0)["winnerTeamId"] == teams[0]["id"]
+    assert _match(lg, 2, 0)["teamA"]["id"] == teams[0]["id"]
+
+
+async def test_bracket_seeding_rejects_duplicate_team_and_locked(client):
+    admin_headers, _ = await _bootstrap(client, 0)
+    league = await _create_league(client, admin_headers, mode="team")
+    teams = await _add_teams(client, admin_headers, league["id"], 4)
+    res = await _generate_bracket(client, admin_headers, league["id"], 4)
+    lg = res.json()
+    m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
+
+    # 같은 팀을 두 자리에 → 거부.
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[0]["id"]},
+    ])
+    assert res.status_code == 400, res.text
+
+    # 정상 저장 후 대진 확정 → 그 뒤 일괄 저장은 잠겨서 거부.
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m0["id"], "side": "b", "teamId": teams[1]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[3]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    await _confirm_bracket(client, admin_headers, league["id"])
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[1]["id"]},
+    ])
+    assert res.status_code == 409, res.text

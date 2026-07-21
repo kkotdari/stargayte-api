@@ -140,6 +140,29 @@ class LeagueMatchSlotIn(BaseModel):
     team_id: int | None = Field(alias="teamId")
 
 
+class LeagueSeedSlotIn(BaseModel):
+    """일괄 시드 저장의 한 자리 — 어느 경기(match_id)의 어느 쪽(side)에 어떤 팀(team_id,
+    미지정은 None)이 들어갈지."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    match_id: int = Field(alias="matchId")
+    side: LeagueMatchSide
+    team_id: int | None = Field(alias="teamId")
+
+
+class LeagueBracketSeedIn(BaseModel):
+    """대진표 1라운드 시드를 화면에서 다 고친 뒤 저장 버튼으로 '한 번에' 반영한다(요청:
+    "대진표 수정 시 그때그때 저장해서 느림 — 화면만 수정하고 저장 버튼 누르면 한 번에
+    저장"). assignments는 편집 가능한 1라운드 슬롯 '전체'의 최종 배정 상태를 담는다 —
+    서버는 이 자리들을 먼저 모두 비운 뒤 다시 배정해, 두 팀을 맞바꾸는 것 같은 편집도
+    자리별 순차 저장에서 생기던 덮어쓰기 문제 없이 원자적으로 반영한다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    assignments: list[LeagueSeedSlotIn]
+
+
 class LeagueMatchScheduleIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

@@ -12,6 +12,7 @@ from app.domain.leagues.schemas import (
     LeagueListOut,
     LeagueMatchOut,
     LeagueMatchResultIn,
+    LeagueBracketSeedIn,
     LeagueMatchScheduleIn,
     LeagueMatchSlotIn,
     LeagueMatchSubstitutionOut,
@@ -569,6 +570,76 @@ class LeagueService:
                 self._maybe_auto_resolve_round1(league, by_round_slot, total_rounds, match)
             else:
                 self._maybe_auto_resolve(by_round_slot, total_rounds, match)
+
+        await self._session.commit()
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        await self._refresh_match_relations(league.matches)
+        return to_league_out(league)
+
+    async def set_bracket_seeding(
+        self, league_id: int, payload: LeagueBracketSeedIn, *, actor: Member,
+    ) -> LeagueOut:
+        """1라운드 시드를 한 번에 저장한다(요청: "대진표 수정 시 그때그때 저장해서 느림 —
+        화면만 수정하고 저장 버튼 누르면 그때 한 번에 저장"). set_match_slot을 자리마다
+        호출하면 매번 서버 왕복+전체 리렌더가 생겨 느렸고, 두 팀 맞바꾸기처럼 순차 저장으론
+        중간에 서로 덮어써(팀 이동 시 반대 자리를 자동으로 비우므로) 최종 상태가 깨지기도
+        했다. 여기선 편집 가능한 1라운드 슬롯을 '전부 비운 뒤 다시 배정'해 순서 의존 없이
+        원자적으로 반영하고, 부전승 자동 처리도 전부 배정한 뒤 한 번만 돌린다.
+
+        payload.assignments는 편집 가능한 1라운드 슬롯 '전체'의 최종 배정을 담아야 한다 —
+        빠진 자리는 비우는 것으로 간주된다(전부 비운 뒤 온 것만 다시 채우므로)."""
+        league = await self._get_or_404(league_id)
+        if league.bracket_locked_at is not None:
+            raise ConflictError("대진이 확정돼 더 이상 시드를 바꿀 수 없습니다.")
+        if league.draw_size is None:
+            raise ValidationError("아직 대진표가 없습니다.")
+
+        total_rounds = _total_rounds(league.draw_size)
+        by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
+
+        # 편집 가능한 1라운드 자리 = 라운드1 & 부전 자리(is_dead) 아님 & 실제 결과 없음.
+        editable = {
+            m.id: m for m in league.matches
+            if m.round == 1 and not m.is_dead and m.sets_won_a is None
+        }
+
+        # 들어온 배정을 (match_id, side) → team_id로 인덱싱하며 검증한다. 편집 불가 자리로
+        # 온 배정은 거부하고, 한 팀이 두 자리에 오면 거부한다(1라운드엔 한 번만 등장해야 함).
+        desired: dict[tuple[int, str], int | None] = {}
+        seen_teams: set[int] = set()
+        for a in payload.assignments:
+            if a.match_id not in editable:
+                raise ValidationError("이 자리는 시드를 바꿀 수 없습니다(부전·결과 입력됨·1라운드 아님).")
+            if a.team_id is not None:
+                self._get_team_or_404(league, a.team_id)  # 존재 검증
+                if a.team_id in seen_teams:
+                    raise ValidationError("한 팀을 두 자리에 배정할 수 없습니다.")
+                seen_teams.add(a.team_id)
+            desired[(a.match_id, a.side)] = a.team_id
+
+        # 1) 편집 대상 자리의 기존 배정/부전승 결정을 모두 취소·비운다(전파된 결과까지 되돌림).
+        for m in editable.values():
+            if m.winner_team_id is not None:
+                self._undo_decided(m, by_round_slot, total_rounds, actor)
+            m.team_a_id = None
+            m.team_b_id = None
+            m.updated_by = actor.pk
+        await self._repo.flush()
+
+        # 2) 원하는 팀을 다시 배정한다(온 것만 채우고, 빠진 자리는 None으로 남긴다).
+        for (match_id, side), team_id in desired.items():
+            match = editable[match_id]
+            if side == "a":
+                match.team_a_id = team_id
+            else:
+                match.team_b_id = team_id
+            match.updated_by = actor.pk
+        await self._repo.flush()
+
+        # 3) 부전승 자동 처리는 전부 배정한 뒤 한 번만 — 실제 팀이 배정된 자리만 대상.
+        for m in editable.values():
+            if m.team_a_id is not None or m.team_b_id is not None:
+                self._maybe_auto_resolve_round1(league, by_round_slot, total_rounds, m)
 
         await self._session.commit()
         await self._session.refresh(league, attribute_names=["teams", "matches"])

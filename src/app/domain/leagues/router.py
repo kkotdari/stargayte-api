@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.deps import CurrentAdmin, DbSession
 from app.domain.leagues.schemas import (
     LeagueBracketGenerateIn,
+    LeagueBracketSeedIn,
     LeagueCreateIn,
     LeagueListOut,
     LeagueMatchOut,
@@ -84,6 +85,13 @@ async def set_match_slot(
     league_id: int, match_id: int, payload: LeagueMatchSlotIn, db: DbSession, current: CurrentAdmin,
 ) -> LeagueOut:
     return await LeagueService(db).set_match_slot(league_id, match_id, payload, actor=current)
+
+
+@router.put("/{league_id}/bracket/seeding", response_model=LeagueOut)
+async def set_bracket_seeding(
+    league_id: int, payload: LeagueBracketSeedIn, db: DbSession, current: CurrentAdmin,
+) -> LeagueOut:
+    return await LeagueService(db).set_bracket_seeding(league_id, payload, actor=current)
 
 
 @router.patch("/{league_id}/matches/{match_id}/schedule", response_model=LeagueMatchOut)
