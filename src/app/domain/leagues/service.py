@@ -319,9 +319,16 @@ class LeagueService:
         league.planned_teams = team_count
         league.updated_by = actor.pk
 
-        dead: dict[int, list[bool]] = {
-            1: [2 * s >= team_count and 2 * s + 1 >= team_count for s in range(draw_size // 2)],
-        }
+        # 부전승(bye)은 한 자리에 몰아넣지 않고 1라운드 앞쪽 슬롯부터 한 경기당 하나씩
+        # 흩어서 배정한다(요청: "각 부전승을 팀별로 분산 배정" — 보통 시드 방식과 동일,
+        # "마지막 시드를 부전승 처리"). 앞쪽 byes개 슬롯은 a자리만 실제 팀이 들어오고
+        # b자리는 구조적으로 영원히 빈 자리, 나머지 슬롯은 양쪽 다 실제 경기가 필요하다.
+        # byes(=draw_size-team_count)는 항상 draw_size//2보다 작다(다음 2의 거듭제곱을
+        # 쓰므로 team_count가 항상 draw_size의 절반보다 큼) — 그래서 한 경기에 부전승이
+        # 두 개 몰리는 일은 생기지 않고, 1라운드는 절대 완전히 죽지(is_dead) 않는다. 어느
+        # 팀이 실제로 부전승을 받을지는 관리자가 슬롯 배정(set_match_slot) 때 앞쪽 슬롯의
+        # a자리에 어떤 팀을 놓을지로 직접 정한다.
+        dead: dict[int, list[bool]] = {1: [False] * (draw_size // 2)}
         for r in range(2, total_rounds + 1):
             dead[r] = [dead[r - 1][2 * s] and dead[r - 1][2 * s + 1] for s in range(draw_size // (2 ** r))]
 
@@ -370,9 +377,10 @@ class LeagueService:
         total_rounds: int, match: LeagueMatch,
     ) -> None:
         """1라운드 전용 부전승 자동 처리 — set_match_slot으로 실제 팀이 슬롯에 배정되는
-        순간 호출된다. 반대쪽 리프가 team_count(예약 포함 몇 자리인지, league.planned_teams)
-        범위 밖이면 구조적으로 영원히 안 채워지는 자리이므로 그 즉시 부전승 처리하고,
-        범위 안이면(아직 팀이 안 들어왔을 뿐 나중에 배정될 수 있음) 그대로 둔다."""
+        순간 호출된다. 부전승은 앞쪽 byes(=draw_size-planned_teams)개 슬롯에 한 경기당
+        하나씩 분산 배정돼 있다(generate_bracket 참고) — 이 슬롯이 그 부전승 자리이고
+        한쪽만 채워졌다면 그 즉시 부전승 처리하고, 부전승 자리가 아니면(양쪽 다 실제
+        경기가 필요한 자리) 한쪽만 채워졌어도 반대쪽 실제 팀 배정을 기다린다."""
         if match.is_dead or match.winner_team_id is not None:
             return
         a, b = match.team_a_id, match.team_b_id
@@ -381,13 +389,11 @@ class LeagueService:
         if a is None and b is None:
             return
         planned = league.planned_teams or 0
-        a_reserved = match.slot_in_round * 2 < planned
-        b_reserved = match.slot_in_round * 2 + 1 < planned
+        byes = (league.draw_size or 0) - planned
+        is_bye_slot = match.slot_in_round < byes
         winner = None
-        if a is not None and b is None and not b_reserved:
-            winner = a
-        elif b is not None and a is None and not a_reserved:
-            winner = b
+        if is_bye_slot:
+            winner = a if a is not None else b
         if winner is not None:
             match.winner_team_id = winner
             match.result_entered_at = datetime.now(UTC)

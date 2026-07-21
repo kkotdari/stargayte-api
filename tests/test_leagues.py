@@ -271,9 +271,10 @@ async def test_add_team_capped_at_planned_teams_after_generate(client):
 
 
 async def test_three_team_bracket_bye_must_still_play_next_round(client):
-    """3팀(A,B,C) → draw_size=4로 예약. A,B를 슬롯0에 배정하면 실제 경기라 자동 처리가
-    없고, C를 슬롯1에 배정하면 반대쪽(리프 인덱스3)이 team_count=3 밖이라 그 즉시
-    부전승 처리된다. 하지만 결승에서는 A-vs-B 승자와 실제로 붙어야 한다 — 자동으로
+    """3팀(A,B,C) → draw_size=4로 예약, byes=1이라 슬롯0이 부전승 자리(분산 배정 —
+    "각 부전승을 팀별로 분산 배정")다. C를 슬롯0에 혼자 배정하면 반대쪽 자리가
+    구조적으로 영원히 안 채워지므로 그 즉시 부전승 처리된다. A,B는 슬롯1에 실제
+    경기로 배정한다. 하지만 결승에서는 A-vs-B 승자와 C가 실제로 붙어야 한다 — 자동으로
     우승 처리되면 안 된다(수정한 버그)."""
     admin_headers, members = await _bootstrap(client, 3)
     league = await _create_league(client, admin_headers, best_of=1)
@@ -288,40 +289,43 @@ async def test_three_team_bracket_bye_must_still_play_next_round(client):
     slot0, slot1 = _match(body, 1, 0), _match(body, 1, 1)
     assert not slot0["isDead"] and not slot1["isDead"]
 
-    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
-    assert res.status_code == 200, res.text
-    slot0 = _match(res.json(), 1, 0)
-    assert slot0["teamA"]["label"] == "A" and slot0["teamB"]["label"] == "B"
-    assert slot0["winnerTeamId"] is None  # 실제 경기라 자동 처리 안 됨
-
-    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[2]["id"])
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[2]["id"])
     assert res.status_code == 200, res.text
     body = res.json()
-    slot1 = _match(body, 1, 1)
+    slot0 = _match(body, 1, 0)
     final = _match(body, 2, 0)
-    assert slot1["winnerTeamId"] == teams[2]["id"]  # C 자동 부전승
+    assert slot0["winnerTeamId"] == teams[2]["id"]  # C 자동 부전승(슬롯0 = 부전승 자리)
     # 핵심 회귀 검증: 결승이 C의 부전승만으로 이미 끝나 있으면 안 된다.
     assert final["winnerTeamId"] is None
-    assert final["teamB"]["label"] == "C"
-    assert final["teamA"] is None  # 아직 A-vs-B 결과를 기다리는 중
+    assert final["teamA"]["label"] == "C"
+    assert final["teamB"] is None  # 아직 A-vs-B 결과를 기다리는 중
 
-    res = await _enter_result(client, admin_headers, league["id"], slot0["id"], 1, 0)  # A 승
+    await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[0]["id"])
+    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "b", teams[1]["id"])
+    assert res.status_code == 200, res.text
+    slot1 = _match(res.json(), 1, 1)
+    assert slot1["teamA"]["label"] == "A" and slot1["teamB"]["label"] == "B"
+    assert slot1["winnerTeamId"] is None  # 실제 경기라 자동 처리 안 됨
+
+    res = await _enter_result(client, admin_headers, league["id"], slot1["id"], 1, 0)  # A 승
     assert res.status_code == 200, res.text
     body = res.json()
     final = _match(body, 2, 0)
-    assert final["teamA"]["label"] == "A" and final["teamB"]["label"] == "C"
+    assert final["teamA"]["label"] == "C" and final["teamB"]["label"] == "A"
     assert final["winnerTeamId"] is None  # 둘 다 실제 팀이라 진짜 경기가 필요하다
 
-    res = await _enter_result(client, admin_headers, league["id"], final["id"], 1, 0)  # A 우승
+    res = await _enter_result(client, admin_headers, league["id"], final["id"], 1, 0)  # C 우승
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "completed"
 
 
-async def test_six_team_bracket_late_real_result_triggers_downstream_bye(client):
-    """6팀 예약(draw_size=8). 슬롯3(리프 6,7)은 team_count=6 밖이라 처음부터 is_dead다.
-    라운드2 슬롯1은 (라운드1 슬롯2=E vs F 실제 경기) vs (라운드1 슬롯3=완전공백)이라,
-    E-vs-F 결과가 나중에 들어오는 순간 그 즉시 라운드2도 자동으로 부전승 처리돼야 한다."""
+async def test_six_team_bracket_byes_spread_and_round2_is_real_match(client):
+    """6팀 예약(draw_size=8, byes=2)이면 부전승 두 자리가 한 칸에 몰리지 않고 슬롯0,1에
+    하나씩 분산 배정된다("각 부전승을 팀별로 분산 배정") — 슬롯2,3은 완전히 실제 경기가
+    필요한 자리다. 어느 라운드1 매치도 완전히 죽지(is_dead) 않는다. 두 부전승 팀(A,B)이
+    라운드2에서 만나면 그건 자동 진출이 아니라 진짜 경기여야 하고, 마찬가지로
+    (C-vs-D 승자) vs (E-vs-F 승자)도 진짜 경기다 — 라운드2는 항상 4팀이 실제로 채워지는
+    정상적인 준결승으로 기능해야 한다(부전승 팀이 결승까지 자동 진출해버리면 안 됨)."""
     admin_headers, members = await _bootstrap(client, 6)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 6)  # A..F
@@ -333,41 +337,51 @@ async def test_six_team_bracket_late_real_result_triggers_downstream_bye(client)
     body = res.json()
     assert body["drawSize"] == 8
     slots = {i: _match(body, 1, i) for i in range(4)}
-    assert slots[3]["isDead"] and slots[3]["teamA"] is None and slots[3]["teamB"] is None
+    for i in range(4):
+        assert not slots[i]["isDead"]  # 부전승이 분산 배정되니 완전히 죽는 슬롯이 없다
     r2_0, r2_1 = _match(body, 2, 0), _match(body, 2, 1)
     assert not r2_0["isDead"] and not r2_1["isDead"]
 
-    for slot_idx, ta, tb in [(0, teams[0], teams[1]), (1, teams[2], teams[3]), (2, teams[4], teams[5])]:
+    # 슬롯0,1은 부전승 자리(A, B가 각각 혼자 배정돼 즉시 진출) — 슬롯2,3은 실제 경기.
+    res = await _assign_slot(client, admin_headers, league["id"], slots[0]["id"], "a", teams[0]["id"])
+    assert res.status_code == 200, res.text
+    a_bye = _match(res.json(), 1, 0)
+    assert a_bye["winnerTeamId"] == teams[0]["id"]  # A 자동 부전승
+
+    res = await _assign_slot(client, admin_headers, league["id"], slots[1]["id"], "a", teams[1]["id"])
+    assert res.status_code == 200, res.text
+    b_bye = _match(res.json(), 1, 1)
+    assert b_bye["winnerTeamId"] == teams[1]["id"]  # B 자동 부전승
+
+    for slot_idx, ta, tb in [(2, teams[2], teams[3]), (3, teams[4], teams[5])]:
         await _assign_slot(client, admin_headers, league["id"], slots[slot_idx]["id"], "a", ta["id"])
         res = await _assign_slot(client, admin_headers, league["id"], slots[slot_idx]["id"], "b", tb["id"])
         assert res.status_code == 200, res.text
     body = res.json()
-    ab, cd, ef = _match(body, 1, 0), _match(body, 1, 1), _match(body, 1, 2)
-    assert ab["winnerTeamId"] is None and cd["winnerTeamId"] is None and ef["winnerTeamId"] is None
+    cd, ef = _match(body, 1, 2), _match(body, 1, 3)
+    assert cd["winnerTeamId"] is None and ef["winnerTeamId"] is None  # 실제 경기라 자동 처리 안 됨
 
-    res = await _enter_result(client, admin_headers, league["id"], ef["id"], 1, 0)  # E 승
-    assert res.status_code == 200, res.text
-    body = res.json()
-    r2_1 = _match(body, 2, 1)
-    # E-vs-F 결과가 들어오자마자, 반대편이 영원히 안 채워지는 걸 알고 있으므로 즉시
-    # 부전승 처리돼 다음 라운드(결승)까지 자동 진출해야 한다.
-    assert r2_1["winnerTeamId"] == teams[4]["id"]  # E
-    assert r2_1["setsWonA"] is None  # 실제로 치른 경기가 아니라 자동 부전승
-
-    res = await _enter_result(client, admin_headers, league["id"], ab["id"], 1, 0)  # A 승
-    assert res.status_code == 200
-    res = await _enter_result(client, admin_headers, league["id"], cd["id"], 1, 0)  # C 승
-    assert res.status_code == 200
-    body = res.json()
     r2_0 = _match(body, 2, 0)
-    assert r2_0["teamA"]["label"] == "A" and r2_0["teamB"]["label"] == "C"
-    assert r2_0["winnerTeamId"] is None  # 실제 경기 필요
+    assert r2_0["teamA"]["label"] == "A" and r2_0["teamB"]["label"] == "B"
+    assert r2_0["winnerTeamId"] is None  # 둘 다 부전승으로 왔어도 라운드2는 진짜 경기가 필요
 
     res = await _enter_result(client, admin_headers, league["id"], r2_0["id"], 1, 0)  # A 승
     assert res.status_code == 200, res.text
+
+    res = await _enter_result(client, admin_headers, league["id"], cd["id"], 1, 0)  # C 승
+    assert res.status_code == 200
+    res = await _enter_result(client, admin_headers, league["id"], ef["id"], 1, 0)  # E 승
+    assert res.status_code == 200
+    body = res.json()
+    r2_1 = _match(body, 2, 1)
+    assert r2_1["teamA"]["label"] == "C" and r2_1["teamB"]["label"] == "E"
+    assert r2_1["winnerTeamId"] is None  # 실제 경기 필요
+
+    res = await _enter_result(client, admin_headers, league["id"], r2_1["id"], 1, 0)  # C 승
+    assert res.status_code == 200, res.text
     body = res.json()
     final = _match(body, 3, 0)
-    assert final["teamA"]["label"] == "A" and final["teamB"]["label"] == "E"
+    assert final["teamA"]["label"] == "A" and final["teamB"]["label"] == "C"
     assert body["status"] == "active"
 
     res = await _enter_result(client, admin_headers, league["id"], final["id"], 1, 0)
