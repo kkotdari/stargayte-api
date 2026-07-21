@@ -19,10 +19,10 @@ async def _signup(client, member_id: str, battletag: str) -> dict:
     return res.json()
 
 
-def _slot(member_id: str, race: str, apm=None, eapm=None, cmd=None, ecmd=None) -> dict:
+def _slot(member_id: str, race: str, apm=None, eapm=None, cmd=None, ecmd=None, build=None) -> dict:
     return {
         "memberId": member_id, "race": race,
-        "apm": apm, "eapm": eapm, "cmdCount": cmd, "effectiveCmdCount": ecmd,
+        "apm": apm, "eapm": eapm, "cmdCount": cmd, "effectiveCmdCount": ecmd, "buildCount": build,
     }
 
 
@@ -47,16 +47,16 @@ async def _seed_matches(client, headers) -> None:
     # 유효커맨드가 "분당" 값으로 계산되는지(400/10=40, 200/10=20) 검증할 수 있게 한다.
     await _create_match(
         client, headers, "2026-07-01",
-        team1=[_slot("player01", "테란", 100, 80, 500, 400)],
-        team2=[_slot("player02", "저그", 60, 50, 300, 200)],
+        team1=[_slot("player01", "테란", 100, 80, 500, 400, build=300)],
+        team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
         result="team1", duration_seconds=600,
     )
     # match2: player02(저그) 승 / player01(프로토스) 패 -- 종족을 바꿔서 종족별 분리를 검증한다.
     # 이것도 10분(600초)짜리라 두 경기를 합쳐도 분당 계산이 깔끔하게 떨어진다.
     await _create_match(
         client, headers, "2026-07-02",
-        team1=[_slot("player02", "저그", 80, 60, 350, 240)],
-        team2=[_slot("player01", "프로토스", 120, 90, 550, 420)],
+        team1=[_slot("player02", "저그", 80, 60, 350, 240, build=180)],
+        team2=[_slot("player01", "프로토스", 120, 90, 550, 420, build=340)],
         result="team1", duration_seconds=600,
     )
     # match3: 무승부, 리플레이 파싱 값 없음(수동 등록) -- 평균 계산에서 제외돼야 한다.
@@ -83,15 +83,15 @@ async def test_stats_aggregates_exact_numbers(client):
     p1_overall = by_id["player01"]["overall"]
     assert p1_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
-        "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 41,
+        "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 41, "avgBuild": 320,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
-        "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 40,
+        "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 40, "avgBuild": 300,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
-        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 42,
+        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 42, "avgBuild": 340,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -100,7 +100,7 @@ async def test_stats_aggregates_exact_numbers(client):
     p2_overall = by_id["player02"]["overall"]
     assert p2_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
-        "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 22,
+        "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 22, "avgBuild": 165,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -154,7 +154,7 @@ async def test_stats_race_filter_scopes_overall(client):
     overall = res.json()["members"][0]["overall"]
     assert overall == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
-        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 42,
+        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 42, "avgBuild": 340,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -168,7 +168,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     entry = res.json()["members"][0]
     assert entry["overall"] == {
         "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
-        "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None,
+        "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
     }
     assert entry["mostPlayedRace"] is None
 

@@ -57,6 +57,45 @@ class MatchSlot(BaseModel):
     build_count: int | None = Field(default=None, alias="buildCount")
 
 
+class MatchReplayMergeSlot(BaseModel):
+    """리플레이 재파싱으로 갱신할 한 참가자의 값 — player_name(리플레이 원본 게임 아이디)으로
+    기존 참가자를 찾아 지표/종족만 덮어쓴다. 회원 연결(누가 뛰었는지)은 건드리지 않는다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    player_name: str = Field(alias="playerName")
+    race: Race | None = None
+    apm: int | None = None
+    eapm: int | None = None
+    cmd_count: int | None = Field(default=None, alias="cmdCount")
+    effective_cmd_count: int | None = Field(default=None, alias="effectiveCmdCount")
+    build_count: int | None = Field(default=None, alias="buildCount")
+
+
+class MatchReplayMerge(BaseModel):
+    """이미 등록된 경기(game_started_at으로 식별)에 리플레이 내부 정보만 다시 덮어쓰는 머지
+    payload(요청: "중복건이라도 머지 방식으로 새 컬럼 덮어쓰기"). 지표(APM/커맨드/생산)·맵·
+    플레이시간은 항상 갱신하고, 승패(result)는 리플레이가 승자를 확실히 가린 경우에만(None이면
+    유지). 경기번호·등록자·등록일시·메모·참가자 회원연결 같은 건 절대 건드리지 않는다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    game_started_at: datetime = Field(alias="gameStartedAt")
+    result: MatchResult | None = None  # None = 기존 승패 유지(리플레이가 못 가림)
+    map_name: str | None = Field(default=None, alias="mapName")
+    duration_seconds: int | None = Field(default=None, alias="durationSeconds")
+    players: list[MatchReplayMergeSlot]
+
+
+class MatchReplayMergeResult(BaseModel):
+    """머지 결과 — 게임 시각이 일치하는 경기가 있어 실제로 덮어썼는지(merged)와 그 경기번호."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    merged: bool
+    match_no: str | None = Field(default=None, alias="matchNo")
+
+
 class ReplayUpload(BaseModel):
     """리플레이 업로드 payload. url은 data URL(신규 업로드) 또는 기존 서버 URL(변경 없음).
     original_name은 원본 파일명, display_name은 프론트가 만든 알아보기 쉬운 파일명이다."""
@@ -161,6 +200,9 @@ class RaceStatsEntry(BaseModel):
     # 총합의 평균이 아니라 "분당" 값(ecmd_sum / 총 경기시간(분)) — 경기 길이가 제각각이라
     # 총합만 평균 내면 불공정하다.
     avg_ecmd: int | None = Field(default=None, alias="avgEcmd")
+    # 경기당 평균 '생산'(유닛 훈련+건물 건설+변태 커맨드 수) — avg_cmd처럼 총합의 단순 평균.
+    # 리플레이로 등록된(build_count가 있는) 경기만 반영된다(수동 등록/과거 경기는 NULL).
+    avg_build: int | None = Field(default=None, alias="avgBuild")
 
 
 class MemberStatsEntry(BaseModel):

@@ -292,6 +292,7 @@ class MatchRepository:
         apm_sum, apm_cnt = _avg_pair(MatchParticipant.apm)
         eapm_sum, eapm_cnt = _avg_pair(MatchParticipant.eapm)
         cmd_sum, cmd_cnt = _avg_pair(MatchParticipant.cmd_count)
+        build_sum, build_cnt = _avg_pair(MatchParticipant.build_count)
         ecmd_sum, _ecmd_cnt = _avg_pair(MatchParticipant.effective_cmd_count)
         # 유효커맨드는 총합이 아니라 "분당" 값으로 보여줘야 경기 길이가 제각각이어도 공정하게
         # 비교된다 — effective_cmd_count가 있는 행(=리플레이로 등록된 경기, 항상 duration_seconds도
@@ -317,6 +318,8 @@ class MatchRepository:
                 eapm_cnt.label("eapm_cnt"),
                 cmd_sum.label("cmd_sum"),
                 cmd_cnt.label("cmd_cnt"),
+                build_sum.label("build_sum"),
+                build_cnt.label("build_cnt"),
                 ecmd_sum.label("ecmd_sum"),
                 ecmd_duration_sum.label("ecmd_duration_sum"),
             )
@@ -503,6 +506,17 @@ class MatchRepository:
         # 배치 업로드할 때만 호출되는 저빈도 동작이라 이 정도 전체 조회는 무겁지 않다.
         stmt = select(MatchResult.game_started_at).where(MatchResult.game_started_at.is_not(None))
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_match_id_game_started_ats(self):
+        # (match_id, game_started_at) 쌍 — list_game_started_ats와 같은 이유로(방언별 tz
+        # 표현 차이) SQL에서 바로 매칭하지 않고 서비스에서 UTC 정규화해 찾는다. 머지 대상
+        # 경기 한 건을 game_started_at으로 지목하는 데 쓴다.
+        stmt = (
+            select(Match.id, MatchResult.game_started_at)
+            .join(MatchResult, MatchResult.match_id == Match.id)
+            .where(MatchResult.game_started_at.is_not(None))
+        )
+        return list((await self._session.execute(stmt)).all())
 
     async def list_replay_name_classifications(self, raw_names: list[str]) -> list[ReplayAlias]:
         if not raw_names:

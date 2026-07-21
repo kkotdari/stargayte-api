@@ -15,6 +15,8 @@ from app.domain.matches.schemas import (
     MatchMemoWrite,
     MatchOut,
     MatchPage,
+    MatchReplayMerge,
+    MatchReplayMergeResult,
     MatchStatsResponse,
     MatchWrite,
     MonthlyMatchStatsResponse,
@@ -239,6 +241,14 @@ async def check_duplicates(
 ) -> DuplicateCheckResponse:
     existing = await MatchService(db, storage).check_duplicates(payload.game_started_at)
     return DuplicateCheckResponse(existing=existing)
+
+
+@router.post("/merge-replay", response_model=MatchReplayMergeResult)
+async def merge_replay(
+    payload: MatchReplayMerge, db: DbSession, storage: StorageDep, current: CurrentMember
+) -> MatchReplayMergeResult:
+    match = await MatchService(db, storage).merge_replay(payload, actor=current)
+    return MatchReplayMergeResult(merged=match is not None, match_no=match.match_no if match else None)
 
 
 @router.post("/replay-name-classifications/lookup", response_model=ReplayNameClassificationLookupResponse)
