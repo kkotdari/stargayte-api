@@ -271,15 +271,17 @@ def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngi
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
     무슨 종족이든 상관없이, 각 참가자는 자기가 그 경기에서 낸 종족 레이팅으로 서로 겨뤄 갱신된다.
 
-    반환: (엔진, focal의 경기별 실력치(μ) 변화). focal(회원 pk 또는 (pk,race) 조합)이 주어지면
-    그가 뛴 각 경기마다 갱신 전후 μ 차이를 match_no로 키잉해 돌려준다(랭킹 상세의 '경기당 Δ'
-    병기용). 예전엔 카드 점수가 보수레이팅(μ−3σ)이라 그 값의 차이를 썼는데, 카드 점수를
-    순수 μ로 바꾸면서(요청: "랭킹 산정시 졌는데 +점수를 받는 이상현상 발생" — μ−3σ는 σ가
-    많이 줄면 패배해도 순증가할 수 있어 혼란스러웠다) Δ도 같은 기준(μ)으로 맞췄다. μ는
-    승자만 오르도록 수학적으로 보장돼 있어(rating.py) 이제 패배 경기의 Δ는 항상 0 이하다.
-    경기별 Δ의 합은 (현재 μ − 최초 경기 시점의 μ)가 되며, 그 최초 시점 자체가 이미 MU0(25)
-    이므로 카드에 보이는 절대 점수(μ)와는 그 MU0만큼 차이 난다 — 절대 점수를 그대로 쓰기로
-    했으므로(요청) 이 차이는 자연스러운 것으로 둔다.
+    반환: (엔진, focal의 경기별 보수레이팅 변화). focal(회원 pk 또는 (pk,race) 조합)이 주어지면
+    그가 뛴 각 경기마다 갱신 전후 '보수레이팅(μ−3σ, 카드/순위에 노출되는 그 점수)' 차이를
+    match_no로 키잉해 돌려준다(랭킹 상세의 '경기당 Δ' 병기용) — 카드 점수를 순수 μ로
+    바꿨다가(요청: "랭킹 산정시 졌는데 +점수를 받는 이상현상 발생") "말이 안 된다"는
+    피드백으로 다시 보수레이팅으로 롤백했다(요청: "산정 로직은 기존으로 롤백해야겠어").
+    다만 "졌는데 +점수"는 여전히 이상하다는 지적은 유효해서(요청: "그래도 졌는데 +
+    받는건 아닌거 같은데") — 실제 레이팅 갱신(engine.update)은 그대로 두되, 이 화면
+    표시용 Δ만 승패 방향과 부호가 어긋나지 않게 아래에서 눌러준다(패배는 0 이하,
+    승리는 0 이상). σ 감소로 눌린 만큼만 깎이므로 그 경기의 경기별 Δ 합이 카드 점수와
+    아주 근소하게(보통 소수점 이하) 어긋날 수 있지만, "졌는데 +로 보임"보다는 훨씬
+    덜 혼란스럽다.
     컴퓨터/비회원(member_pk=None)은 by_race와 무관하게 None으로 둬(레이팅 미대상) 갱신에서 빠진다."""
     def _ident(member_pk, race):
         if member_pk is None:
@@ -302,10 +304,14 @@ def _replay_ratings(rows, focal=None, by_race: bool = False) -> tuple[RatingEngi
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
         involved = focal is not None and focal in (mm["team1"] + mm["team2"])
-        pre = engine.get(focal).mu if involved else 0.0
+        pre = engine.get(focal).conservative if involved else 0.0
         engine.update(mm["team1"], mm["team2"], mm["result"])
         if involved:
-            deltas[mm["match_no"]] = engine.get(focal).mu - pre
+            raw = engine.get(focal).conservative - pre
+            if mm["result"] in ("team1", "team2"):
+                won = focal in mm[mm["result"]]
+                raw = max(raw, 0.0) if won else min(raw, 0.0)
+            deltas[mm["match_no"]] = raw
     return engine, deltas
 
 
@@ -637,20 +643,18 @@ class MatchService:
             return (pk, race) if race_active else pk
 
         engine, _ = _replay_ratings(replay_rows, by_race=race_active)
-        # 카드/정렬에 쓰는 점수 — 순수 실력치(μ) 그대로, 첫째 자리 반올림(동률 판정도 이
-        # 값으로). 예전엔 보수추정치(μ−3σ, 잠정 선수를 낮게 잡아 소표본 인플레를 막는
-        # 안전장치)를 썼는데, 그 부작용으로 σ가 크게 줄어드는 잠정 구간에서는 패배해도
-        # μ−3σ가 순증가해 "졌는데 +점수"로 보이는 게 혼란스럽다는 신고로 순수 μ로 바꿨다
-        # (요청: "랭킹 산정시 졌는데 +점수를 받는 이상현상 발생" → "카드/순위 점수도 순수
-        # μ로 전부 전환"). 그 대신 잠정(경기수 적음) 선수가 초반 운으로 일시 1위에 뜨는 것도
-        # 가능해진다는 트레이드오프는 사용자가 감수하기로 했다 — "잠정" 배지(is_provisional)
-        # 는 그대로 남아 정보성으로만 표시된다. 종족 필터 시 overall.plays는 이미 그 종족
-        # 기준이라(get_stats), 0경기(그 종족 미플레이) 회원은 아래 _played 게이트로 지금처럼
-        # 공동 최하위로 내려간다(요청).
-        score = {m.pk: round(engine.get(_rk(m.pk)).mu, 1) for _, m in pairs}
+        # 카드/정렬에 쓰는 보수추정치 — 첫째 자리 반올림(동률 판정도 이 값으로). 잠정
+        # (경기수 적음) 선수를 낮게 잡아 소표본 인플레를 막는 안전장치다. 한때 순수
+        # 실력치(μ)로 바꿔봤지만(요청: "랭킹 산정시 졌는데 +점수를 받는 이상현상 발생")
+        # 실제로 로컬에서 돌려보니 점수 체감이 "말이 안 된다"는 피드백으로 다시
+        # 보수추정치로 롤백했다(요청: "산정 로직은 기존으로 롤백해야겠어") — "졌는데
+        # +점수" 자체는 위 _replay_ratings의 화면 표시용 Δ 쪽에서 따로 눌러 막는다.
+        # 종족 필터 시 overall.plays는 이미 그 종족 기준이라(get_stats), 0경기(그 종족
+        # 미플레이) 회원은 아래 _played 게이트로 지금처럼 공동 최하위로 내려간다(요청).
+        score = {m.pk: round(engine.get(_rk(m.pk)).conservative, 1) for _, m in pairs}
 
         # 참가 우선 — 이 기간에 1경기라도 뛴 사람(plays>0)은 레이팅이 아무리 낮아도 0경기
-        # 회원보다 무조건 위(요청). 그다음 실력치(높은 순) → 닉네임 → 로그인 아이디.
+        # 회원보다 무조건 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
         def _played(idx: int) -> bool:
             return pairs[idx][0].overall.plays > 0
 
