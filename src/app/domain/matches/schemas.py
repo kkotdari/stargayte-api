@@ -131,7 +131,6 @@ class MatchWrite(BaseModel):
     team2: list[MatchSlot] = Field(min_length=1)
     result: MatchResult
     match_type: MatchType = Field(default="0101", alias="matchType")
-    note: str = ""
     replay: ReplayUpload | None = None
     # 아래 3개는 리플레이 파싱으로만 채워진다 (수동 등록/수정 시 비워두면 그대로 None).
     map_name: str | None = Field(default=None, alias="mapName")
@@ -145,11 +144,49 @@ class MatchWrite(BaseModel):
         return self
 
 
-class MatchMemoWrite(BaseModel):
-    """전체 회원에게 열려있는 가벼운 메모 — 팀/결과 등 실제 경기 데이터를 바꾸는 정식 수정
-    (MatchWrite/update_match, 작성자·운영자만)과 달리 note 한 필드만 갈아치운다."""
+# 댓글(메모) 본문 최대 길이 — 게시판 댓글처럼 한 줄(요청: 한글 50자 제한).
+COMMENT_MAX_LENGTH = 50
 
-    note: str = ""
+
+class MatchCommentAuthor(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    member_id: str = Field(alias="memberId")
+    nickname: str
+    avatar: str | None = None
+
+
+class MatchCommentMentionOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    member_id: str = Field(alias="memberId")
+    nickname: str
+
+
+class MatchCommentOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    match_id: int = Field(alias="matchId")
+    text: str
+    author: MatchCommentAuthor
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+    # 지금 조회하는 회원이 이 댓글을 수정·삭제할 수 있는지(작성자 본인 또는 운영자).
+    can_edit: bool = Field(alias="canEdit")
+    # 본문에 @닉네임으로 언급된 회원들 — 프론트가 마커를 찾아 인라인 칩으로 렌더한다.
+    mentions: list[MatchCommentMentionOut]
+
+
+class MatchCommentWrite(BaseModel):
+    """댓글 작성/수정 공용 페이로드 — 본문(최대 50자)과 언급된 회원 목록."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    text: str = Field(min_length=1, max_length=COMMENT_MAX_LENGTH)
+    target_member_ids: list[str] = Field(
+        default_factory=list, alias="targetMemberIds", max_length=20
+    )
 
 
 class MatchOut(BaseModel):
@@ -164,12 +201,14 @@ class MatchOut(BaseModel):
     team2: list[MatchSlot]
     result: MatchResult
     match_type: MatchType = Field(alias="matchType")
-    note: str
     replay: ReplayOut | None
     created_by: MatchAuthor | None = Field(alias="createdBy")
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
+    # 이 경기에 달린 댓글(메모) — 목록 응답에 함께 실어 클라이언트가 펼침 시 바로 렌더하고
+    # 검색창에서 댓글 내용으로도 필터할 수 있게 한다(요청). 오래된 순.
+    comments: list[MatchCommentOut] = Field(default_factory=list)
 
 
 class MatchPage(BaseModel):
