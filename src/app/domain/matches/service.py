@@ -1,6 +1,7 @@
 import base64
 import calendar
 import io
+import re
 import zipfile
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -136,6 +137,21 @@ def _month_range(month: str) -> tuple[date, date]:
 
 
 _KST = timezone(timedelta(hours=9))
+
+
+# 리플레이 표시 이름(replays.display_name)에 못 쓰는 문자만 정리 — 제어문자(맵 이름의 색상
+# 코드 등)와 파일명 금지문자(/ \ : * ? " < > |)를 _로 바꾸고, 너무 길면 자른다.
+_REPLAY_NAME_BAD = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+
+
+def _replay_display_name(match: Match) -> str:
+    """리플레이 파일명을 '경기고유번호_맵_몇대몇.rep'로 만든다(요청 — 팀 로스터 빼고 간단히).
+    경기고유번호(match_no)는 서버가 부여하는 값이라 프론트가 보낸 이름 대신 여기서 생성한다."""
+    map_name = (match.result_row.map_name if match.result_row else None) or "map"
+    safe_map = _REPLAY_NAME_BAD.sub("_", map_name).strip()[:40] or "map"
+    t1 = sum(1 for p in match.participants if p.team == "team1")
+    t2 = sum(1 for p in match.participants if p.team == "team2")
+    return f"{match.match_no}_{safe_map}_{t1}대{t2}.rep"
 
 
 def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
@@ -1349,10 +1365,15 @@ class MatchService:
 
         content, content_type = decode_data_url(payload.url)
         ext = guess_extension(content_type, payload.original_name)
+        # 표시 이름은 '경기고유번호_맵_몇대몇'으로 서버가 생성한다(요청) — 프론트가 보낸
+        # display_name(로스터 포함)은 무시한다. match_no/맵/참가자 수가 모두 정해진 뒤라 안전.
+        display_name = _replay_display_name(match) if match.match_no else (
+            payload.display_name or payload.original_name or f"replay{ext}"
+        )
         # 저장 파일명은 알아보기 쉬운 생성 이름(display_name)으로 — 다운로드 시 그대로 쓰인다.
         stored = await self._storage.save(
             subdir="replays",
-            filename=payload.display_name or payload.original_name or f"replay{ext}",
+            filename=display_name,
             content=content,
             content_type=content_type,
         )
@@ -1362,7 +1383,7 @@ class MatchService:
         if match.result_row.replay is not None:
             await self._storage.delete(match.result_row.replay.file_path)
             match.result_row.replay.original_name = payload.original_name
-            match.result_row.replay.display_name = payload.display_name
+            match.result_row.replay.display_name = display_name
             match.result_row.replay.file_path = stored.path
             match.result_row.replay.content_type = content_type
             match.result_row.replay.file_size = len(content)
@@ -1372,7 +1393,7 @@ class MatchService:
         else:
             match.result_row.replay = Replay(
                 original_name=payload.original_name,
-                display_name=payload.display_name,
+                display_name=display_name,
                 file_path=stored.path,
                 content_type=content_type,
                 file_size=len(content),
