@@ -127,6 +127,15 @@ class ChallengeRevengeIn(BaseModel):
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
 
 
+class ChallengeRescheduleIn(BaseModel):
+    """성사(confirmed)된 대결의 일시를 나중에 바꾼다 — 참가자 또는 운영자만(서비스에서
+    검증). 미정으로 되돌리는 용도가 아니라 실제 일시 변경이라 값이 필수다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scheduled_at: datetime = Field(alias="scheduledAt")
+
+
 class ChallengeResultIn(BaseModel):
     """확정된 대결의 결과 입력 — 참가자 누구든(도전자편/상대편 상관없이) 먼저 입력하는
     쪽이 그대로 인정된다. 이미 결과가 입력된 대결에는 다시 입력할 수 없다."""
