@@ -102,20 +102,14 @@ def _trimmed_avg_eapm(rows: list) -> int | None:
 
 
 def _trimmed_avg_ecmd(rows: list) -> int | None:
-    # 유효커맨드는 총합이 아니라 "분당" 값 — 이상치 판단은 경기별 분당 값(rate)을 기준으로
-    # 하되, 실제 평균은 (원래 방식과 동일하게) 살아남은 경기들의 커맨드수 합계 / 시간(분)
-    # 합계로 낸다. rate를 단순 평균하면 짧은 경기가 과대 대표돼 불공정해진다.
-    games = [
-        (r.effective_cmd_count, r.duration_seconds) for r in rows
-        if r.effective_cmd_count is not None and r.duration_seconds
-    ]
-    if not games:
+    # 한때 "분당" 값이었지만 경기당 평균 유효커맨드로 되돌렸다(요청) — eapm과 같은 방식:
+    # 경기별 총 유효커맨드에서 이상치를 걷어낸 뒤 단순 평균.
+    values = [float(r.effective_cmd_count) for r in rows if r.effective_cmd_count is not None]
+    if not values:
         return None
-    rates = [cmd / (dur / 60) for cmd, dur in games]
-    mask = _outlier_keep_mask(rates)
-    kept_cmd_sum = sum(cmd for (cmd, _dur), keep in zip(games, mask) if keep)
-    kept_dur_sum = sum(dur for (_cmd, dur), keep in zip(games, mask) if keep)
-    return round(kept_cmd_sum / (kept_dur_sum / 60)) if kept_dur_sum else None
+    mask = _outlier_keep_mask(values)
+    kept = [v for v, keep in zip(values, mask) if keep]
+    return round(sum(kept) / len(kept))
 
 
 def _split_terms(query: str | None) -> list[str]:
@@ -184,7 +178,7 @@ class _RaceAgg:
     __slots__ = (
         "plays", "wins", "draws",
         "apm_sum", "apm_cnt", "eapm_sum", "eapm_cnt",
-        "cmd_sum", "cmd_cnt", "build_sum", "build_cnt", "ecmd_sum", "ecmd_duration_sum",
+        "cmd_sum", "cmd_cnt", "build_sum", "build_cnt", "ecmd_sum", "ecmd_cnt",
     )
 
     def __init__(self) -> None:
@@ -200,7 +194,7 @@ class _RaceAgg:
         self.build_sum = 0
         self.build_cnt = 0
         self.ecmd_sum = 0
-        self.ecmd_duration_sum = 0
+        self.ecmd_cnt = 0
 
     def add_row(self, row) -> None:
         self.plays += row.plays
@@ -215,16 +209,13 @@ class _RaceAgg:
         self.build_sum += row.build_sum
         self.build_cnt += row.build_cnt
         self.ecmd_sum += row.ecmd_sum
-        self.ecmd_duration_sum += row.ecmd_duration_sum
+        self.ecmd_cnt += row.ecmd_cnt
 
     def to_entry(self) -> RaceStatsEntry:
         losses = self.plays - self.wins - self.draws
         win_rate = round((self.wins / self.plays) * 1000) / 10 if self.plays else 0.0
-        # 유효커맨드는 총합의 평균이 아니라 "분당" 값 — 경기 길이가 제각각이라 총합만
-        # 평균 내면 긴 경기를 많이 한 사람이 불리하게(혹은 유리하게) 왜곡된다.
-        avg_ecmd = (
-            round(self.ecmd_sum / (self.ecmd_duration_sum / 60)) if self.ecmd_duration_sum else None
-        )
+        # 한때 "분당" 값이었지만 경기당 평균으로 되돌렸다(요청: "그냥 유효커맨드로").
+        avg_ecmd = round(self.ecmd_sum / self.ecmd_cnt) if self.ecmd_cnt else None
         return RaceStatsEntry(
             plays=self.plays,
             wins=self.wins,

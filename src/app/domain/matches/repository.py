@@ -308,16 +308,9 @@ class MatchRepository:
         eapm_sum, eapm_cnt = _avg_pair(MatchParticipant.eapm)
         cmd_sum, cmd_cnt = _avg_pair(MatchParticipant.cmd_count)
         build_sum, build_cnt = _avg_pair(MatchParticipant.build_count)
-        ecmd_sum, _ecmd_cnt = _avg_pair(MatchParticipant.effective_cmd_count)
-        # 유효커맨드는 총합이 아니라 "분당" 값으로 보여줘야 경기 길이가 제각각이어도 공정하게
-        # 비교된다 — effective_cmd_count가 있는 행(=리플레이로 등록된 경기, 항상 duration_seconds도
-        # 같이 채워져 있다)의 경기 시간만 더해서, 서비스 레이어에서 ecmd_sum / (이 합/60)으로 계산한다.
-        ecmd_duration_sum = func.sum(
-            case(
-                (MatchParticipant.effective_cmd_count.is_not(None), MatchResult.duration_seconds),
-                else_=0,
-            )
-        )
+        # 한때 "분당" 값(경기시간 합으로 나눔)이었지만 그냥 경기당 평균 유효커맨드로 되돌린다
+        # (요청: "분당 유효커맨드를 그냥 유효커맨드로") — 다른 항목들과 같은 합계/개수 쌍.
+        ecmd_sum, ecmd_cnt = _avg_pair(MatchParticipant.effective_cmd_count)
 
         member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
         stmt = (
@@ -336,7 +329,7 @@ class MatchRepository:
                 build_sum.label("build_sum"),
                 build_cnt.label("build_cnt"),
                 ecmd_sum.label("ecmd_sum"),
-                ecmd_duration_sum.label("ecmd_duration_sum"),
+                ecmd_cnt.label("ecmd_cnt"),
             )
             .select_from(MatchParticipant)
             .join(Match, Match.id == MatchParticipant.match_id)

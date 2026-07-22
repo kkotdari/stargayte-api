@@ -81,29 +81,29 @@ async def test_stats_aggregates_exact_numbers(client):
     assert res.status_code == 200, res.text
     by_id = {m["memberId"]: m for m in res.json()["members"]}
 
-    # avgEcmd는 총합이 아니라 "분당" 값이다 — match1/match2 둘 다 10분(600초)짜리라
-    # (400+420)/(20분)=41, 테란만이면 400/10분=40, 프로토스만이면 420/10분=42.
+    # avgEcmd는 이제 "분당"이 아니라 경기당 평균이다(요청: "그냥 유효커맨드로") —
+    # (400+420)/2경기=410, 테란만이면 400, 프로토스만이면 420.
     p1_overall = by_id["player01"]["overall"]
     assert p1_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
-        "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 41, "avgBuild": 320,
+        "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 410, "avgBuild": 320,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
-        "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 40, "avgBuild": 300,
+        "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 400, "avgBuild": 300,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
-        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 42, "avgBuild": 340,
+        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
 
-    # player02: (200+240)/(20분)=22
+    # player02: (200+240)/2경기=220
     p2_overall = by_id["player02"]["overall"]
     assert p2_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
-        "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 22, "avgBuild": 165,
+        "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 220, "avgBuild": 165,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -137,12 +137,12 @@ async def test_stats_excludes_extreme_outlier_game_from_eapm_ecmd_average(client
     res = await client.get("/api/matches/stats", headers=headers, params={"memberIds": "player01"})
     overall = res.json()["members"][0]["overall"]
     assert overall["plays"] == 6  # 전적 자체는 이상치 경기도 포함해서 그대로 6전
-    # 이상치를 뺀 나머지 5경기만으로 평균 -> eapm 80, ecmd 분당 (400+410+390+405+395)/50분=40
+    # 이상치를 뺀 나머지 5경기만으로 평균 -> eapm 80, ecmd (400+410+390+405+395)/5경기=400
     assert overall["avgEapm"] == 80
-    assert overall["avgEcmd"] == 40
+    assert overall["avgEcmd"] == 400
     by_race = res.json()["members"][0]["byRace"]["테란"]
     assert by_race["avgEapm"] == 80
-    assert by_race["avgEcmd"] == 40
+    assert by_race["avgEcmd"] == 400
 
 
 async def test_stats_race_filter_scopes_overall(client):
@@ -157,7 +157,7 @@ async def test_stats_race_filter_scopes_overall(client):
     overall = res.json()["members"][0]["overall"]
     assert overall == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
-        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 42, "avgBuild": 340,
+        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
