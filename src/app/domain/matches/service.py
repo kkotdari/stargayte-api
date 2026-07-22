@@ -808,12 +808,15 @@ class MatchService:
         *,
         date_from: str | None,
         date_to: str | None,
+        team: bool = False,
     ) -> RivalryResponse:
-        """유저 상성 — 두 회원이 1:1로 맞붙은 상대전적을 쌍 단위로 집계한다(요청: 통계
-        화면의 상성 맵). 양 팀이 각각 '등록 회원 1명'인 1:1 경기만 센다(비회원/컴퓨터가
-        낀 경기는 repository의 회원 조인에서 그 참가자가 빠져 여기 검증에서 걸러진다)."""
+        """유저 상성 — 두 회원이 맞붙은 상대전적을 쌍 단위로 집계한다(요청: 상성 맵).
+        기본은 양 팀이 각각 '등록 회원 1명'인 1:1 경기만. team=True면 팀전을 개인
+        단위로 환산한다(요청: "팀전도 개인화") — 랭킹의 팀전 개인환산과 같은 원칙으로,
+        서로 반대 팀이었던 회원 조합 전부에 그 경기의 승/패/무를 1씩 준다. 비회원/
+        컴퓨터가 낀 참가자는 repository의 회원 조인에서 빠져 자연히 걸러진다."""
         rows = await self._repo.rivalry_rows(
-            date_from=_parse_date(date_from), date_to=_parse_date(date_to),
+            date_from=_parse_date(date_from), date_to=_parse_date(date_to), team=team,
         )
         by_match: dict[int, dict[str, object]] = {}
         for r in rows:
@@ -825,20 +828,23 @@ class MatchService:
         for m in by_match.values():
             team1 = m["team1"]
             team2 = m["team2"]
-            if len(team1) != 1 or len(team2) != 1:
-                continue
-            p1, p2 = team1[0], team2[0]
-            if p1 == p2:
-                continue
-            lo, hi = (p1, p2) if p1 < p2 else (p2, p1)
-            c = counts.setdefault((lo, hi), [0, 0, 0])
+            if team:
+                # 팀전 개인화 — 반대 팀 회원 조합 전부(한쪽이라도 매칭 회원이 없으면 스킵).
+                matchups = [(p1, p2) for p1 in team1 for p2 in team2 if p1 != p2]
+            else:
+                if len(team1) != 1 or len(team2) != 1:
+                    continue
+                matchups = [(team1[0], team2[0])] if team1[0] != team2[0] else []
             result = m["result"]
-            if result == "draw":
-                c[2] += 1
-            elif result == "team1":
-                c[0 if p1 == lo else 1] += 1
-            elif result == "team2":
-                c[0 if p2 == lo else 1] += 1
+            for p1, p2 in matchups:
+                lo, hi = (p1, p2) if p1 < p2 else (p2, p1)
+                c = counts.setdefault((lo, hi), [0, 0, 0])
+                if result == "draw":
+                    c[2] += 1
+                elif result == "team1":
+                    c[0 if p1 == lo else 1] += 1
+                elif result == "team2":
+                    c[0 if p2 == lo else 1] += 1
         members = await self._member_repo.list_all()
         login_by_pk = {mem.pk: mem.id for mem in members}
         pairs = [

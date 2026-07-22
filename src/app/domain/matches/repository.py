@@ -359,11 +359,13 @@ class MatchRepository:
         *,
         date_from: date | None,
         date_to: date | None,
+        team: bool = False,
     ) -> list[Row]:
-        """상성(1:1 상대전적) 집계용 원본 행 — 1:1 경기(match_type='0101')의
-        (match_id, 결과, 팀, member_pk). 회원 매칭은 aggregate_stats와 같은
-        replay_aliases(kind='member') 조인이라, 비회원/컴퓨터가 낀 경기는 그 참가자
-        행이 아예 안 나와 서비스 레이어의 '양 팀 각 1명' 검증에서 자연히 걸러진다."""
+        """상성(상대전적) 집계용 원본 행 — (match_id, 결과, 팀, member_pk). 기본은 1:1
+        경기(match_type='0101')만, team=True면 반대로 팀전(0101이 아닌 경기)만 가져와
+        서비스 레이어에서 개인 단위 쌍으로 환산한다(요청: 상성맵 팀전 탭). 회원 매칭은
+        aggregate_stats와 같은 replay_aliases(kind='member') 조인이라, 비회원/컴퓨터가
+        낀 경기는 그 참가자 행이 아예 안 나와 서비스 레이어 검증에서 자연히 걸러진다."""
         member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
         stmt = (
             select(
@@ -378,8 +380,11 @@ class MatchRepository:
             .join(member_alias, member_condition)
             .where(MatchResult.result != "not_held")
         )
+        if team:
+            stmt = stmt.where(Match.match_type != "0101")
         stmt = self._apply_common_match_filters(
-            stmt, date_from=date_from, date_to=date_to, match_type="0101",
+            stmt, date_from=date_from, date_to=date_to,
+            match_type=None if team else "0101",
         )
         return list((await self._session.execute(stmt)).all())
 

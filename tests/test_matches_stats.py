@@ -28,14 +28,17 @@ def _slot(member_id: str, race: str, apm=None, eapm=None, cmd=None, ecmd=None, b
 
 async def _create_match(
     client, headers, date: str, team1: list[dict], team2: list[dict], result: str,
-    duration_seconds: int | None = None,
+    duration_seconds: int | None = None, match_type: str | None = None,
 ) -> dict:
+    # matchType은 서버 기본값이 "0101"이라(프론트가 팀 크기로 계산해 보내는 값),
+    # 팀전 테스트는 명시적으로 넘겨야 한다.
     res = await client.post(
         "/api/matches",
         headers=headers,
         json={
             "date": date, "team1": team1, "team2": team2, "result": result, "note": "",
             "durationSeconds": duration_seconds,
+            **({"matchType": match_type} if match_type else {}),
         },
     )
     assert res.status_code == 200, res.text
@@ -253,3 +256,45 @@ async def test_rivalries_pairwise_counts(client):
     assert wins["rival01"] == 1
     assert wins["rival02"] == 0
     assert pairs[0]["draws"] == 0
+
+
+async def test_rivalries_team_mode_individualizes(client):
+    """상성 팀전 모드 — 2:2 팀전이 반대 팀 회원 조합 4쌍으로 개인화되고,
+    solo 모드에는 팀전이 전혀 안 섞인다."""
+    t1 = await _signup(client, "teamriv01", "TeamRivA#3001")
+    await _signup(client, "teamriv02", "TeamRivB#3002")
+    await _signup(client, "teamriv03", "TeamRivC#3003")
+    await _signup(client, "teamriv04", "TeamRivD#3004")
+    headers = {"Authorization": f"Bearer {t1['accessToken']}"}
+
+    # (01,02) vs (03,04) — team1 승 2번, team2 승 1번.
+    for date, result in [("2026-07-01", "team1"), ("2026-07-02", "team1"), ("2026-07-03", "team2")]:
+        await _create_match(
+            client, headers, date,
+            team1=[_slot("teamriv01", "테란"), _slot("teamriv02", "저그")],
+            team2=[_slot("teamriv03", "프로토스"), _slot("teamriv04", "테란")],
+            result=result, match_type="0102",
+        )
+
+    res = await client.get(
+        "/api/matches/stats/rivalries", headers=headers, params={"mode": "team"},
+    )
+    assert res.status_code == 200, res.text
+    ours = {"teamriv01", "teamriv02", "teamriv03", "teamriv04"}
+    pairs = [p for p in res.json()["pairs"] if {p["a"], p["b"]} <= ours]
+    # 반대 팀 조합만 4쌍 — 같은 팀(01-02, 03-04) 쌍은 안 생긴다.
+    assert {frozenset((p["a"], p["b"])) for p in pairs} == {
+        frozenset(("teamriv01", "teamriv03")), frozenset(("teamriv01", "teamriv04")),
+        frozenset(("teamriv02", "teamriv03")), frozenset(("teamriv02", "teamriv04")),
+    }
+    for p in pairs:
+        wins = {p["a"]: p["aWins"], p["b"]: p["bWins"]}
+        team1_side = p["a"] if p["a"] in ("teamriv01", "teamriv02") else p["b"]
+        team2_side = p["a"] if team1_side == p["b"] else p["b"]
+        assert wins[team1_side] == 2
+        assert wins[team2_side] == 1
+        assert p["draws"] == 0
+
+    # solo 모드(기본)에는 팀전이 안 섞인다.
+    res = await client.get("/api/matches/stats/rivalries", headers=headers)
+    assert not [p for p in res.json()["pairs"] if {p["a"], p["b"]} <= ours]
