@@ -236,8 +236,7 @@ class RaceStatsEntry(BaseModel):
     avg_apm: int | None = Field(default=None, alias="avgApm")
     avg_eapm: int | None = Field(default=None, alias="avgEapm")
     avg_cmd: int | None = Field(default=None, alias="avgCmd")
-    # 총합의 평균이 아니라 "분당" 값(ecmd_sum / 총 경기시간(분)) — 경기 길이가 제각각이라
-    # 총합만 평균 내면 불공정하다.
+    # 경기당 평균 유효커맨드 — 한때 "분당" 값이었지만 단순 평균으로 되돌렸다(요청).
     avg_ecmd: int | None = Field(default=None, alias="avgEcmd")
     # 경기당 평균 '생산'(유닛 훈련+건물 건설+변태 커맨드 수) — avg_cmd처럼 총합의 단순 평균.
     # 리플레이로 등록된(build_count가 있는) 경기만 반영된다(수동 등록/과거 경기는 NULL).
