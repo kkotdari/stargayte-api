@@ -145,10 +145,10 @@ class MatchWrite(BaseModel):
 
 
 # 댓글(메모) 본문 최대 길이 — 게시판 댓글처럼 한 줄(요청: 한글 50자 제한).
-COMMENT_MAX_LENGTH = 50
+NOTE_MAX_LENGTH = 50
 
 
-class MatchCommentAuthor(BaseModel):
+class MatchNoteAuthor(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     member_id: str = Field(alias="memberId")
@@ -156,34 +156,34 @@ class MatchCommentAuthor(BaseModel):
     avatar: str | None = None
 
 
-class MatchCommentMentionOut(BaseModel):
+class MatchNoteMentionOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     member_id: str = Field(alias="memberId")
     nickname: str
 
 
-class MatchCommentOut(BaseModel):
+class MatchNoteOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
     match_id: int = Field(alias="matchId")
     text: str
-    author: MatchCommentAuthor
+    author: MatchNoteAuthor
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     # 지금 조회하는 회원이 이 댓글을 수정·삭제할 수 있는지(작성자 본인 또는 운영자).
     can_edit: bool = Field(alias="canEdit")
     # 본문에 @닉네임으로 언급된 회원들 — 프론트가 마커를 찾아 인라인 칩으로 렌더한다.
-    mentions: list[MatchCommentMentionOut]
+    mentions: list[MatchNoteMentionOut]
 
 
-class MatchCommentWrite(BaseModel):
+class MatchNoteWrite(BaseModel):
     """댓글 작성/수정 공용 페이로드 — 본문(최대 50자)과 언급된 회원 목록."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    text: str = Field(min_length=1, max_length=COMMENT_MAX_LENGTH)
+    text: str = Field(min_length=1, max_length=NOTE_MAX_LENGTH)
     target_member_ids: list[str] = Field(
         default_factory=list, alias="targetMemberIds", max_length=20
     )
@@ -208,7 +208,7 @@ class MatchOut(BaseModel):
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
     # 이 경기에 달린 댓글(메모) — 목록 응답에 함께 실어 클라이언트가 펼침 시 바로 렌더하고
     # 검색창에서 댓글 내용으로도 필터할 수 있게 한다(요청). 오래된 순.
-    comments: list[MatchCommentOut] = Field(default_factory=list)
+    notes: list[MatchNoteOut] = Field(default_factory=list)
 
 
 class MatchPage(BaseModel):

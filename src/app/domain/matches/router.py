@@ -12,8 +12,8 @@ from app.domain.matches.schemas import (
     DuplicateCheckResponse,
     EarliestDateResponse,
     MainRaceResponse,
-    MatchCommentOut,
-    MatchCommentWrite,
+    MatchNoteOut,
+    MatchNoteWrite,
     MatchOut,
     MatchPage,
     MatchReplayMerge,
@@ -359,49 +359,49 @@ async def update_match(
 
 
 # ── 경기 댓글(메모) — 게시판 댓글처럼 회원 누구나 한 줄(최대 50자), 본인/운영자만 수정·삭제 ──
-@router.get("/{match_id}/comments", response_model=list[MatchCommentOut])
-async def list_match_comments(
+@router.get("/{match_id}/notes", response_model=list[MatchNoteOut])
+async def list_match_notes(
     match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
-) -> list[MatchCommentOut]:
-    return await MatchService(db, storage).list_comments(match_id, actor=current)
+) -> list[MatchNoteOut]:
+    return await MatchService(db, storage).list_notes(match_id, actor=current)
 
 
-@router.post("/{match_id}/comments", response_model=MatchCommentOut)
-async def create_match_comment(
+@router.post("/{match_id}/notes", response_model=MatchNoteOut)
+async def create_match_note(
     match_id: int,
-    payload: MatchCommentWrite,
+    payload: MatchNoteWrite,
     db: DbSession,
     storage: StorageDep,
     current: CurrentMember,
-) -> MatchCommentOut:
-    return await MatchService(db, storage).create_comment(
+) -> MatchNoteOut:
+    return await MatchService(db, storage).create_note(
         match_id, payload.text, payload.target_member_ids, actor=current
     )
 
 
-@router.patch("/{match_id}/comments/{comment_id}", response_model=MatchCommentOut)
-async def update_match_comment(
+@router.patch("/{match_id}/notes/{note_id}", response_model=MatchNoteOut)
+async def update_match_note(
     match_id: int,
-    comment_id: int,
-    payload: MatchCommentWrite,
+    note_id: int,
+    payload: MatchNoteWrite,
     db: DbSession,
     storage: StorageDep,
     current: CurrentMember,
-) -> MatchCommentOut:
-    return await MatchService(db, storage).update_comment(
-        comment_id, payload.text, payload.target_member_ids, actor=current
+) -> MatchNoteOut:
+    return await MatchService(db, storage).update_note(
+        note_id, payload.text, payload.target_member_ids, actor=current
     )
 
 
-@router.delete("/{match_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_match_comment(
+@router.delete("/{match_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_match_note(
     match_id: int,
-    comment_id: int,
+    note_id: int,
     db: DbSession,
     storage: StorageDep,
     current: CurrentMember,
 ) -> None:
-    await MatchService(db, storage).delete_comment(comment_id, actor=current)
+    await MatchService(db, storage).delete_note(note_id, actor=current)
 
 
 @router.get("/{match_id}", response_model=MatchOut)
