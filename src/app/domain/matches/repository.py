@@ -354,6 +354,35 @@ class MatchRepository:
 
         return list((await self._session.execute(stmt)).all())
 
+    async def rivalry_rows(
+        self,
+        *,
+        date_from: date | None,
+        date_to: date | None,
+    ) -> list[Row]:
+        """상성(1:1 상대전적) 집계용 원본 행 — 1:1 경기(match_type='0101')의
+        (match_id, 결과, 팀, member_pk). 회원 매칭은 aggregate_stats와 같은
+        replay_aliases(kind='member') 조인이라, 비회원/컴퓨터가 낀 경기는 그 참가자
+        행이 아예 안 나와 서비스 레이어의 '양 팀 각 1명' 검증에서 자연히 걸러진다."""
+        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        stmt = (
+            select(
+                MatchParticipant.match_id,
+                MatchResult.result,
+                MatchParticipant.team,
+                member_alias.member_pk,
+            )
+            .select_from(MatchParticipant)
+            .join(Match, Match.id == MatchParticipant.match_id)
+            .join(MatchResult, MatchResult.match_id == Match.id)
+            .join(member_alias, member_condition)
+            .where(MatchResult.result != "not_held")
+        )
+        stmt = self._apply_common_match_filters(
+            stmt, date_from=date_from, date_to=date_to, match_type="0101",
+        )
+        return list((await self._session.execute(stmt)).all())
+
     async def raw_eapm_ecmd_rows(
         self,
         *,

@@ -211,3 +211,45 @@ async def test_duplicate_check_matches_regardless_of_timestamp_format(client):
     # "Z"로 보냈지만 실제 저장은 "+00:00"으로 돼 있었어도(같은 시각), 문자열이 아니라 파싱한
     # datetime으로 비교하므로 정확히 매칭돼야 한다. 존재하지 않는 시각은 안 나온다.
     assert res.json()["existing"] == ["2026-07-01T10:00:00Z"]
+
+
+async def test_rivalries_pairwise_counts(client):
+    """상성(1:1 상대전적) — 시드 3경기(p1 승 / p2 승 / 무)가 한 쌍으로 정확히 집계된다."""
+    p1 = await _signup(client, "rival01", "RivalA#2001")
+    await _signup(client, "rival02", "RivalB#2002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    await _create_match(
+        client, headers, "2026-07-01",
+        team1=[_slot("rival01", "테란")], team2=[_slot("rival02", "저그")], result="team1",
+    )
+    await _create_match(
+        client, headers, "2026-07-02",
+        team1=[_slot("rival02", "저그")], team2=[_slot("rival01", "테란")], result="team1",
+    )
+    await _create_match(
+        client, headers, "2026-07-03",
+        team1=[_slot("rival01", "테란")], team2=[_slot("rival02", "저그")], result="draw",
+    )
+
+    res = await client.get("/api/matches/stats/rivalries", headers=headers)
+    assert res.status_code == 200, res.text
+    pairs = [p for p in res.json()["pairs"] if {p["a"], p["b"]} == {"rival01", "rival02"}]
+    assert len(pairs) == 1
+    pair = pairs[0]
+    wins = {pair["a"]: pair["aWins"], pair["b"]: pair["bWins"]}
+    assert wins["rival01"] == 1
+    assert wins["rival02"] == 1
+    assert pair["draws"] == 1
+
+    # 기간 필터 — 첫 경기만 잡히는 범위로 좁히면 승수도 그만큼만.
+    res = await client.get(
+        "/api/matches/stats/rivalries", headers=headers,
+        params={"dateFrom": "2026-07-01", "dateTo": "2026-07-01"},
+    )
+    pairs = [p for p in res.json()["pairs"] if {p["a"], p["b"]} == {"rival01", "rival02"}]
+    assert len(pairs) == 1
+    wins = {pairs[0]["a"]: pairs[0]["aWins"], pairs[0]["b"]: pairs[0]["bWins"]}
+    assert wins["rival01"] == 1
+    assert wins["rival02"] == 0
+    assert pairs[0]["draws"] == 0

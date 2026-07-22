@@ -286,6 +286,22 @@ class MatchStatsResponse(BaseModel):
     members: list[MemberStatsEntry]
 
 
+class RivalryPairOut(BaseModel):
+    """유저 상성 한 쌍 — 두 회원의 1:1 상대전적(무승부 별도). a/b는 로그인 아이디."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    a: str
+    b: str
+    a_wins: int = Field(alias="aWins")
+    b_wins: int = Field(alias="bWins")
+    draws: int = 0
+
+
+class RivalryResponse(BaseModel):
+    pairs: list[RivalryPairOut]
+
+
 class RankingResponse(MatchStatsResponse):
     """랭킹 조회 전용 응답 — 구조는 전적통계(MatchStatsResponse)와 같지만(회원별 전적 +
     순위/레이팅), URL 의미(랭킹)에 맞게 별도 이름으로 노출한다(요청: "랭킹 엔드포인트
