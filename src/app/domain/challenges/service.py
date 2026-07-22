@@ -425,6 +425,7 @@ class ChallengeService:
         *,
         actor: Member,
         scheduled_at: datetime | None = None,
+        message: str = "",
     ) -> ChallengeOut:
         """결과가 입력된 확정 대결에서, 패배한 쪽 참가자가 같은 대진으로 설욕전을
         신청한다(요청: "완료시 패배한 쪽에서 설욕전 신청 가능... 이경우 너나와 체인으로
@@ -449,6 +450,7 @@ class ChallengeService:
         new_challenge = Challenge(
             match_type=challenge.match_type,
             scheduled_at=scheduled_at,
+            message=message.strip(),
             created_by=actor.pk,
             updated_by=actor.pk,
             reapplied_from_id=challenge.id,

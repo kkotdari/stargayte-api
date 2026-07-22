@@ -75,5 +75,5 @@ async def revenge_challenge(
     challenge_id: int, payload: ChallengeRevengeIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
     return await ChallengeService(db).revenge_challenge(
-        challenge_id, actor=current, scheduled_at=payload.scheduled_at
+        challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
     )

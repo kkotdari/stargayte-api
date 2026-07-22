@@ -128,11 +128,12 @@ class ChallengeRespondIn(BaseModel):
 
 class ChallengeRevengeIn(BaseModel):
     """완료된 대결에서 패배한 쪽이 같은 대진으로 재대결(설욕전)을 신청 — 원래 도전장은
-    손대지 않고 새 도전장을 만든다. 시간은 비워서 보낼 수 있다."""
+    손대지 않고 새 도전장을 만든다. 시간은 비워서 보낼 수 있다. 한마디(선택)도 함께."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
+    message: str = Field(default="", max_length=50)
 
 
 class ChallengeRescheduleIn(BaseModel):
