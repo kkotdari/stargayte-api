@@ -17,6 +17,8 @@ ScreenCode = Literal[
     # 리그 화면 — 프론트 ScreenKey에 추가된 뒤 여기 누락돼 리그 진입 핑이 422로 막혔다
     # (지적된 버그, challenge/gameId 때와 같은 유형).
     "leagues",
+    # 유저 상성 맵(운영 메뉴) 화면.
+    "rivalry",
 ]
 
 

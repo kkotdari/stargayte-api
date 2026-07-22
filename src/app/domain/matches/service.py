@@ -35,6 +35,8 @@ from app.domain.matches.schemas import (
     MemberStatsMonthEntry,
     RaceStatsEntry,
     RatingHistoryResponse,
+    RivalryPairOut,
+    RivalryResponse,
     TeamRankEntry,
     TeamRankingResponse,
     TeamRankMonthEntry,
@@ -800,6 +802,51 @@ class MatchService:
             games=engine.games.get(focal, 0),
             provisional=engine.is_provisional(focal) if played else False,
         )
+
+    async def get_rivalries(
+        self,
+        *,
+        date_from: str | None,
+        date_to: str | None,
+    ) -> RivalryResponse:
+        """유저 상성 — 두 회원이 1:1로 맞붙은 상대전적을 쌍 단위로 집계한다(요청: 통계
+        화면의 상성 맵). 양 팀이 각각 '등록 회원 1명'인 1:1 경기만 센다(비회원/컴퓨터가
+        낀 경기는 repository의 회원 조인에서 그 참가자가 빠져 여기 검증에서 걸러진다)."""
+        rows = await self._repo.rivalry_rows(
+            date_from=_parse_date(date_from), date_to=_parse_date(date_to),
+        )
+        by_match: dict[int, dict[str, object]] = {}
+        for r in rows:
+            m = by_match.setdefault(r.match_id, {"result": r.result, "team1": [], "team2": []})
+            if r.team in ("team1", "team2"):
+                m[r.team].append(r.member_pk)  # type: ignore[union-attr]
+        # (작은 pk, 큰 pk) → [작은쪽 승, 큰쪽 승, 무] — 방향을 정규화해 한 쌍당 한 행으로 모은다.
+        counts: dict[tuple[int, int], list[int]] = {}
+        for m in by_match.values():
+            team1 = m["team1"]
+            team2 = m["team2"]
+            if len(team1) != 1 or len(team2) != 1:
+                continue
+            p1, p2 = team1[0], team2[0]
+            if p1 == p2:
+                continue
+            lo, hi = (p1, p2) if p1 < p2 else (p2, p1)
+            c = counts.setdefault((lo, hi), [0, 0, 0])
+            result = m["result"]
+            if result == "draw":
+                c[2] += 1
+            elif result == "team1":
+                c[0 if p1 == lo else 1] += 1
+            elif result == "team2":
+                c[0 if p2 == lo else 1] += 1
+        members = await self._member_repo.list_all()
+        login_by_pk = {mem.pk: mem.id for mem in members}
+        pairs = [
+            RivalryPairOut(a=login_by_pk[lo], b=login_by_pk[hi], a_wins=c[0], b_wins=c[1], draws=c[2])
+            for (lo, hi), c in counts.items()
+            if lo in login_by_pk and hi in login_by_pk
+        ]
+        return RivalryResponse(pairs=pairs)
 
     async def get_stats_monthly(
         self,

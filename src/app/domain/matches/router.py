@@ -21,6 +21,7 @@ from app.domain.matches.schemas import (
     MatchStatsResponse,
     MatchWrite,
     MonthlyMatchStatsResponse,
+    RivalryResponse,
     MonthlyTeamRankingResponse,
     RankingResponse,
     RatingHistoryResponse,
@@ -180,6 +181,18 @@ async def get_team_ranking(
         date_from=date.fromisoformat(date_from) if date_from else None,
         date_to=date.fromisoformat(date_to) if date_to else None,
     )
+
+
+@router.get("/stats/rivalries", response_model=RivalryResponse)
+async def get_rivalries(
+    db: DbSession,
+    storage: StorageDep,
+    _current: CurrentMember,
+    date_from: str | None = Query(default=None, alias="dateFrom"),
+    date_to: str | None = Query(default=None, alias="dateTo"),
+) -> RivalryResponse:
+    # 유저 상성(1:1 상대전적 쌍) — 통계 화면 하단의 상성 맵이 쓴다.
+    return await MatchService(db, storage).get_rivalries(date_from=date_from, date_to=date_to)
 
 
 @router.get("/stats/monthly", response_model=MonthlyMatchStatsResponse)
