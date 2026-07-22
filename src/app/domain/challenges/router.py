@@ -46,7 +46,7 @@ async def respond_to_challenge(
 ) -> ChallengeOut:
     return await ChallengeService(db).respond(
         challenge_id, payload.response, actor=current,
-        scheduled_at=payload.scheduled_at,
+        scheduled_at=payload.scheduled_at, message=payload.message,
     )
 
 

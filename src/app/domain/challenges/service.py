@@ -98,6 +98,7 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
                 battletag=p.member.battletag,
                 avatar=p.member.avatar_url,
                 response=p.response,
+                responseMessage=p.response_message,
             )
             for p in targets
         ],
@@ -113,6 +114,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
     return ChallengeOut(
         id=challenge.id,
         matchType=challenge.match_type,
+        message=challenge.message,
         scheduledAt=challenge.scheduled_at,
         status=_status_of(challenge),
         createdBy=ChallengeAuthor(id=challenge.creator.id, nickname=challenge.creator.nickname),
@@ -123,6 +125,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
                 battletag=p.member.battletag,
                 avatar=p.member.avatar_url,
                 response=p.response,
+                responseMessage=p.response_message,
             )
             for p in targets
         ],
@@ -255,6 +258,7 @@ class ChallengeService:
 
         challenge = Challenge(
             match_type=match_type,
+            message=payload.message.strip(),
             scheduled_at=payload.scheduled_at,
             from_match_request=payload.from_match_request,
             created_by=actor.pk,
@@ -321,6 +325,7 @@ class ChallengeService:
         *,
         actor: Member,
         scheduled_at: datetime | None = None,
+        message: str = "",
     ) -> ChallengeOut:
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
@@ -343,6 +348,7 @@ class ChallengeService:
             challenge.scheduled_at = scheduled_at
             challenge.updated_by = actor.pk
         target.response = response
+        target.response_message = message.strip()
         target.responded_at = datetime.now(UTC)
         # 명시적 거절이든 버림(discarded)이든 그 즉시 도전장을 폐기
         # (휴지통)로 넘긴다 — 팀전이라도 한 명이 거절/버리면 그 대결은 끝이다. discarded_at을
