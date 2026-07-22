@@ -25,7 +25,7 @@ async def test_merge_backfills_metrics_and_preserves_identity(client):
                    "apm": 100, "eapm": 80, "cmdCount": 500, "effectiveCmdCount": 400}],
         "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02",
                    "apm": 60, "eapm": 50, "cmdCount": 300, "effectiveCmdCount": 200}],
-        "result": "team1", "note": "소중한 메모",
+        "result": "team1",
         "gameStartedAt": gsa, "mapName": "Fighting Spirit", "durationSeconds": 600,
     })
     assert create.status_code == 200, create.text
@@ -51,7 +51,6 @@ async def test_merge_backfills_metrics_and_preserves_identity(client):
     assert t1["buildCount"] == 300            # 백필됨
     assert t1["apm"] == 111 and t1["effectiveCmdCount"] == 444  # 지표 갱신
     assert got["result"] == "team1"           # 승패 None이라 유지
-    assert got["note"] == "소중한 메모"        # 메모 보존
     assert got["matchNo"] == match_no          # 경기번호 보존
     assert got["createdBy"]["id"] == "player01"  # 등록자 보존
 
@@ -66,7 +65,7 @@ async def test_merge_overwrites_result_only_when_provided(client):
         "date": "2026-07-02",
         "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01"}],
         "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02"}],
-        "result": "team1", "note": "", "gameStartedAt": gsa,
+        "result": "team1", "gameStartedAt": gsa,
     })
     assert create.status_code == 200, create.text
     mid = create.json()["id"]

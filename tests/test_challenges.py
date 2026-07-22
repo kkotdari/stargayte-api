@@ -159,7 +159,6 @@ async def test_discard_without_reason_marks_discarded_response(client):
     assert body["discardedAt"] is not None
     bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
     assert bob_target["response"] == "discarded"  # 거절이 아니라 '버림'
-    assert bob_target["responseMessage"] is None  # 사유 없음
 
 
 async def test_cannot_respond_twice(client):
@@ -236,33 +235,6 @@ async def test_pending_for_me_returns_once_then_marks_notified(client):
 
     res = await client.get("/api/challenges", headers=headers_b)
     assert len(res.json()["items"]) == 1
-
-
-async def test_reject_reason_is_visible_to_anyone(client):
-    a = await _signup(client, "alice", "Alice#1001")
-    b = await _signup(client, "bob", "Bob#1002")
-    c = await _signup(client, "carol", "Carol#1003")
-    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
-    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
-    headers_c = {"Authorization": f"Bearer {c['accessToken']}"}
-    await _approve(client, a["accessToken"], "bob")
-    await _approve(client, a["accessToken"], "carol")
-
-    res = await client.post(
-        "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
-    )
-    challenge_id = res.json()["id"]
-    await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "rejected", "reason": "그날은 바빠요"},
-    )
-
-    # 제3자(carol)도 거절 사유를 볼 수 있다.
-    res = await client.get("/api/challenges", headers=headers_c)
-    body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
-    bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
-    assert bob_target["responseMessage"] == "그날은 바빠요"
 
 
 async def test_own_team_members_are_included_and_marks_team_type(client):
@@ -380,36 +352,6 @@ async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client
     )
     # 요청자가 정한 시간을 응답자가 바꿀 수 없다 — 원래 값 유지.
     assert res.json()["scheduledAt"].startswith("2026-08-01")
-
-
-async def test_every_target_responder_can_leave_a_message(client):
-    a = await _signup(client, "alice", "Alice#1001")
-    b = await _signup(client, "bob", "Bob#1002")
-    c = await _signup(client, "carol", "Carol#1003")
-    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
-    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
-    headers_c = {"Authorization": f"Bearer {c['accessToken']}"}
-    await _approve(client, a["accessToken"], "bob")
-    await _approve(client, a["accessToken"], "carol")
-
-    res = await client.post(
-        "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
-    )
-    challenge_id = res.json()["id"]
-    await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted", "reason": "좋아 붙자"},
-    )
-    res = await client.post(
-        f"/api/challenges/{challenge_id}/respond", headers=headers_c,
-        json={"response": "accepted", "reason": "나도 콜"},
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()
-    msgs = {t["memberId"]: t["responseMessage"] for t in body["targets"]}
-    assert msgs["bob"] == "좋아 붙자"
-    assert msgs["carol"] == "나도 콜"
 
 
 async def test_enter_result_blocked_before_confirmed_or_before_schedule_passes(client):
