@@ -475,6 +475,8 @@ async def test_revenge_only_by_losing_side_and_links_chain(client):
     assert body["reappliedFromId"] == original_id
     assert body["createdBy"]["id"] == "bob"
     assert [t["memberId"] for t in body["targets"]] == ["alice"]
+    # 리벤지 신청 시 보낸 한마디가 새 도전장에 저장된다(요청).
+    assert body["message"] == "이번엔 진짜 설욕한다"
 
     # 원래 대결은 목록에서 더 안 보인다(체인 최신건만 노출).
     res = await client.get("/api/challenges", headers=headers_a)
