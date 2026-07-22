@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.domain.matches.models import (
     Match,
-    MatchComment,
-    MatchCommentMention,
+    MatchNote,
+    MatchNoteMention,
     MatchParticipant,
     MatchResult,
     Replay,
@@ -22,9 +22,9 @@ from app.domain.matches.schemas import (
     COMPUTER_ID_PREFIX,
     UNREGISTERED_ID_PREFIX,
     MatchAuthor,
-    MatchCommentAuthor,
-    MatchCommentMentionOut,
-    MatchCommentOut,
+    MatchNoteAuthor,
+    MatchNoteMentionOut,
+    MatchNoteOut,
     MatchOut,
     MatchReplayMerge,
     MatchSlot,
@@ -371,27 +371,27 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
     )
 
 
-def to_comment_out(comment: MatchComment, *, actor_pk: int | None, is_admin: bool) -> MatchCommentOut:
-    author = comment.creator
-    return MatchCommentOut(
-        id=comment.id,
-        match_id=comment.match_id,
-        text=comment.text,
-        author=MatchCommentAuthor(
+def to_note_out(note: MatchNote, *, actor_pk: int | None, is_admin: bool) -> MatchNoteOut:
+    author = note.creator
+    return MatchNoteOut(
+        id=note.id,
+        match_id=note.match_id,
+        text=note.text,
+        author=MatchNoteAuthor(
             memberId=author.id if author else "",
             nickname=author.nickname if author else "(탈퇴한 회원)",
             avatar=author.avatar_url if author else None,
         ),
-        createdAt=comment.created_at,
-        updatedAt=comment.updated_at,
+        createdAt=note.created_at,
+        updatedAt=note.updated_at,
         # 작성자 본인 또는 운영자만 수정·삭제할 수 있다.
-        canEdit=is_admin or (actor_pk is not None and comment.created_by == actor_pk),
+        canEdit=is_admin or (actor_pk is not None and note.created_by == actor_pk),
         mentions=[
-            MatchCommentMentionOut(
+            MatchNoteMentionOut(
                 memberId=m.member.id if m.member else "",
                 nickname=m.member.nickname if m.member else "(탈퇴한 회원)",
             )
-            for m in comment.mentions
+            for m in note.mentions
         ],
     )
 
@@ -434,7 +434,7 @@ def to_match_out(
         map_name=result_row.map_name,
         game_started_at=result_row.game_started_at,
         duration_seconds=result_row.duration_seconds,
-        comments=[to_comment_out(c, actor_pk=actor_pk, is_admin=is_admin) for c in match.comments],
+        notes=[to_note_out(c, actor_pk=actor_pk, is_admin=is_admin) for c in match.notes],
     )
 
 
@@ -1251,61 +1251,61 @@ class MatchService:
             members.append(m)
         return members
 
-    async def list_comments(self, match_id: int, *, actor: Member) -> list[MatchCommentOut]:
+    async def list_notes(self, match_id: int, *, actor: Member) -> list[MatchNoteOut]:
         match = await self.get_match(match_id)
         is_admin = actor.has_any_role("0202")
-        return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in match.comments]
+        return [to_note_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in match.notes]
 
-    async def create_comment(
+    async def create_note(
         self, match_id: int, text: str, target_member_ids: list[str], *, actor: Member
-    ) -> MatchCommentOut:
+    ) -> MatchNoteOut:
         cleaned = text.strip()
         if not cleaned:
             raise ValidationError("댓글 내용을 입력해주세요.")
         # 경기가 실제로 있는지 확인(없으면 NotFound). base_query로 로드하지만 여기선 존재 확인만.
         await self.get_match(match_id)
         mentions = await self._resolve_mentions(target_member_ids)
-        comment = MatchComment(
+        note = MatchNote(
             match_id=match_id, text=cleaned, created_by=actor.pk, updated_by=actor.pk
         )
         # member=m을 미리 채워 _to_out(mentions 직렬화)의 지연로드를 피한다.
-        comment.mentions = [MatchCommentMention(member_pk=m.pk, member=m) for m in mentions]
-        self._session.add(comment)
+        note.mentions = [MatchNoteMention(member_pk=m.pk, member=m) for m in mentions]
+        self._session.add(note)
         await self._session.commit()
         # 작성자(actor)를 명시로 넘겨 갓 만든 댓글의 viewonly creator 지연로드를 피한다.
-        refreshed = await self._repo.get_comment(comment.id)
+        refreshed = await self._repo.get_note(note.id)
         assert refreshed is not None
-        return to_comment_out(refreshed, actor_pk=actor.pk, is_admin=actor.has_any_role("0202"))
+        return to_note_out(refreshed, actor_pk=actor.pk, is_admin=actor.has_any_role("0202"))
 
-    async def update_comment(
-        self, comment_id: int, text: str, target_member_ids: list[str], *, actor: Member
-    ) -> MatchCommentOut:
+    async def update_note(
+        self, note_id: int, text: str, target_member_ids: list[str], *, actor: Member
+    ) -> MatchNoteOut:
         cleaned = text.strip()
         if not cleaned:
             raise ValidationError("댓글 내용을 입력해주세요.")
-        comment = await self._get_comment_for_edit(comment_id, actor)
-        comment.text = cleaned
-        comment.updated_by = actor.pk
+        note = await self._get_note_for_edit(note_id, actor)
+        note.text = cleaned
+        note.updated_by = actor.pk
         # 언급을 통째로 다시 만든다(delete-orphan cascade로 기존 것은 flush 때 삭제).
         mentions = await self._resolve_mentions(target_member_ids)
-        comment.mentions = [MatchCommentMention(member_pk=m.pk, member=m) for m in mentions]
+        note.mentions = [MatchNoteMention(member_pk=m.pk, member=m) for m in mentions]
         await self._session.commit()
-        refreshed = await self._repo.get_comment(comment.id)
+        refreshed = await self._repo.get_note(note.id)
         assert refreshed is not None
-        return to_comment_out(refreshed, actor_pk=actor.pk, is_admin=actor.has_any_role("0202"))
+        return to_note_out(refreshed, actor_pk=actor.pk, is_admin=actor.has_any_role("0202"))
 
-    async def delete_comment(self, comment_id: int, *, actor: Member) -> None:
-        comment = await self._get_comment_for_edit(comment_id, actor)
-        await self._session.delete(comment)
+    async def delete_note(self, note_id: int, *, actor: Member) -> None:
+        note = await self._get_note_for_edit(note_id, actor)
+        await self._session.delete(note)
         await self._session.commit()
 
-    async def _get_comment_for_edit(self, comment_id: int, actor: Member) -> MatchComment:
-        comment = await self._repo.get_comment(comment_id)
-        if comment is None:
+    async def _get_note_for_edit(self, note_id: int, actor: Member) -> MatchNote:
+        note = await self._repo.get_note(note_id)
+        if note is None:
             raise NotFoundError("댓글을 찾을 수 없어요.")
-        if not actor.has_any_role("0202") and comment.created_by != actor.pk:
+        if not actor.has_any_role("0202") and note.created_by != actor.pk:
             raise ForbiddenError("작성자 본인 또는 운영자만 수정·삭제할 수 있어요.")
-        return comment
+        return note
 
     def _ensure_can_modify(self, match: Match, actor: Member) -> None:
         if not actor.has_any_role("0202") and match.created_by != actor.pk:

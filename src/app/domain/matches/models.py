@@ -44,10 +44,10 @@ class Match(AuditMixin, TimestampMixin, Base):
     # 경기 하나에 달리는 댓글(메모) — 게시판 댓글처럼 회원 누구나 한 줄(최대 50자)을 남기고
     # 본인/운영자가 수정·삭제할 수 있다. 예전엔 matches.note 한 필드에 마지막 메모만 덮어썼는데,
     # 여러 사람이 각자 남기고 고칠 수 있는 정식 댓글 구조로 바꿨다(요청). 오래된 순으로 쌓인다.
-    comments: Mapped[list["MatchComment"]] = relationship(
+    notes: Mapped[list["MatchNote"]] = relationship(
         back_populates="match",
         cascade="all, delete-orphan",
-        order_by="MatchComment.created_at",
+        order_by="MatchNote.created_at",
     )
     # 결과(승패/맵/시작시각/경기시간) — 얇은 사이드 테이블로 분리해 관리한다(모든 경기가
     # 등록과 동시에 결과를 함께 저장하므로 실질적으로 항상 1:1로 존재한다). 리플레이(.rep)도
@@ -149,13 +149,13 @@ class MatchResult(Base):
     match: Mapped[Match] = relationship(back_populates="result_row")
 
 
-class MatchComment(AuditMixin, TimestampMixin, Base):
+class MatchNote(AuditMixin, TimestampMixin, Base):
     """경기 하나에 달리는 댓글(메모) 한 건 — 게시판 댓글처럼 작성자(회원)와 본문(최대 50자)으로
     이뤄진다. 대댓글은 없고(요청) 본문 안에 @닉네임으로 다른 회원을 언급할 수 있다(마커는
-    match_comment_mentions에 구조적으로 함께 저장해 현재 닉네임으로 칩 렌더한다). 작성자 본인
+    match_note_mentions에 구조적으로 함께 저장해 현재 닉네임으로 칩 렌더한다). 작성자 본인
     또는 운영자만 수정·삭제할 수 있다."""
 
-    __tablename__ = "match_comments"
+    __tablename__ = "match_notes"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     match_id: Mapped[int] = mapped_column(
@@ -163,33 +163,33 @@ class MatchComment(AuditMixin, TimestampMixin, Base):
     )
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
-    match: Mapped[Match] = relationship(back_populates="comments")
+    match: Mapped[Match] = relationship(back_populates="notes")
     # 본문에 @닉네임으로 언급된 회원들 — 너 나와!(match_requests)와 같은 방식으로 회원 pk를
     # 저장해두고 렌더 시 현재 닉네임으로 칩을 그린다(닉네임이 나중에 바뀌어도 정확히 표시).
-    mentions: Mapped[list["MatchCommentMention"]] = relationship(
-        back_populates="comment", cascade="all, delete-orphan", lazy="selectin",
+    mentions: Mapped[list["MatchNoteMention"]] = relationship(
+        back_populates="note", cascade="all, delete-orphan", lazy="selectin",
     )
     creator: Mapped["Member | None"] = relationship(
-        "Member", foreign_keys="MatchComment.created_by", viewonly=True, lazy="selectin",
+        "Member", foreign_keys="MatchNote.created_by", viewonly=True, lazy="selectin",
     )
 
 
-class MatchCommentMention(Base):
+class MatchNoteMention(Base):
     """댓글 본문에 언급(@)된 회원 한 명 — (댓글, 회원) 조합은 유일하다. 표시(칩 렌더)
     용도로만 쓰고 권한/알림과는 연결하지 않는다."""
 
-    __tablename__ = "match_comment_mentions"
+    __tablename__ = "match_note_mentions"
     __table_args__ = (
-        UniqueConstraint("comment_id", "member_pk", name="uq_match_comment_mentions_comment_member"),
+        UniqueConstraint("note_id", "member_pk", name="uq_match_note_mentions_comment_member"),
     )
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
-    comment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("match_comments.id", ondelete="CASCADE"), nullable=False
+    note_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("match_notes.id", ondelete="CASCADE"), nullable=False
     )
     member_pk: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("members.pk", ondelete="CASCADE"), nullable=False
     )
 
-    comment: Mapped[MatchComment] = relationship(back_populates="mentions")
+    note: Mapped[MatchNote] = relationship(back_populates="mentions")
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")

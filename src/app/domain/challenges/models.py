@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,6 +30,9 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 0101=1:1, 0102=팀전 — 폼에서 직접 고르지 않고 지목한 인원수로 서버가 정한다
     # (1명이면 1:1, 2명 이상이면 팀전).
     match_type: Mapped[str] = mapped_column(String(4), nullable=False, default="0101")
+    # 도전자가 호출 때 남기는 "한마디"(선택) — 카드에 함께 보여준다. 빈 문자열이면 없음.
+    # (예전에 message/response_message '한마디' 개념을 지웠다가 호출 한마디만 다시 살렸다.)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # 미정이면 NULL.
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
@@ -100,6 +104,8 @@ class ChallengeParticipant(Base):
     )
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     response: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
+    # 응답할 때 남기는 "한마디"(선택) — 수락/거절과 함께 카드에 보여준다. 빈 문자열이면 없음.
+    response_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 지목된 사람이 다음 접속 때 팝업으로 한 번 본 뒤로는 다시 안 뜨게 하는 플래그 —
     # 목록/응답 상태 자체와는 별개다(팝업을 이미 봤어도 목록에서는 계속 pending으로 보인다).

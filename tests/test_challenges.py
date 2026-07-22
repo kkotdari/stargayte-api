@@ -563,8 +563,8 @@ async def test_result_draw_and_not_held_block_revenge(client):
 
 
 async def test_listing_expires_stale_pending_as_discarded(client, db_session):
-    """응답 기한(요청일+1일)이 지난 pending 도전장은 목록 조회 시 폐기(휴지통)로 넘어간다 —
-    지목자는 응답하지 않았으므로 response는 그대로 pending이고, 예정 일시는 요청일+1일로
+    """응답 기한(요청일+72시간)이 지난 pending 도전장은 목록 조회 시 폐기(휴지통)로 넘어간다 —
+    지목자는 응답하지 않았으므로 response는 그대로 pending이고, 예정 일시는 요청일+72시간으로
     스탬프돼 더는 일정 미정이 아니다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
@@ -576,7 +576,7 @@ async def test_listing_expires_stale_pending_as_discarded(client, db_session):
 
     await db_session.execute(
         update(Challenge).where(Challenge.id == challenge_id).values(
-            created_at=datetime.now(UTC) - timedelta(days=1, hours=1)
+            created_at=datetime.now(UTC) - timedelta(hours=73)
         )
     )
     await db_session.commit()
@@ -590,35 +590,40 @@ async def test_listing_expires_stale_pending_as_discarded(client, db_session):
     assert bob_target["response"] == "pending"  # 실제로 아무도 응답 안 함
 
 
-async def test_response_deadline_is_always_one_day_from_request(client, db_session):
+async def test_response_deadline_is_72h_or_scheduled_time_whichever_first(client, db_session):
+    """응답 마감은 요청일+72시간이지만, 예정 시각이 그보다 먼저면 예정 시각이 마감이다(요청):
+    (1) 예정 없음 + 30시간 전 = 아직 pending. (2) 예정 없음 + 73시간 전 = 폐기.
+    (3) 예정이 이미 지남(과거) = 방금 만들었어도 예정 시각이 마감이라 폐기."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
     await _approve(client, a["accessToken"], "bob")
 
-    res = await client.post(
+    # 셋 다 먼저 만들고(HTTP), 그 뒤에 created_at만 한 번에 조정한다 — HTTP 세션과 db_session의
+    # 쓰기가 얽히면 SQLite가 잠긴다.
+    # (1) 예정 없음 → 30시간 전으로. (2) 예정 없음 → 73시간 전으로. (3) 예정이 과거(2020), 방금 생성.
+    r1 = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    id1 = r1.json()["id"]
+    r2 = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    id2 = r2.json()["id"]
+    r3 = await client.post(
         "/api/challenges", headers=headers_a,
         json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
     )
-    fresh_id = res.json()["id"]
-
-    res = await client.post(
-        "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2099-01-01T10:00:00Z"},
-    )
-    old_id = res.json()["id"]
+    id3 = r3.json()["id"]
     await db_session.execute(
-        update(Challenge).where(Challenge.id == old_id).values(
-            created_at=datetime.now(UTC) - timedelta(days=7)
-        )
+        update(Challenge).where(Challenge.id == id1).values(created_at=datetime.now(UTC) - timedelta(hours=30))
+    )
+    await db_session.execute(
+        update(Challenge).where(Challenge.id == id2).values(created_at=datetime.now(UTC) - timedelta(hours=73))
     )
     await db_session.commit()
 
     res = await client.get("/api/challenges", headers=headers_a)
     items = {c["id"]: c for c in res.json()["items"]}
-    assert items[fresh_id]["status"] == "pending"
-    assert items[old_id]["status"] == "discarded"
-    assert items[old_id]["scheduledAt"].startswith("2099-01-01")
+    assert items[id1]["status"] == "pending"
+    assert items[id2]["status"] == "discarded"
+    assert items[id3]["status"] == "discarded"
 
 
 async def test_trash_is_emptied_by_soft_delete_after_retention(client, db_session):

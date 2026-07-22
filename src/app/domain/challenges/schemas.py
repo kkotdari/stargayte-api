@@ -31,6 +31,8 @@ class ChallengeTargetOut(BaseModel):
     battletag: str
     avatar: str | None
     response: TargetResponse
+    # 이 대상이 응답하며 남긴 "한마디"(선택) — 없으면 빈 문자열.
+    response_message: str = Field(default="", alias="responseMessage")
 
 
 class ChallengeOwnMemberOut(BaseModel):
@@ -61,6 +63,8 @@ class ChallengeOut(BaseModel):
 
     id: int
     match_type: ChallengeMatchType = Field(alias="matchType")
+    # 도전자가 호출 때 남긴 "한마디"(선택) — 없으면 빈 문자열.
+    message: str = ""
     scheduled_at: datetime | None = Field(alias="scheduledAt")
     status: ChallengeStatus
     created_by: ChallengeAuthor = Field(alias="createdBy")
@@ -85,6 +89,8 @@ class ChallengeCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
+    # 호출 한마디(선택) — 한글 50자 제한(요청).
+    message: str = Field(default="", max_length=50)
     target_member_ids: list[str] = Field(alias="targetMemberIds", min_length=1, max_length=4)
     # 도전자 본인은 자동 포함(뺄 수 없음)이라 여기엔 "본인 제외 나머지 내 팀원"만 담는다
     # — 본인 포함 최대 4명이라 이 목록 자체는 최대 3명. (지금 UI는 1:1만 신청하므로 항상
@@ -109,6 +115,8 @@ class ChallengeRespondIn(BaseModel):
 
     # discarded = 사유 없이 버림(휴지통행) — 편지봉투의 "버리기"에서 온다.
     response: Literal["accepted", "rejected", "discarded"]
+    # 응답 한마디(선택) — 한글 50자 제한(요청).
+    message: str = Field(default="", max_length=50)
     # 도전장 작성 시 "시간 지정"을 끄면(scheduled_at=None) "상대가 정해도 된다"는
     # 뜻인데, 그 이후 아무도 시간을 채워 넣을 방법이 없어서 시간 미정인 채로 영원히
     # "승락" 상태에 박제되는 문제가 있었다(요청: "도전자/상대 모두 시간을 지정하지
