@@ -11,8 +11,6 @@ DEFAULT_ICONS: dict[str, ImageSettingSchema] = {
     "프로토스": ImageSettingSchema(type="text", value="P"),
     "저그": ImageSettingSchema(type="text", value="Z"),
     "랜덤": ImageSettingSchema(type="text", value="R"),
-    "home_logo": ImageSettingSchema(type="text", value="스타게이트"),
-    "home_logo_light": ImageSettingSchema(type="text", value="스타게이트"),
 }
 
 
@@ -25,6 +23,10 @@ class ImageSettingService:
         rows = await self._repo.list_all()
         result: ImageSettingMap = dict(DEFAULT_ICONS)
         for row in rows:
+            # 슬롯 축소(홈 로고 제거) 이전에 저장된 행이 DB에 남아 있을 수 있다 — 더는
+            # 유효한 슬롯이 아니면 걸러서 response_model 검증이 깨지지 않게 한다.
+            if row.slot not in DEFAULT_ICONS:
+                continue
             result[row.slot] = ImageSettingSchema(type=row.icon_type, value=row.icon_value)
         return result
 
