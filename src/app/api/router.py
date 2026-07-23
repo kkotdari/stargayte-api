@@ -10,7 +10,6 @@ from app.domain.match_requests.router import router as match_requests_router
 from app.domain.matches.router import router as matches_router
 from app.domain.members.router import router as members_router
 from app.domain.settings.router import router as settings_router
-from app.domain.share_images.router import router as share_images_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -22,5 +21,4 @@ api_router.include_router(app_versions_router)
 api_router.include_router(challenges_router)
 api_router.include_router(match_requests_router)
 api_router.include_router(env_vars_router)
-api_router.include_router(share_images_router)
 api_router.include_router(leagues_router)

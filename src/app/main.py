@@ -35,6 +35,10 @@ def create_app() -> FastAPI:
 
     upload_root = Path(settings.storage_local_root)
     upload_root.mkdir(parents=True, exist_ok=True)
+    # 랭킹 카톡 공유 기능 제거(요청)에 따른 잔여물 정리 — 공유 카드 썸네일이 쌓이던
+    # share/ 하위를 부팅 시 비운다. 멱등이라 이미 비어 있으면 아무 일도 없다.
+    import shutil
+    shutil.rmtree(upload_root / "share", ignore_errors=True)
     app.mount(settings.storage_url_path, StaticFiles(directory=upload_root), name="uploads")
 
     app.include_router(api_router, prefix=settings.api_prefix)
