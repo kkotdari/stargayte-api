@@ -46,7 +46,8 @@ async def respond_to_challenge(
 ) -> ChallengeOut:
     return await ChallengeService(db).respond(
         challenge_id, payload.response, actor=current,
-        scheduled_at=payload.scheduled_at, message=payload.message,
+        scheduled_date=payload.scheduled_date, scheduled_time=payload.scheduled_time,
+        message=payload.message,
     )
 
 
@@ -55,7 +56,8 @@ async def reschedule_challenge(
     challenge_id: int, payload: ChallengeRescheduleIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
     return await ChallengeService(db).reschedule(
-        challenge_id, payload.scheduled_at, actor=current
+        challenge_id, scheduled_date=payload.scheduled_date,
+        scheduled_time=payload.scheduled_time, actor=current,
     )
 
 
@@ -64,7 +66,8 @@ async def enter_challenge_result(
     challenge_id: int, payload: ChallengeResultIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
     return await ChallengeService(db).enter_result(
-        challenge_id, payload.winner_side, actor=current
+        challenge_id, payload.winner_side, actor=current,
+        scheduled_date=payload.scheduled_date, scheduled_time=payload.scheduled_time,
     )
 
 
@@ -75,5 +78,6 @@ async def revenge_challenge(
     challenge_id: int, payload: ChallengeRevengeIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
     return await ChallengeService(db).revenge_challenge(
-        challenge_id, actor=current, scheduled_at=payload.scheduled_at, message=payload.message
+        challenge_id, actor=current, scheduled_date=payload.scheduled_date,
+        scheduled_time=payload.scheduled_time, message=payload.message,
     )

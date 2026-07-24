@@ -33,7 +33,9 @@ async def _approve(client, admin_token: str, member_id: str) -> None:
     assert res.status_code == 200, res.text
 
 
-async def _confirmed_1v1(client, *, scheduled_at: str) -> tuple[dict, dict, int]:
+async def _confirmed_1v1(
+    client, *, scheduled_date: str = "2020-01-01", scheduled_time: str = "10:00",
+) -> tuple[dict, dict, int]:
     """alice(요청자)↔bob 1:1 확정(성사) 대결 하나를 만들어 (headers_a, headers_b, id) 반환."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
@@ -42,7 +44,7 @@ async def _confirmed_1v1(client, *, scheduled_at: str) -> tuple[dict, dict, int]
     await _approve(client, a["accessToken"], "bob")
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": scheduled_at},
+        json={"targetMemberIds": ["bob"], "scheduledDate": scheduled_date, "scheduledTime": scheduled_time},
     )
     challenge_id = res.json()["id"]
     await client.post(
@@ -60,7 +62,7 @@ async def test_create_single_target_is_1v1_and_pending(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 200, res.text
     body = res.json()
@@ -80,7 +82,7 @@ async def test_multi_target_is_team_type_and_requires_all_accepts(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob", "carol"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     assert res.json()["matchType"] == "0102"
     challenge_id = res.json()["id"]
@@ -111,7 +113,7 @@ async def test_any_rejection_discards_challenge(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob", "carol"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
 
@@ -144,7 +146,7 @@ async def test_discard_without_reason_marks_discarded_response(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
 
@@ -170,7 +172,7 @@ async def test_cannot_respond_twice(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
 
@@ -301,15 +303,15 @@ async def test_accepting_unscheduled_challenge_stays_undecided_then_completes_no
     assert body["status"] == "confirmed"
     assert body["scheduledAt"] is None
 
-    # 시간 미정이라도 결과를 바로 입력할 수 있고, 예정 일시가 완료(입력) 시점으로 채워진다.
+    # 시간 미정이라도 결과를 바로 입력할 수 있고, 결과와 함께 넘긴 실제 일시로 채워진다.
     res = await client.post(
         f"/api/challenges/{challenge_id}/result", headers=headers_a,
-        json={"winnerSide": "creator"},
+        json={"winnerSide": "creator", "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 200, res.text
     done = res.json()
     assert done["status"] == "done"
-    assert done["scheduledAt"] is not None
+    assert done["scheduledDate"] == "2026-08-01"
 
 
 async def test_accepting_unscheduled_challenge_can_still_set_time(client):
@@ -325,12 +327,12 @@ async def test_accepting_unscheduled_challenge_can_still_set_time(client):
     # 수락하며 시간을 정하면 그 값으로 확정된다.
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted", "reason": "OK!", "scheduledAt": "2026-09-01T10:00:00Z"},
+        json={"response": "accepted", "reason": "OK!", "scheduledDate": "2026-09-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["status"] == "confirmed"
-    assert body["scheduledAt"].startswith("2026-09-01")
+    assert body["scheduledDate"] == "2026-09-01"
 
 
 async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client):
@@ -342,19 +344,19 @@ async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
 
     res = await client.post(
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-        json={"response": "accepted", "reason": "OK!", "scheduledAt": "2099-01-01T10:00:00Z"},
+        json={"response": "accepted", "reason": "OK!", "scheduledDate": "2099-01-01", "scheduledTime": "10:00"},
     )
     # 요청자가 정한 시간을 응답자가 바꿀 수 없다 — 원래 값 유지.
-    assert res.json()["scheduledAt"].startswith("2026-08-01")
+    assert res.json()["scheduledDate"] == "2026-08-01"
 
 
-async def test_enter_result_blocked_before_confirmed_or_before_schedule_passes(client):
+async def test_enter_result_blocked_before_confirmed(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -363,12 +365,14 @@ async def test_enter_result_blocked_before_confirmed_or_before_schedule_passes(c
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
 
+    # 아직 성사(confirmed) 전이라 결과를 넣을 수 없다 — 유효한 페이로드를 다 보내도 400(비즈니스 규칙).
     res = await client.post(
-        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+        f"/api/challenges/{challenge_id}/result", headers=headers_a,
+        json={"winnerSide": "creator", "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 400, res.text  # 아직 pending
 
@@ -376,10 +380,13 @@ async def test_enter_result_blocked_before_confirmed_or_before_schedule_passes(c
         f"/api/challenges/{challenge_id}/respond", headers=headers_b,
         json={"response": "accepted", "reason": "OK!"},
     )
+    # 성사된 뒤엔 예정 일시가 안 지났어도 결과를 바로 입력할 수 있다(예전의 "일시 지남" 제약 제거).
     res = await client.post(
-        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+        f"/api/challenges/{challenge_id}/result", headers=headers_a,
+        json={"winnerSide": "creator", "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
-    assert res.status_code == 400, res.text  # 예정 일시가 아직 안 지남
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "done"
 
 
 async def test_enter_result_marks_done_and_first_submission_locks(client):
@@ -394,7 +401,7 @@ async def test_enter_result_marks_done_and_first_submission_locks(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
     await client.post(
@@ -403,19 +410,22 @@ async def test_enter_result_marks_done_and_first_submission_locks(client):
     )
 
     res = await client.post(
-        f"/api/challenges/{challenge_id}/result", headers=headers_c, json={"winnerSide": "creator"},
+        f"/api/challenges/{challenge_id}/result", headers=headers_c,
+        json={"winnerSide": "creator", "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 403, res.text  # 참가자 아님
 
     res = await client.post(
-        f"/api/challenges/{challenge_id}/result", headers=headers_b, json={"winnerSide": "target"},
+        f"/api/challenges/{challenge_id}/result", headers=headers_b,
+        json={"winnerSide": "target", "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "done"
     assert res.json()["resultWinnerSide"] == "target"
 
     res = await client.post(
-        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+        f"/api/challenges/{challenge_id}/result", headers=headers_a,
+        json={"winnerSide": "creator", "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 400, res.text  # 이미 입력됨
 
@@ -423,7 +433,7 @@ async def test_enter_result_marks_done_and_first_submission_locks(client):
 async def test_confirmed_stays_confirmed_after_schedule_until_result_entered(client):
     """예정 시간이 지나도 결과가 안 들어왔으면 완료가 아니라 계속 성사(confirmed)다
     (요청: "예정 시간 지나도 결과 입력 안 된 건은 성사 상태")."""
-    headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_at="2020-01-01T10:00:00Z")
+    headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_date="2020-01-01")
     res = await client.get("/api/challenges", headers=headers_a)
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
     assert body["status"] == "confirmed"
@@ -432,9 +442,10 @@ async def test_confirmed_stays_confirmed_after_schedule_until_result_entered(cli
 async def test_not_held_result_goes_to_trash(client):
     """수락했지만 미실시(not_held)로 결과가 들어오면 완료가 아니라 폐기(휴지통)로 간다
     (요청: "수락했지만 미실시한 경우도 휴지통으로")."""
-    headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_at="2020-01-01T10:00:00Z")
+    headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_date="2020-01-01")
     res = await client.post(
-        f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": "not_held"},
+        f"/api/challenges/{challenge_id}/result", headers=headers_a,
+        json={"winnerSide": "not_held", "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "discarded"
@@ -449,7 +460,7 @@ async def test_revenge_only_by_losing_side_and_links_chain(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     original_id = res.json()["id"]
     await client.post(
@@ -458,7 +469,8 @@ async def test_revenge_only_by_losing_side_and_links_chain(client):
     )
     # alice(creator)가 이겼다 — bob(target)이 패배한 쪽.
     await client.post(
-        f"/api/challenges/{original_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+        f"/api/challenges/{original_id}/result", headers=headers_a,
+        json={"winnerSide": "creator", "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
 
     # 이긴 쪽(alice)은 재대결을 신청할 수 없다.
@@ -468,7 +480,7 @@ async def test_revenge_only_by_losing_side_and_links_chain(client):
     # 패배한 쪽(bob)은 신청할 수 있고, bob이 새 도전장의 요청자가 된다.
     res = await client.post(
         f"/api/challenges/{original_id}/revenge", headers=headers_b,
-        json={"scheduledAt": "2026-09-01T10:00:00Z", "message": "이번엔 진짜 설욕한다"},
+        json={"scheduledDate": "2026-09-01", "scheduledTime": "10:00", "message": "이번엔 진짜 설욕한다"},
     )
     assert res.status_code == 200, res.text
     body = res.json()
@@ -496,7 +508,7 @@ async def test_discarded_revenge_revives_original_for_another_revenge(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     original_id = res.json()["id"]
     await client.post(
@@ -504,12 +516,13 @@ async def test_discarded_revenge_revives_original_for_another_revenge(client):
         json={"response": "accepted", "reason": "OK!"},
     )
     await client.post(
-        f"/api/challenges/{original_id}/result", headers=headers_a, json={"winnerSide": "creator"},
+        f"/api/challenges/{original_id}/result", headers=headers_a,
+        json={"winnerSide": "creator", "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     # bob이 재대결 신청(bob=요청자, alice=지목).
     res = await client.post(
         f"/api/challenges/{original_id}/revenge", headers=headers_b,
-        json={"scheduledAt": "2026-09-01T10:00:00Z"},
+        json={"scheduledDate": "2026-09-01", "scheduledTime": "10:00"},
     )
     revenge_id = res.json()["id"]
 
@@ -530,7 +543,7 @@ async def test_discarded_revenge_revives_original_for_another_revenge(client):
     # bob은 원래 건에 다시 재대결을 신청할 수 있다.
     res = await client.post(
         f"/api/challenges/{original_id}/revenge", headers=headers_b,
-        json={"scheduledAt": "2026-10-01T10:00:00Z"},
+        json={"scheduledDate": "2026-10-01", "scheduledTime": "10:00"},
     )
     assert res.status_code == 200, res.text
 
@@ -547,7 +560,7 @@ async def test_result_draw_and_not_held_block_revenge(client):
 
         res = await client.post(
             "/api/challenges", headers=headers_a,
-            json={"targetMemberIds": [f"bob_{winner}"], "scheduledAt": "2020-01-01T10:00:00Z"},
+            json={"targetMemberIds": [f"bob_{winner}"], "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
         )
         challenge_id = res.json()["id"]
         await client.post(
@@ -555,7 +568,8 @@ async def test_result_draw_and_not_held_block_revenge(client):
             json={"response": "accepted", "reason": "OK!"},
         )
         res = await client.post(
-            f"/api/challenges/{challenge_id}/result", headers=headers_a, json={"winnerSide": winner},
+            f"/api/challenges/{challenge_id}/result", headers=headers_a,
+            json={"winnerSide": winner, "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
         )
         assert res.status_code == 200, res.text
 
@@ -566,8 +580,8 @@ async def test_result_draw_and_not_held_block_revenge(client):
 
 async def test_listing_expires_stale_pending_as_discarded(client, db_session):
     """응답 기한(요청일+72시간)이 지난 pending 도전장은 목록 조회 시 폐기(휴지통)로 넘어간다 —
-    지목자는 응답하지 않았으므로 response는 그대로 pending이고, 예정 일시는 요청일+72시간으로
-    스탬프돼 더는 일정 미정이 아니다."""
+    지목자는 응답하지 않았으므로 response는 그대로 pending이고, 폐기는 예정 일시를 건드리지
+    않으므로 미정(scheduledDate/scheduledAt=null)이던 건은 그대로 미정으로 남는다."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -587,7 +601,9 @@ async def test_listing_expires_stale_pending_as_discarded(client, db_session):
     assert res.status_code == 200, res.text
     body = next(c for c in res.json()["items"] if c["id"] == challenge_id)
     assert body["status"] == "discarded"
-    assert body["scheduledAt"] is not None
+    # 폐기는 예정 일시를 스탬프하지 않는다 — 원래 미정이었으니 그대로 null.
+    assert body["scheduledDate"] is None
+    assert body["scheduledAt"] is None
     bob_target = next(t for t in body["targets"] if t["memberId"] == "bob")
     assert bob_target["response"] == "pending"  # 실제로 아무도 응답 안 함
 
@@ -610,7 +626,7 @@ async def test_response_deadline_is_72h_or_scheduled_time_whichever_first(client
     id2 = r2.json()["id"]
     r3 = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2020-01-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01", "scheduledTime": "10:00"},
     )
     id3 = r3.json()["id"]
     await db_session.execute(
@@ -639,7 +655,7 @@ async def test_trash_is_emptied_by_soft_delete_after_retention(client, db_sessio
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
     await client.post(
@@ -675,7 +691,7 @@ async def test_pending_for_me_excludes_discarded_challenge(client):
     # bob, carol 지목 — bob이 거절하면 폐기되고, carol 팝업엔 죽은 초대가 안 떠야 한다.
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob", "carol"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
     await client.post(
@@ -703,7 +719,7 @@ async def test_pending_for_me_excludes_discarded_challenge_when_buried(client):
 
     res = await client.post(
         "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob", "carol"], "scheduledAt": "2026-08-01T10:00:00Z"},
+        json={"targetMemberIds": ["bob", "carol"], "scheduledDate": "2026-08-01", "scheduledTime": "10:00"},
     )
     challenge_id = res.json()["id"]
     # bob이 사유 없이 버린다 → 도전장 폐기.
@@ -717,7 +733,7 @@ async def test_pending_for_me_excludes_discarded_challenge_when_buried(client):
 
 
 async def test_result_pending_for_me_returns_once_then_marks_notified(client):
-    headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_at="2020-01-01T10:00:00Z")
+    headers_a, _headers_b, challenge_id = await _confirmed_1v1(client, scheduled_date="2020-01-01")
     # 예정 일시가 지난 확정(성사) 대결 + 결과 미입력 → 결과 입력 팝업 후보.
     res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
     assert res.status_code == 200, res.text
@@ -729,7 +745,7 @@ async def test_result_pending_for_me_returns_once_then_marks_notified(client):
 
 async def test_result_pending_for_me_skips_future_schedule_and_entered_result(client):
     # 미래 예정 → 아직 결과 입력 자격 없음 → 팝업에 안 뜬다.
-    headers_a, _headers_b, _future_id = await _confirmed_1v1(client, scheduled_at="2099-01-01T10:00:00Z")
+    headers_a, _headers_b, _future_id = await _confirmed_1v1(client, scheduled_date="2099-01-01")
     res = await client.get("/api/challenges/result-pending-for-me", headers=headers_a)
     assert res.json()["items"] == []
 
