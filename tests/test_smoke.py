@@ -167,14 +167,18 @@ async def test_match_lifecycle_with_attachment(client):
     )
     assert create_res.status_code == 200, create_res.text
     match = create_res.json()
-    # 표시 이름은 프론트가 만들어 보낸 것을 그대로 쓴다(로스터 나열 형식).
-    assert match["replay"]["displayName"] == "replay.rep"
+    # 표시(다운로드) 이름은 서버가 경기번호+로스터+맵으로 만든다(요청). 이 경기는 맵이 없으므로
+    # "[경기번호] 팀1 VS 팀2.rep" 형식이고, 로스터 이름은 자르지 않고 전부 들어간다.
+    assert match["replay"]["displayName"] == f"[{match['matchNo']}] player01 VS player02.rep", (
+        match["replay"]["displayName"]
+    )
     assert match["replay"]["originalName"] == "replay.rep"
     assert match["replay"]["url"].startswith("http://testserver/uploads/replays/")
 
     download_res = await client.get(f"/api/matches/{match['id']}/replay", headers=headers)
     assert download_res.status_code == 200
-    assert "replay.rep" in download_res.headers["content-disposition"]
+    # Content-Disposition 파일명은 생성된 표시 이름 — 숫자인 경기번호는 URL 인코딩돼도 그대로 들어간다.
+    assert match["matchNo"] in download_res.headers["content-disposition"]
     assert len(download_res.content) > 0
 
     list_res = await client.get("/api/matches", headers=headers)

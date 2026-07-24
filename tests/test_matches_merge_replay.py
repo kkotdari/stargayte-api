@@ -80,6 +80,45 @@ async def test_merge_overwrites_result_only_when_provided(client):
     assert got["result"] == "team2"
 
 
+_REP_DATA_URL = "data:application/octet-stream;base64,QUJD"  # 'ABC' — 내용은 아무 바이트나 OK
+
+
+async def test_replay_filename_new_format_and_merge_updates_it(client):
+    """리플레이 다운로드 파일명 = [경기번호] 팀1로스터 VS 팀2로스터 (맵 특수문자 제거).rep.
+    중복 리플레이 재등록(merge) 시 파일명을 신규 포맷으로 갱신한다(요청)."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    gsa = "2026-07-05T03:00:00+00:00"
+
+    create = await client.post("/api/matches", headers=headers, json={
+        "date": "2026-07-05",
+        "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01"}],
+        "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02"}],
+        "result": "team1", "gameStartedAt": gsa, "mapName": "Poly(o)id!",
+        "replay": {"originalName": "aaa.rep", "displayName": "aaa.rep", "url": _REP_DATA_URL},
+    })
+    assert create.status_code == 200, create.text
+    match = create.json()
+    match_no = match["matchNo"]
+    # 맵의 특수문자(!)만 삭제되고 일반 문장기호(괄호)는 남는다(요청). displayName은 서버가 만든다.
+    assert match["replay"]["displayName"] == f"[{match_no}] player01 VS player02 (Poly(o)id).rep", (
+        match["replay"]["displayName"]
+    )
+
+    # 같은 게임시각(중복)으로 다시 올리면 파일명을 신규 포맷으로 갱신 — 맵이 바뀌면 이름도 따라간다.
+    # 아포스트로피(')와 앰퍼샌드(&)는 일반 기호라 유지, *는 특수문자라 제거된다.
+    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+        "gameStartedAt": gsa, "result": None, "mapName": "Gaia's & Sylph*",
+        "players": [{"playerName": "player01"}, {"playerName": "player02"}],
+    })
+    assert merge.status_code == 200, merge.text
+    got = (await client.get(f"/api/matches/{match['id']}", headers=headers)).json()
+    assert got["replay"]["displayName"] == f"[{match_no}] player01 VS player02 (Gaia's & Sylph).rep", (
+        got["replay"]["displayName"]
+    )
+
+
 async def test_merge_no_matching_game_returns_false(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
