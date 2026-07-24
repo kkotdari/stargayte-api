@@ -107,13 +107,14 @@ async def test_replay_filename_new_format_and_merge_updates_it(client):
     )
 
     # 같은 게임시각(중복)으로 다시 올리면 파일명을 신규 포맷으로 갱신 — 맵이 바뀌면 이름도 따라간다.
+    # 아포스트로피(')와 앰퍼샌드(&)는 일반 기호라 유지, *는 특수문자라 제거된다.
     merge = await client.post("/api/matches/merge-replay", headers=headers, json={
-        "gameStartedAt": gsa, "result": None, "mapName": "Neo Sylph*",
+        "gameStartedAt": gsa, "result": None, "mapName": "Gaia's & Sylph*",
         "players": [{"playerName": "player01"}, {"playerName": "player02"}],
     })
     assert merge.status_code == 200, merge.text
     got = (await client.get(f"/api/matches/{match['id']}", headers=headers)).json()
-    assert got["replay"]["displayName"] == f"[{match_no}] player01 VS player02 (Neo Sylph).rep", (
+    assert got["replay"]["displayName"] == f"[{match_no}] player01 VS player02 (Gaia's & Sylph).rep", (
         got["replay"]["displayName"]
     )
 
