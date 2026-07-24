@@ -1,6 +1,7 @@
 import base64
 import calendar
 import io
+import re
 import zipfile
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -29,12 +30,12 @@ from app.domain.matches.schemas import (
     MatchReplayMerge,
     MatchSlot,
     MatchWrite,
-    ReplayOut,
-    ReplayUpload,
     MemberStatsEntry,
     MemberStatsMonthEntry,
     RaceStatsEntry,
     RatingHistoryResponse,
+    ReplayOut,
+    ReplayUpload,
     RivalryPairOut,
     RivalryResponse,
     TeamRankEntry,
@@ -47,7 +48,7 @@ from app.domain.matches.schemas import (
 from app.domain.members.models import Member, ReplayAlias
 from app.domain.members.repository import MemberRepository
 from app.storage.base import FileStorage
-from app.storage.data_url import decode_data_url, guess_extension, is_data_url
+from app.storage.data_url import decode_data_url, is_data_url
 
 # 실제 경기결과에 저장되는 종족(슬롯 등록 시 "랜덤"은 막혀 있다) — 종족별 통계 병기 기준.
 BASE_RACES = ("테란", "프로토스", "저그")
@@ -161,6 +162,43 @@ def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
         if local.date() == match_date:
             return local.strftime("%y%m%d%H%M%S")
     return match_date.strftime("%y%m%d") + "000000"
+
+
+# 리플레이 다운로드 파일명 생성(요청):
+#   [경기번호] 팀1로스터 VS 팀2로스터 (맵이름).rep
+# 로스터의 유저 이름은 자르지 않고 전부 넣고(,로 구분), 맵 이름은 특수문자를 지운다. 경기번호는
+# 서버가 부여한 match_no이므로 서버에서만 만들 수 있다 — 등록(_apply_replay)·중복 재등록
+# (merge_replay) 모두 이 함수로 최신 포맷 이름을 새로 만든다. 저장 경로는 UUID라(local.py 참고)
+# 이 이름은 다운로드 시 Content-Disposition에만 쓰여 공백/괄호/쉼표가 섞여도 안전하다.
+_FNAME_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_FNAME_FORBIDDEN = re.compile(r'[/\\:*?"<>|]')
+# 맵 이름의 "특수문자"만 지운다 — 글자(모든 언어)/숫자/밑줄/공백과 일반 문장기호 ()[].-_~<>는
+# 남기고 그 외(색상코드 잔여·기호류)만 제거한다(요청). 프론트 utils/mapName.ts의 규칙과 동일.
+_MAP_SPECIAL = re.compile(r"[^\w\s()\[\].<>~-]", re.UNICODE)
+REPLAY_NAME_MAX = 200
+
+
+def _fname_safe(s: str) -> str:
+    s = _FNAME_CONTROL.sub("", s or "")
+    s = _FNAME_FORBIDDEN.sub("_", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def build_replay_display_name(match: "Match") -> str:
+    def roster(team: str) -> str:
+        players = sorted(
+            (p for p in match.participants if p.team == team), key=lambda p: p.position
+        )
+        names = [_fname_safe(p.player_name) or "?" for p in players]
+        return ",".join(names) or "?"
+
+    map_name = match.result_row.map_name if match.result_row else None
+    map_clean = re.sub(r"\s+", " ", _MAP_SPECIAL.sub("", _FNAME_CONTROL.sub("", map_name or ""))).strip()
+    map_seg = f" ({map_clean})" if map_clean else ""
+    name = f"[{match.match_no}] {roster('team1')} VS {roster('team2')}{map_seg}.rep"
+    if len(name) > REPLAY_NAME_MAX:
+        name = name[: REPLAY_NAME_MAX - 4].rstrip() + ".rep"
+    return name
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -1247,6 +1285,12 @@ class MatchService:
                 p.build_count = s.build_count
             p.updated_by = actor.pk
 
+        # 중복 리플레이 재등록이면 저장된 다운로드 파일명도 최신 포맷으로 갱신한다(요청). 위에서
+        # rr.map_name이 갱신됐을 수 있으니 그 뒤에 만든다. 리플레이 파일이 없으면 갱신 안 함.
+        if rr.replay is not None:
+            rr.replay.display_name = build_replay_display_name(match)
+            rr.replay.updated_by = actor.pk
+
         match.updated_by = actor.pk
         await self._session.commit()
         return await self._repo.refresh(match)
@@ -1496,9 +1540,9 @@ class MatchService:
             raise ValidationError("스타크래프트 리플레이 파일(.rep)만 첨부할 수 있습니다.")
 
         content, content_type = decode_data_url(payload.url)
-        ext = guess_extension(content_type, payload.original_name)
-        # 표시 이름은 프론트가 만들어 보낸 것(로스터 나열 형식)을 그대로 쓴다.
-        display_name = payload.display_name or payload.original_name or f"replay{ext}"
+        # 표시(다운로드) 이름은 서버가 경기번호(match_no)를 포함해 최신 포맷으로 만든다(요청) —
+        # 프론트가 보낸 display_name은 무시한다(경기번호는 서버만 안다). original_name은 보존.
+        display_name = build_replay_display_name(match)
         # 저장 파일명은 알아보기 쉬운 생성 이름(display_name)으로 — 다운로드 시 그대로 쓰인다.
         stored = await self._storage.save(
             subdir="replays",
