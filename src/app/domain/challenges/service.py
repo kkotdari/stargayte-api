@@ -377,10 +377,21 @@ class ChallengeService:
         # 수 있다 — 둘 다 선택이라 안 정한 채 수락도 가능하다(요청: "시간 null 가능", "날짜만
         # 지정 가능"). 이미 요청자가 날짜를 정한 도전장은 응답하는 쪽이 바꿀 수 없으므로 무시한다.
         # 날짜 없이 시간만 온 경우는 의미가 없어 시간도 버린다.
-        if response == "accepted" and challenge.scheduled_date is None and scheduled_date is not None:
-            challenge.scheduled_date = scheduled_date
-            challenge.scheduled_time = scheduled_time
-            challenge.updated_by = actor.pk
+        if response == "accepted":
+            if challenge.scheduled_date is None and scheduled_date is not None:
+                # 요청자가 날짜를 아예 안 정한 도전장 — 응답자가 날짜(+시간)를 정한다.
+                challenge.scheduled_date = scheduled_date
+                challenge.scheduled_time = scheduled_time
+                challenge.updated_by = actor.pk
+            elif (
+                challenge.scheduled_date is not None
+                and challenge.scheduled_time is None
+                and scheduled_time is not None
+            ):
+                # 요청자가 날짜만 정하고 시간은 비운 도전장 — 응답자가 시간만 추가할 수 있다(요청:
+                # "날짜가 입력되었어도 시간은 별도로 입력 가능"). 날짜 자체는 못 바꾼다.
+                challenge.scheduled_time = scheduled_time
+                challenge.updated_by = actor.pk
         target.response = response
         target.response_message = message.strip()
         target.responded_at = datetime.now(UTC)
