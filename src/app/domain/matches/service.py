@@ -172,9 +172,9 @@ def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
 # 이 이름은 다운로드 시 Content-Disposition에만 쓰여 공백/괄호/쉼표가 섞여도 안전하다.
 _FNAME_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _FNAME_FORBIDDEN = re.compile(r'[/\\:*?"<>|]')
-# 맵 이름의 "특수문자"만 지운다 — 글자(모든 언어)/숫자/밑줄/공백과 일반 문장기호 ()[].-_~<>'&는
-# 남기고 그 외(색상코드 잔여·기호류)만 제거한다(요청). 프론트 utils/mapName.ts의 규칙과 동일.
-_MAP_SPECIAL = re.compile(r"[^\w\s()\[\].<>~'&-]", re.UNICODE)
+# 맵 이름의 "특수문자"만 지운다 — 글자(모든 언어)/숫자/밑줄/공백과 일반 문장기호 ()[].-_~'&는
+# 남기고 그 외(색상코드 잔여·기호류·파일명 금지문자 <>)는 제거한다(요청). 프론트 mapName.ts와 동일.
+_MAP_SPECIAL = re.compile(r"[^\w\s()\[\].~'&-]", re.UNICODE)
 REPLAY_NAME_MAX = 200
 
 
