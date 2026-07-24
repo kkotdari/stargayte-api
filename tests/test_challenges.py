@@ -356,6 +356,36 @@ async def test_accepting_scheduled_challenge_ignores_target_supplied_time(client
     assert res.json()["scheduledDate"] == "2026-08-01"
 
 
+async def test_accepting_date_only_challenge_lets_target_add_time(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    # 요청자가 날짜만 정하고 시간은 비워서 보낸다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01"},
+    )
+    challenge_id = res.json()["id"]
+    assert res.json()["scheduledDate"] == "2026-08-01"
+    assert res.json()["scheduledTime"] is None
+
+    # 응답자는 날짜는 못 바꾸지만(요청자가 정한 날짜 유지) 시간은 추가할 수 있다(요청).
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={
+            "response": "accepted", "reason": "OK!",
+            "scheduledDate": "2099-12-31", "scheduledTime": "21:00",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["scheduledDate"] == "2026-08-01"
+    assert body["scheduledTime"] == "21:00"
+
+
 async def test_enter_result_blocked_before_confirmed(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
