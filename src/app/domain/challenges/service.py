@@ -1,4 +1,5 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,30 @@ RESPONSE_EXPIRE = timedelta(hours=72)
 # 폐기(휴지통)된 지 이 기간이 지나면 소프트 삭제한다(요청: "휴지통은 폐기된 지 7일 지나면
 # 사라짐, DB에서는 소프트 삭제").
 TRASH_RETENTION = timedelta(days=7)
+
+# 예정 날짜/시간은 한국시간 벽시계값으로 저장한다 — 비교(마감/지남 판정) 때만 KST로 해석해
+# UTC로 환산한다.
+KST = ZoneInfo("Asia/Seoul")
+
+
+def _scheduled_dt(challenge: "Challenge") -> datetime | None:
+    """예정 일시를 비교용 UTC-naive datetime으로 환산한다. 날짜만 정하고 시간이 미정이면
+    그날 끝(23:59:59 KST)으로 본다 — 요청: "날짜만 지정한 경우 다음 날로 넘어가면 자동
+    무응답 취소"(=응답 마감이 그날 끝). 날짜 자체가 없으면 None."""
+    if challenge.scheduled_date is None:
+        return None
+    t = challenge.scheduled_time if challenge.scheduled_time is not None else time(23, 59, 59)
+    return datetime.combine(challenge.scheduled_date, t, tzinfo=KST).astimezone(UTC).replace(tzinfo=None)
+
+
+def _scheduled_at_iso(challenge: "Challenge") -> datetime | None:
+    """프론트 정렬/그룹핑/카운트다운용 파생 일시(UTC aware). 시간이 미정이면 자정(00:00 KST)
+    으로 — 표시용 시각은 프론트가 scheduledTime(없으면 "시간 미정")으로 따로 처리하므로 여기
+    시각 성분은 정렬·날짜 그룹핑에만 쓰인다. 날짜가 없으면 None."""
+    if challenge.scheduled_date is None:
+        return None
+    t = challenge.scheduled_time if challenge.scheduled_time is not None else time(0, 0)
+    return datetime.combine(challenge.scheduled_date, t, tzinfo=KST).astimezone(UTC)
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -60,25 +85,19 @@ def _status_of(challenge: Challenge) -> str:
 # 응답이 없으면 무응답 거절(폐기)된다.
 def _response_deadline(challenge: Challenge) -> datetime:
     base = _to_utc_naive(challenge.created_at) + RESPONSE_EXPIRE
-    if challenge.scheduled_at is not None:
-        return min(base, _to_utc_naive(challenge.scheduled_at))
+    scheduled = _scheduled_dt(challenge)
+    if scheduled is not None:
+        return min(base, scheduled)
     return base
 
 
-def _stamp_schedule_on_end(challenge: Challenge) -> None:
-    """도전장이 폐기(거절/무응답/미실시)로 끝나는 순간, 예정 일시가 없으면 요청일+1일로
-    찍는다 — 휴지통에서도 날짜별로 묶여 보이도록. 이미 시간이 정해진 도전장은 실제 매치
-    시각이라 건드리지 않는다."""
-    if challenge.scheduled_at is None:
-        challenge.scheduled_at = challenge.created_at + RESPONSE_EXPIRE
-
-
 def _discard(challenge: Challenge, now: datetime) -> None:
-    """도전장을 폐기(휴지통)로 넘긴다 — discarded_at을 찍고, 날짜 그루핑용으로 예정 일시가
-    없으면 스탬프한다. 이미 폐기된 건 그대로 둔다(최초 폐기 시각을 보존)."""
+    """도전장을 폐기(휴지통)로 넘긴다 — discarded_at만 찍는다. 예정 일시는 건드리지 않는다
+    (요청: "거절/마감초과 거절/취소 시 시간·날짜 없는 상태로 유지, 제약 없이 다 열어두기")
+    — 예전엔 날짜 그루핑용으로 요청일+1일을 스탬프했지만, 이제 미정은 미정 그대로 둔다
+    (휴지통에서 '일정 미정' 그룹으로 묶인다). 이미 폐기된 건 최초 폐기 시각을 보존한다."""
     if challenge.discarded_at is None:
         challenge.discarded_at = now
-        _stamp_schedule_on_end(challenge)
 
 
 def _losing_side(challenge: Challenge) -> str | None:
@@ -94,7 +113,9 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
     targets = [p for p in challenge.participants if p.side == "target"]
     return ChallengeHistoryEntry(
         id=challenge.id,
-        scheduledAt=challenge.scheduled_at,
+        scheduledAt=_scheduled_at_iso(challenge),
+        scheduledDate=challenge.scheduled_date.isoformat() if challenge.scheduled_date else None,
+        scheduledTime=challenge.scheduled_time.strftime("%H:%M") if challenge.scheduled_time else None,
         status=_status_of(challenge),
         resultWinnerSide=challenge.result_winner_side,
         targets=[
@@ -121,9 +142,13 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         id=challenge.id,
         matchType=challenge.match_type,
         message=challenge.message,
-        scheduledAt=challenge.scheduled_at,
+        scheduledAt=_scheduled_at_iso(challenge),
+        scheduledDate=challenge.scheduled_date.isoformat() if challenge.scheduled_date else None,
+        scheduledTime=challenge.scheduled_time.strftime("%H:%M") if challenge.scheduled_time else None,
         status=_status_of(challenge),
-        createdBy=ChallengeAuthor(id=challenge.creator.id, nickname=challenge.creator.nickname, avatar=challenge.creator.avatar_url),
+        createdBy=ChallengeAuthor(
+            id=challenge.creator.id, nickname=challenge.creator.nickname, avatar=challenge.creator.avatar_url,
+        ),
         targets=[
             ChallengeTargetOut(
                 memberId=p.member.id,
@@ -265,7 +290,8 @@ class ChallengeService:
         challenge = Challenge(
             match_type=match_type,
             message=payload.message.strip(),
-            scheduled_at=payload.scheduled_at,
+            scheduled_date=payload.scheduled_date,
+            scheduled_time=payload.scheduled_time,
             from_match_request=payload.from_match_request,
             created_by=actor.pk,
             updated_by=actor.pk,
@@ -313,10 +339,11 @@ class ChallengeService:
             challenge = await self._repo.get(p.challenge_id)
             if challenge is None:
                 continue
+            scheduled = _scheduled_dt(challenge)
             if (
                 _status_of(challenge) == "confirmed"
-                and challenge.scheduled_at is not None
-                and _to_utc_naive(challenge.scheduled_at) < now
+                and scheduled is not None
+                and scheduled < now
                 and challenge.result_winner_side is None
             ):
                 p.result_notified = True
@@ -330,7 +357,8 @@ class ChallengeService:
         response: str,
         *,
         actor: Member,
-        scheduled_at: datetime | None = None,
+        scheduled_date: date | None = None,
+        scheduled_time: time | None = None,
         message: str = "",
     ) -> ChallengeOut:
         challenge = await self._repo.get(challenge_id)
@@ -345,20 +373,19 @@ class ChallengeService:
             raise ValidationError("이미 종료된 도전장입니다.")
         if target.response != "pending":
             raise ValidationError("이미 응답한 도전장입니다.")
-        # 시간 미정(scheduled_at=None) 도전장도 시간을 안 정한 채 그대로 수락할 수 있다(요청:
-        # "시간 미정 수락 가능하게 변경 — 완료 시점으로 입력됨"). 이때는 결과 입력(enter_result)
-        # 시점에 그 순간을 예정 일시로 기록한다. 수락하며 시간을 정하고 싶으면 scheduled_at을
-        # 넘길 수 있고, 그 경우 그 값으로 확정한다. 이미 시간이 정해진 도전장은 응답하는 쪽이
-        # 바꿀 수 없으므로 여기서 들어온 값은 무시한다.
-        if response == "accepted" and challenge.scheduled_at is None and scheduled_at is not None:
-            challenge.scheduled_at = scheduled_at
+        # 요청자가 일정(날짜)을 안 정하고 보냈으면, 수락하는 이 시점에 상대가 날짜/시간을 정할
+        # 수 있다 — 둘 다 선택이라 안 정한 채 수락도 가능하다(요청: "시간 null 가능", "날짜만
+        # 지정 가능"). 이미 요청자가 날짜를 정한 도전장은 응답하는 쪽이 바꿀 수 없으므로 무시한다.
+        # 날짜 없이 시간만 온 경우는 의미가 없어 시간도 버린다.
+        if response == "accepted" and challenge.scheduled_date is None and scheduled_date is not None:
+            challenge.scheduled_date = scheduled_date
+            challenge.scheduled_time = scheduled_time
             challenge.updated_by = actor.pk
         target.response = response
         target.response_message = message.strip()
         target.responded_at = datetime.now(UTC)
-        # 명시적 거절이든 버림(discarded)이든 그 즉시 도전장을 폐기
-        # (휴지통)로 넘긴다 — 팀전이라도 한 명이 거절/버리면 그 대결은 끝이다. discarded_at을
-        # 찍고 날짜 그루핑용 스탬프까지 한다.
+        # 명시적 거절이든 버림(discarded)이든 그 즉시 도전장을 폐기(휴지통)로 넘긴다 — 팀전이라도
+        # 한 명이 거절/버리면 그 대결은 끝이다. 예정 일시는 그대로 둔다(미정이면 미정 유지 — 요청).
         if response in ("rejected", "discarded"):
             _discard(challenge, datetime.now(UTC))
         await self._session.commit()
@@ -366,11 +393,12 @@ class ChallengeService:
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def reschedule(
-        self, challenge_id: int, scheduled_at: datetime, *, actor: Member,
+        self, challenge_id: int, *, scheduled_date: date | None, scheduled_time: time | None, actor: Member,
     ) -> ChallengeOut:
         """성사(진행중)된 대결의 예정 일시를 바꾼다(요청: "너나와 목록에서 진행중인건은
-        날짜와 시간 수정이 가능하게"). 참가자(도전자편/상대편 무관) 또는 운영자만 —
-        구경꾼이 남의 대결 시간을 바꿀 수는 없다."""
+        날짜와 시간 수정이 가능하게"). 날짜/시간 모두 선택이라 미정으로 되돌릴 수도 있다(요청:
+        "제약 없이 다 열어두기"). 참가자(도전자편/상대편 무관) 또는 운영자만 — 구경꾼이 남의
+        대결 시간을 바꿀 수는 없다. 날짜 없이 시간만은 의미가 없어 시간도 버린다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
@@ -379,34 +407,39 @@ class ChallengeService:
         is_participant = any(p.member_pk == actor.pk for p in challenge.participants)
         if not is_participant and not actor.has_any_role("0202"):
             raise ForbiddenError("참가자 또는 운영자만 일정을 수정할 수 있습니다.")
-        challenge.scheduled_at = scheduled_at
+        challenge.scheduled_date = scheduled_date
+        challenge.scheduled_time = scheduled_time if scheduled_date is not None else None
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def enter_result(
-        self, challenge_id: int, winner_side: str, *, actor: Member,
+        self,
+        challenge_id: int,
+        winner_side: str,
+        *,
+        actor: Member,
+        scheduled_date: date,
+        scheduled_time: time,
     ) -> ChallengeOut:
         """확정된 대결의 결과(이긴 쪽)를 입력 — 참가자 누구든 먼저 입력하는 쪽이 그대로
-        인정되고, 이미 입력된 뒤엔 다시 바꿀 수 없다(요청: "먼저 입력하는 쪽 인정")."""
+        인정되고, 이미 입력된 뒤엔 다시 바꿀 수 없다(요청: "먼저 입력하는 쪽 인정"). 결과
+        입력 시엔 실제 대결 날짜/시간을 무조건 함께 받아 확정한다(요청: "결과 입력시에는 날짜
+        시간 무조건 입력") — 그전까지 미정이었어도 이 시점에 실제 일시로 채워진다."""
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
         if _status_of(challenge) != "confirmed":
             raise ValidationError("확정된 대결만 결과를 입력할 수 있습니다.")
-        now = datetime.now(UTC)
-        if challenge.scheduled_at is None:
-            # 시간 미정으로 수락된 대결은 언제든 결과를 입력할 수 있고, 그 완료 시점을 예정
-            # 일시로 기록한다(요청: "시간 미정 수락 가능, 완료 시점으로 입력됨").
-            challenge.scheduled_at = now
-        elif _to_utc_naive(challenge.scheduled_at) > _to_utc_naive(now):
-            raise ValidationError("예정 일시가 지난 뒤에만 결과를 입력할 수 있습니다.")
         if not any(p.member_pk == actor.pk for p in challenge.participants):
             raise ForbiddenError("이 대결의 참가자만 결과를 입력할 수 있습니다.")
         if challenge.result_winner_side is not None:
             raise ValidationError("이미 결과가 입력됐습니다.")
 
+        # 결과와 함께 넘어온 실제 대결 날짜/시간으로 확정한다(둘 다 필수).
+        challenge.scheduled_date = scheduled_date
+        challenge.scheduled_time = scheduled_time
         challenge.result_winner_side = winner_side
         challenge.result_entered_by = actor.pk
         challenge.result_entered_at = datetime.now(UTC)
@@ -424,7 +457,8 @@ class ChallengeService:
         challenge_id: int,
         *,
         actor: Member,
-        scheduled_at: datetime | None = None,
+        scheduled_date: date | None = None,
+        scheduled_time: time | None = None,
         message: str = "",
     ) -> ChallengeOut:
         """결과가 입력된 확정 대결에서, 패배한 쪽 참가자가 같은 대진으로 설욕전을
@@ -449,7 +483,8 @@ class ChallengeService:
         winning_side = "creator" if losing_side == "target" else "target"
         new_challenge = Challenge(
             match_type=challenge.match_type,
-            scheduled_at=scheduled_at,
+            scheduled_date=scheduled_date,
+            scheduled_time=scheduled_time if scheduled_date is not None else None,
             message=message.strip(),
             created_by=actor.pk,
             updated_by=actor.pk,

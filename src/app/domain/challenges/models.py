@@ -1,13 +1,15 @@
-from datetime import datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     String,
     Text,
+    Time,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -33,8 +35,15 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 도전자가 호출 때 남기는 "한마디"(선택) — 카드에 함께 보여준다. 빈 문자열이면 없음.
     # (예전에 message/response_message '한마디' 개념을 지웠다가 호출 한마디만 다시 살렸다.)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # 미정이면 NULL.
-    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 예정 일정 — 날짜와 시간을 각각 독립적으로 NULL 가능하게 나눠 둔다(요청: "시간은 null
+    # 가능으로", "날짜만 정하고 시간은 나중에 결정하는 경우가 많다"). 둘 다 한국시간 벽시계값
+    # (naive)으로 저장한다 — 저장 시 tz 변환 없이 사용자가 고른 날짜/시간 그대로. 비교(마감/지남
+    # 판정)가 필요할 때만 service에서 KST→UTC로 환산한다.
+    #   - scheduled_date NULL           → 일정 전체 미정
+    #   - date O / scheduled_time NULL  → 날짜만 정함(시간 미정) — 그날이 지나면 무응답 취소
+    #   - date O / time O               → 날짜+시간 확정
+    scheduled_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    scheduled_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
     # 상대의 명시적 거절, 응답 마감(무응답 거절), 미실시(not_held) 결과 입력. 상태(_status_of)의
     # 유일한 폐기 판정 근거이자, 휴지통 7일 자동 비움(deleted_at 소프트삭제)의 기준 시각이다.
