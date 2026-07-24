@@ -123,7 +123,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         message=challenge.message,
         scheduledAt=challenge.scheduled_at,
         status=_status_of(challenge),
-        createdBy=ChallengeAuthor(id=challenge.creator.id, nickname=challenge.creator.nickname),
+        createdBy=ChallengeAuthor(id=challenge.creator.id, nickname=challenge.creator.nickname, avatar=challenge.creator.avatar_url),
         targets=[
             ChallengeTargetOut(
                 memberId=p.member.id,

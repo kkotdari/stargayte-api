@@ -21,6 +21,7 @@ ChallengeResult = Literal["creator", "target", "draw", "not_held"]
 class ChallengeAuthor(BaseModel):
     id: str
     nickname: str
+    avatar: str | None = None
 
 
 class ChallengeTargetOut(BaseModel):
