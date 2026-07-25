@@ -1,12 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.feed.models import FeedComment, FeedCommentMention
+from app.domain.feed.models import FeedComment, FeedCommentMention, RankShift
 from app.domain.feed.repository import FeedCommentRepository
 from app.domain.feed.schemas import (
     FeedCommentAuthor,
     FeedCommentMentionOut,
     FeedCommentOut,
+    RankShiftCreate,
+    RankShiftEntry,
+    RankShiftOut,
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
@@ -108,3 +111,36 @@ class FeedCommentService:
                 raise NotFoundError(f"존재하지 않는 회원입니다: {member_id}")
             members.append(m)
         return members
+
+
+def _to_shift_out(shift: RankShift) -> RankShiftOut:
+    return RankShiftOut(
+        id=shift.id,
+        matchType=shift.match_type,
+        createdAt=shift.created_at,
+        entries=[RankShiftEntry.model_validate(e) for e in shift.entries],
+    )
+
+
+class RankShiftService:
+    """랭킹 변동 이벤트 — 경기 결과 등록 시점의 변동분을 저장해 두고 피드에 그대로 내보낸다."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_recent(self, limit: int) -> list[RankShiftOut]:
+        from sqlalchemy import select
+
+        stmt = select(RankShift).order_by(RankShift.created_at.desc()).limit(limit)
+        shifts = list((await self._session.scalars(stmt)).all())
+        return [_to_shift_out(s) for s in shifts]
+
+    async def create(self, payload: RankShiftCreate) -> RankShiftOut:
+        shift = RankShift(
+            match_type=payload.match_type,
+            entries=[e.model_dump(by_alias=True) for e in payload.entries],
+        )
+        self._session.add(shift)
+        await self._session.commit()
+        await self._session.refresh(shift)
+        return _to_shift_out(shift)

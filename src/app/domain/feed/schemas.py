@@ -52,3 +52,28 @@ class FeedCommentWrite(BaseModel):
 class FeedCommentCreate(FeedCommentWrite):
     target_type: FeedTargetType = Field(alias="targetType")
     target_id: int = Field(alias="targetId")
+
+
+class RankShiftEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    member_id: str = Field(alias="memberId")
+    nickname: str
+    from_rank: int | None = Field(default=None, alias="from")
+    to_rank: int = Field(alias="to")
+
+
+class RankShiftOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    match_type: Literal["0101", "0102"] = Field(alias="matchType")
+    created_at: datetime = Field(alias="createdAt")
+    entries: list[RankShiftEntry]
+
+
+class RankShiftCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    match_type: Literal["0101", "0102"] = Field(alias="matchType")
+    entries: list[RankShiftEntry] = Field(min_length=1, max_length=200)

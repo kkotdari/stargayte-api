@@ -133,3 +133,30 @@ async def test_feed_comment_on_challenge_target(client):
     )
     assert res.status_code == 200
     assert [c["text"] for c in res.json()] == ["기대되는 매치"]
+
+
+async def test_rank_shift_store_and_list(client):
+    a = await _signup(client, "alice", "Alice#1001")
+
+    res = await client.post(
+        "/api/feed/rank-shifts",
+        headers=_h(a),
+        json={
+            "matchType": "0101",
+            "entries": [
+                {"memberId": "alice", "nickname": "앨리스", "from": None, "to": 1},
+                {"memberId": "bob", "nickname": "밥", "from": 1, "to": 2},
+            ],
+        },
+    )
+    assert res.status_code == 201, res.text
+    created = res.json()
+    assert created["matchType"] == "0101"
+    assert created["entries"][0]["to"] == 1
+    assert created["entries"][0]["from"] is None
+
+    res = await client.get("/api/feed/rank-shifts", headers=_h(a))
+    assert res.status_code == 200
+    items = res.json()
+    assert len(items) == 1
+    assert items[0]["entries"][1] == {"memberId": "bob", "nickname": "밥", "from": 1, "to": 2}

@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -48,3 +48,18 @@ class FeedCommentMention(Base):
 
     comment: Mapped[FeedComment] = relationship(back_populates="mentions")
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
+
+
+class RankShift(TimestampMixin, Base):
+    """경기 결과 등록으로 발생한 랭킹 변동 이벤트 — 피드에 영구 노출된다.
+
+    매번 다시 계산하지 않도록 등록 시점의 변동분(entries)을 그대로 저장한다.
+    entries: [{"memberId": str, "nickname": str, "from": int | None, "to": int}, ...]
+    (from=None 은 순위권 밖 → 신규 진입.)
+    """
+
+    __tablename__ = "rank_shifts"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    match_type: Mapped[str] = mapped_column(String(4), nullable=False)  # 0101=개인전, 0102=팀전
+    entries: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

@@ -6,8 +6,10 @@ from app.domain.feed.schemas import (
     FeedCommentOut,
     FeedCommentWrite,
     FeedTargetType,
+    RankShiftCreate,
+    RankShiftOut,
 )
-from app.domain.feed.service import FeedCommentService
+from app.domain.feed.service import FeedCommentService, RankShiftService
 
 router = APIRouter(prefix="/feed", tags=["feed"])
 
@@ -43,3 +45,17 @@ async def update_feed_comment(
 @router.delete("/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_feed_comment(comment_id: int, db: DbSession, current: CurrentMember) -> None:
     await FeedCommentService(db).delete(comment_id, actor=current)
+
+
+@router.get("/rank-shifts", response_model=list[RankShiftOut])
+async def list_rank_shifts(
+    db: DbSession, current: CurrentMember, limit: int = Query(default=100, le=500),
+) -> list[RankShiftOut]:
+    return await RankShiftService(db).list_recent(limit)
+
+
+@router.post("/rank-shifts", response_model=RankShiftOut, status_code=status.HTTP_201_CREATED)
+async def create_rank_shift(
+    payload: RankShiftCreate, db: DbSession, current: CurrentMember
+) -> RankShiftOut:
+    return await RankShiftService(db).create(payload)
