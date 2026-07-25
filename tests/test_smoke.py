@@ -337,36 +337,6 @@ async def test_avatar_replace_and_reprocess_produce_new_urls(client):
     assert reprocessed_url != second_url
 
 
-async def test_image_settings_get_default_and_admin_only_update(client):
-    admin = await _signup(client, "player01", "Shadow#1001")  # 첫 가입자 = 관리자
-    await _signup(client, "player02", "Mist#1002")
-    await _set_status(client, admin["accessToken"], "player02", "active")
-    member = (
-        await client.post("/api/auth/login", json={"id": "player02", "password": "pass1234"})
-    ).json()
-
-    default_res = await client.get(
-        "/api/settings/image-settings", headers={"Authorization": f"Bearer {admin['accessToken']}"}
-    )
-    assert default_res.status_code == 200
-    assert default_res.json()["테란"] == {"type": "text", "value": "T"}
-
-    forbidden = await client.put(
-        "/api/settings/image-settings",
-        headers={"Authorization": f"Bearer {member['accessToken']}"},
-        json={"테란": {"type": "text", "value": "T"}},
-    )
-    assert forbidden.status_code == 403
-
-    updated = await client.put(
-        "/api/settings/image-settings",
-        headers={"Authorization": f"Bearer {admin['accessToken']}"},
-        json={"테란": {"type": "text", "value": "⚔️"}},
-    )
-    assert updated.status_code == 200
-    assert updated.json()["테란"]["value"] == "⚔️"
-
-
 async def _create_match(client, token: str) -> dict:
     res = await client.post(
         "/api/matches",

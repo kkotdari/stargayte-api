@@ -9,13 +9,11 @@ from app.domain.leagues.router import router as leagues_router
 from app.domain.match_requests.router import router as match_requests_router
 from app.domain.matches.router import router as matches_router
 from app.domain.members.router import router as members_router
-from app.domain.settings.router import router as settings_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(members_router)
 api_router.include_router(matches_router)
-api_router.include_router(settings_router)
 api_router.include_router(app_version_router)
 api_router.include_router(app_versions_router)
 api_router.include_router(challenges_router)
