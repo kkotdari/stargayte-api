@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -20,8 +21,34 @@ from app.core.logging import configure_logging
 configure_logging()
 
 
+async def _ensure_schema() -> None:
+    """스키마가 없으면 생성한다 — 마이그레이션 없이 create_all 하나로 관리.
+
+    기존 DB(테이블이 이미 있는 경우)에는 아무 것도 하지 않으므로 데이터가 보존된다.
+    """
+    # 모든 도메인 모델을 임포트해 Base.metadata에 테이블을 등록한다.
+    from app.db.base import Base
+    from app.db.session import engine
+    from app.domain.app_version import models as _app_version_models  # noqa: F401
+    from app.domain.auth import models as _auth_models  # noqa: F401
+    from app.domain.challenges import models as _challenges_models  # noqa: F401
+    from app.domain.env_vars import models as _env_vars_models  # noqa: F401
+    from app.domain.match_requests import models as _match_requests_models  # noqa: F401
+    from app.domain.matches import models as _matches_models  # noqa: F401
+    from app.domain.members import models as _members_models  # noqa: F401
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    await _ensure_schema()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name, debug=settings.debug)
+    app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=_lifespan)
 
     app.add_middleware(
         CORSMiddleware,
