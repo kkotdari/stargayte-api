@@ -361,7 +361,11 @@ def _replay_ratings(
         is_decisive = mm["result"] in ("team1", "team2")
         winners = set(mm[mm["result"]]) if is_decisive else set()
         for p in participants:
-            raw = engine.get(p).conservative - pre[p]
+            # ×10 스케일(요청) — 화면에 노출되는 모든 점수(카드 점수 running, 상세 경기당
+            # Δ)를 여기 한 곳에서 10배로 키워 내려준다. 프론트는 이 값을 자연수로 반올림해
+            # 보여주므로, 원래 소수 첫째자리에 있던 정보가 정수부에 보존된다. engine의
+            # μ/σ 자체는 순수 TrueSkill 원 스케일 그대로다(내부 갱신용).
+            raw = (engine.get(p).conservative - pre[p]) * 10
             if is_decisive:
                 raw = max(raw, 0.0) if p in winners else min(raw, 0.0)
             running[p] += raw
@@ -743,9 +747,9 @@ class MatchService:
         # 동안은 표시 점수가 크게 못 오른다). 종족 필터 시 overall.plays는 이미 그 종족
         # 기준이라(get_stats), 0경기(그 종족 미플레이) 회원은 아래 _played 게이트로
         # 지금처럼 공동 최하위로 내려간다(요청).
-        # 점수 스케일 ×10(요청) — 프론트는 이 값을 자연수로 반올림해 보여주므로, 원래
-        # 소수 첫째자리에 있던 정보가 10배 스케일에서 정수부로 올라와 그대로 보존된다.
-        score = {m.pk: round(running.get(_rk(m.pk), 0.0) * 10, 1) for _, m in pairs}
+        # running은 _replay_ratings에서 이미 ×10 스케일(요청)이다 — 상세의 경기당 Δ와
+        # 같은 곳에서 스케일돼 "Δ의 합 = 카드 점수"가 스케일 후에도 정확히 유지된다.
+        score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
 
         # 참가 우선 — 이 기간에 1경기라도 뛴 사람(plays>0)은 레이팅이 아무리 낮아도 0경기
         # 회원보다 무조건 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
