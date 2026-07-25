@@ -33,12 +33,46 @@ async def _ensure_schema() -> None:
     from app.domain.auth import models as _auth_models  # noqa: F401
     from app.domain.challenges import models as _challenges_models  # noqa: F401
     from app.domain.env_vars import models as _env_vars_models  # noqa: F401
+    from app.domain.feed import models as _feed_models  # noqa: F401
     from app.domain.match_requests import models as _match_requests_models  # noqa: F401
     from app.domain.matches import models as _matches_models  # noqa: F401
     from app.domain.members import models as _members_models  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_match_notes(conn)
+
+
+async def _migrate_match_notes(conn) -> None:
+    """기존 경기 댓글(match_notes)을 일반화된 피드 댓글(feed_comments)로 1회 이관.
+
+    feed_comments가 비어 있고 match_notes에 데이터가 있을 때만 복사한다(멱등).
+    id를 그대로 보존해 언급(mentions) 매핑도 함께 옮긴다.
+    """
+    from sqlalchemy import text
+
+    existing = await conn.scalar(text("SELECT COUNT(*) FROM feed_comments"))
+    if existing and existing > 0:
+        return
+    legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes"))
+    if not legacy:
+        return
+    await conn.execute(text(
+        "INSERT INTO feed_comments (id, target_type, target_id, text, created_at, updated_at, created_by, updated_by) "
+        "SELECT id, 'match', match_id, text, created_at, updated_at, created_by, updated_by FROM match_notes"
+    ))
+    await conn.execute(text(
+        "INSERT INTO feed_comment_mentions (comment_id, member_pk) "
+        "SELECT note_id, member_pk FROM match_note_mentions"
+    ))
+    if conn.dialect.name == "postgresql":
+        await conn.execute(text(
+            "SELECT setval(pg_get_serial_sequence('feed_comments', 'id'), (SELECT MAX(id) FROM feed_comments))"
+        ))
+        await conn.execute(text(
+            "SELECT setval(pg_get_serial_sequence('feed_comment_mentions', 'id'), "
+            "(SELECT COALESCE(MAX(id), 1) FROM feed_comment_mentions))"
+        ))
 
 
 @asynccontextmanager

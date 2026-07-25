@@ -5,6 +5,7 @@ from app.domain.app_version.router import router as app_version_router
 from app.domain.auth.router import router as auth_router
 from app.domain.challenges.router import router as challenges_router
 from app.domain.env_vars.router import router as env_vars_router
+from app.domain.feed.router import router as feed_router
 from app.domain.leagues.router import router as leagues_router
 from app.domain.match_requests.router import router as match_requests_router
 from app.domain.matches.router import router as matches_router
@@ -19,4 +20,5 @@ api_router.include_router(app_versions_router)
 api_router.include_router(challenges_router)
 api_router.include_router(match_requests_router)
 api_router.include_router(env_vars_router)
+api_router.include_router(feed_router)
 api_router.include_router(leagues_router)
