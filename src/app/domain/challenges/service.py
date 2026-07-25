@@ -184,6 +184,26 @@ class ChallengeService:
         self._repo = ChallengeRepository(session)
         self._member_repo = MemberRepository(session)
 
+    async def delete(self, challenge_id: int) -> None:
+        """운영자 전용 완전 삭제 — 도전장과 그에 달린 피드 댓글을 지운다."""
+        from sqlalchemy import delete as sa_delete, select
+
+        from app.domain.challenges.models import Challenge as ChallengeModel
+        from app.domain.feed.models import FeedComment
+
+        challenge = await self._session.scalar(
+            select(ChallengeModel).where(ChallengeModel.id == challenge_id)
+        )
+        if challenge is None:
+            raise NotFoundError("너 나와!를 찾을 수 없어요.")
+        await self._session.execute(
+            sa_delete(FeedComment).where(
+                FeedComment.target_type == "challenge", FeedComment.target_id == challenge_id
+            )
+        )
+        await self._session.delete(challenge)
+        await self._session.commit()
+
     # 재대결 체인(reapplied_from_id를 따라 올라가는 사슬)에서 이 도전장보다 앞선 기록을
     # 오래된 순으로 모은다 — 단일 도전장 하나만 다루는 엔드포인트(respond/result/revenge)
     # 에서 쓴다. 체인은 실제로는 몇 단계 안 넘을 것으로 보고, 매번 get()으로 한 단계씩

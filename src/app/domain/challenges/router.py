@@ -1,6 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, status
 
-from app.api.deps import CurrentMember, DbSession
+from app.api.deps import CurrentAdmin, CurrentMember, DbSession
 from app.domain.challenges.schemas import (
     ChallengeCreate,
     ChallengeListOut,
@@ -81,3 +81,9 @@ async def revenge_challenge(
         challenge_id, actor=current, scheduled_date=payload.scheduled_date,
         scheduled_time=payload.scheduled_time, message=payload.message,
     )
+
+
+@router.delete("/{challenge_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_challenge(challenge_id: int, db: DbSession, admin: CurrentAdmin) -> None:
+    """너 나와! 완전 삭제 — 운영자 전용. 달린 피드 댓글도 함께 지운다."""
+    await ChallengeService(db).delete(challenge_id)

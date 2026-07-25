@@ -160,3 +160,34 @@ async def test_rank_shift_store_and_list(client):
     items = res.json()
     assert len(items) == 1
     assert items[0]["entries"][1] == {"memberId": "bob", "nickname": "밥", "from": 1, "to": 2}
+
+
+async def test_challenge_delete_admin_only(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges",
+        headers=_h(a),
+        json={"targetMemberIds": ["bob"], "matchType": "0101", "message": ""},
+    )
+    cid = res.json()["id"]
+
+    # 일반 회원은 삭제 불가.
+    res = await client.delete(f"/api/challenges/{cid}", headers=_h(b))
+    assert res.status_code == 403
+
+    # 운영자(첫 가입자)는 삭제 가능 — 달린 피드 댓글도 함께 사라진다.
+    await client.post(
+        "/api/feed/comments",
+        headers=_h(b),
+        json={"targetType": "challenge", "targetId": cid, "text": "곧 사라질 댓글"},
+    )
+    res = await client.delete(f"/api/challenges/{cid}", headers=_h(a))
+    assert res.status_code == 204
+    res = await client.get(
+        "/api/feed/comments", headers=_h(a),
+        params={"targetType": "challenge", "targetId": cid},
+    )
+    assert res.json() == []
