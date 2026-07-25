@@ -135,31 +135,57 @@ async def test_feed_comment_on_challenge_target(client):
     assert [c["text"] for c in res.json()] == ["기대되는 매치"]
 
 
-async def test_rank_shift_store_and_list(client):
-    a = await _signup(client, "alice", "Alice#1001")
+async def _register_match_today(client, headers: dict, *, result: str = "team1") -> dict:
+    """스냅샷은 '이번 달(KST)' 성적으로 계산되므로 오늘 날짜로 등록한다."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
 
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     res = await client.post(
-        "/api/feed/rank-shifts",
-        headers=_h(a),
+        "/api/matches",
+        headers=headers,
         json={
+            "date": today,
+            "team1": [{"memberId": "alice", "race": "테란"}],
+            "team2": [{"memberId": "bob", "race": "저그"}],
+            "result": result,
             "matchType": "0101",
-            "entries": [
-                {"memberId": "alice", "nickname": "앨리스", "from": None, "to": 1},
-                {"memberId": "bob", "nickname": "밥", "from": 1, "to": 2},
-            ],
         },
     )
-    assert res.status_code == 201, res.text
-    created = res.json()
-    assert created["matchType"] == "0101"
-    assert created["entries"][0]["to"] == 1
-    assert created["entries"][0]["from"] is None
+    assert res.status_code == 200, res.text
+    return res.json()
 
-    res = await client.get("/api/feed/rank-shifts", headers=_h(a))
+
+async def test_rank_snapshot_on_register_and_batch_merge(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    # 첫 등록 — 두 명 모두 신규 진입 변동이 스냅샷으로 남는다(서버가 자동 계산·저장).
+    m1 = await _register_match_today(client, _h(a))
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    assert res.status_code == 200, res.text
+    events = res.json()
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["matchType"] == "0101"
+    assert ev["reason"] == "register"
+    assert m1["id"] in ev["matchIds"]
+    assert all(s["from"] is None for s in ev["shifts"])  # 전원 신규 진입
+    assert [s["to"] for s in ev["shifts"]] == sorted(s["to"] for s in ev["shifts"])
+
+    # 연속 등록(배치) — 시간창 안이라 별도 이벤트가 아니라 기존 이벤트에 합쳐진다.
+    m2 = await _register_match_today(client, _h(a))
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    events = res.json()
+    assert len(events) == 1
+    assert set(events[0]["matchIds"]) >= {m1["id"], m2["id"]}
+
+    # 삭제 훅도 본 작업을 막지 않고 정상 동작한다(운영자 삭제).
+    res = await client.delete(f"/api/matches/{m2['id']}", headers=_h(a))
+    assert res.status_code == 204, res.text
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
     assert res.status_code == 200
-    items = res.json()
-    assert len(items) == 1
-    assert items[0]["entries"][1] == {"memberId": "bob", "nickname": "밥", "from": 1, "to": 2}
 
 
 async def test_challenge_delete_admin_only(client):

@@ -50,16 +50,22 @@ class FeedCommentMention(Base):
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
 
 
-class RankShift(TimestampMixin, Base):
-    """경기 결과 등록으로 발생한 랭킹 변동 이벤트 — 피드에 영구 노출된다.
+class RankSnapshot(TimestampMixin, Base):
+    """경기 등록/삭제 시점의 포인트·순위 스냅샷 — 매번 다시 계산하지 않도록 저장해 둔다.
 
-    매번 다시 계산하지 않도록 등록 시점의 변동분(entries)을 그대로 저장한다.
-    entries: [{"memberId": str, "nickname": str, "from": int | None, "to": int}, ...]
-    (from=None 은 순위권 밖 → 신규 진입.)
+    한 이벤트(배치 등록/삭제)당 경기유형별로 한 행. 직전 스냅샷과 비교한 변동분(shifts)이
+    비어 있지 않은 행만 피드에 노출된다(빈 행은 다음 비교의 기준으로만 쓰인다).
+    - standings: [{"memberId", "nickname", "points", "rank"}, ...] (그 시점 전체 순위표)
+    - shifts:    [{"memberId", "nickname", "from", "to"}, ...] (from=None 은 신규 진입)
+    - match_ids: 이 이벤트를 만든 경기 id들(배치면 여러 개, 전체 삭제면 빈 배열)
+    - reason:    "register" | "delete" | "seed"(부팅 시 최초 기준 적재)
     """
 
-    __tablename__ = "rank_shifts"
+    __tablename__ = "rank_snapshots"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
-    match_type: Mapped[str] = mapped_column(String(4), nullable=False)  # 0101=개인전, 0102=팀전
-    entries: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    match_type: Mapped[str] = mapped_column(String(4), nullable=False, index=True)  # 0101=개인전, 0102=팀전
+    reason: Mapped[str] = mapped_column(String(10), nullable=False, default="register")
+    match_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    standings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    shifts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

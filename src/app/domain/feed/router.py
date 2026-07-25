@@ -6,10 +6,9 @@ from app.domain.feed.schemas import (
     FeedCommentOut,
     FeedCommentWrite,
     FeedTargetType,
-    RankShiftCreate,
-    RankShiftOut,
+    RankSnapshotOut,
 )
-from app.domain.feed.service import FeedCommentService, RankShiftService
+from app.domain.feed.service import FeedCommentService, RankSnapshotService
 
 router = APIRouter(prefix="/feed", tags=["feed"])
 
@@ -47,15 +46,10 @@ async def delete_feed_comment(comment_id: int, db: DbSession, current: CurrentMe
     await FeedCommentService(db).delete(comment_id, actor=current)
 
 
-@router.get("/rank-shifts", response_model=list[RankShiftOut])
-async def list_rank_shifts(
+# 랭크 변동 이벤트 — 서버가 경기 등록/삭제 때마다 계산·저장한 스냅샷 중 실제 변동이
+# 있었던 것만 내려준다(피드 카드용). 저장은 서버 내부(matches 서비스 훅)에서만 일어난다.
+@router.get("/rank-snapshots", response_model=list[RankSnapshotOut])
+async def list_rank_snapshots(
     db: DbSession, current: CurrentMember, limit: int = Query(default=100, le=500),
-) -> list[RankShiftOut]:
-    return await RankShiftService(db).list_recent(limit)
-
-
-@router.post("/rank-shifts", response_model=RankShiftOut, status_code=status.HTTP_201_CREATED)
-async def create_rank_shift(
-    payload: RankShiftCreate, db: DbSession, current: CurrentMember
-) -> RankShiftOut:
-    return await RankShiftService(db).create(payload)
+) -> list[RankSnapshotOut]:
+    return await RankSnapshotService(db).list_events(limit)

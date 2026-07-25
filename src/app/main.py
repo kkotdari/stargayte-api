@@ -39,8 +39,42 @@ async def _ensure_schema() -> None:
     from app.domain.members import models as _members_models  # noqa: F401
 
     async with engine.begin() as conn:
+        # 랭킹변동(rank_shifts)은 스냅샷(rank_snapshots) 방식으로 대체됐다 — 옛 테이블은
+        # 쌓인 데이터까지 함께 버린다(요청: 기존 랭킹변동 저장 테이블 드롭).
+        from sqlalchemy import text
+        await conn.execute(text("DROP TABLE IF EXISTS rank_shifts"))
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
+    await _seed_rank_snapshots()
+
+
+async def _seed_rank_snapshots() -> None:
+    """rank_snapshots가 비어 있으면 현재 포인트·순위표를 기준선으로 1회 적재(멱등).
+
+    다음 경기 등록/삭제가 이 기준선과 비교해 변동분을 만든다(요청: "최초 현 데이터
+    쌓아주기"). 실패해도 부팅은 막지 않는다 — 첫 이벤트 때 기준 없이 전원 신규로 잡히는
+    것 이상의 문제는 없다.
+    """
+    import logging
+
+    from app.db.session import AsyncSessionLocal
+    from app.domain.feed.service import RankSnapshotService
+    from app.domain.matches.service import MatchService
+    from app.storage import get_storage
+
+    try:
+        async with AsyncSessionLocal() as session:
+            match_service = MatchService(session, get_storage())
+
+            async def compute_entries(match_type: str, date_from: str, date_to: str):
+                return await match_service.get_stats(
+                    member_ids=None, date_from=date_from, date_to=date_to,
+                    match_type=match_type, race=None,
+                )
+
+            await RankSnapshotService(session).seed_if_empty(compute_entries)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("랭크 스냅샷 기준선 적재 실패")
 
 
 async def _migrate_match_notes(conn) -> None:

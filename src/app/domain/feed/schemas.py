@@ -55,6 +55,8 @@ class FeedCommentCreate(FeedCommentWrite):
 
 
 class RankShiftEntry(BaseModel):
+    """스냅샷 간 순위 변동 하나 — from=None 은 신규 진입."""
+
     model_config = ConfigDict(populate_by_name=True)
 
     member_id: str = Field(alias="memberId")
@@ -63,17 +65,23 @@ class RankShiftEntry(BaseModel):
     to_rank: int = Field(alias="to")
 
 
-class RankShiftOut(BaseModel):
+class RankStandingEntry(BaseModel):
+    """스냅샷 순위표 한 줄 — 그 시점의 포인트(표시 스케일 반올림)와 순위."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    member_id: str = Field(alias="memberId")
+    nickname: str
+    points: int
+    rank: int
+
+
+class RankSnapshotOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
     match_type: Literal["0101", "0102"] = Field(alias="matchType")
+    reason: str
     created_at: datetime = Field(alias="createdAt")
-    entries: list[RankShiftEntry]
-
-
-class RankShiftCreate(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    match_type: Literal["0101", "0102"] = Field(alias="matchType")
-    entries: list[RankShiftEntry] = Field(min_length=1, max_length=200)
+    match_ids: list[int] = Field(alias="matchIds")
+    shifts: list[RankShiftEntry]
