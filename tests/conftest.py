@@ -26,7 +26,6 @@ from app.domain.leagues import models as _leagues_models  # noqa: F401
 from app.domain.match_requests import models as _match_requests_models  # noqa: F401
 from app.domain.matches import models as _matches_models  # noqa: F401
 from app.domain.members import models as _members_models  # noqa: F401
-from app.domain.settings import models as _settings_models  # noqa: F401
 
 
 @pytest_asyncio.fixture(autouse=True)

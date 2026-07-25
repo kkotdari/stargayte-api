@@ -17,7 +17,6 @@ from app.domain.env_vars import models as env_vars_models  # noqa: F401
 from app.domain.match_requests import models as match_requests_models  # noqa: F401
 from app.domain.matches import models as matches_models  # noqa: F401
 from app.domain.members import models as members_models  # noqa: F401
-from app.domain.settings import models as settings_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
