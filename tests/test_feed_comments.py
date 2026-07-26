@@ -188,6 +188,38 @@ async def test_rank_snapshot_on_register_and_batch_merge(client):
     assert res.status_code == 200
 
 
+async def test_feed_comment_on_rankshift_target(client):
+    """순위변동 알림 카드에도 같은 댓글 API가 그대로 붙는다(요청)."""
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    await _register_match_today(client, _h(a))
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    assert res.status_code == 200, res.text
+    snap_id = res.json()[0]["id"]
+
+    res = await client.post(
+        "/api/feed/comments",
+        headers=_h(a),
+        json={
+            "targetType": "rankshift", "targetId": snap_id,
+            "text": "@Bob#1002 축하!", "targetMemberIds": ["bob"],
+        },
+    )
+    assert res.status_code == 201, res.text
+    created = res.json()
+    assert created["targetType"] == "rankshift"
+
+    res = await client.get(
+        f"/api/feed/comments?targetType=rankshift&targetId={snap_id}", headers=_h(a)
+    )
+    assert res.status_code == 200, res.text
+    listed = res.json()
+    assert [c["id"] for c in listed] == [created["id"]]
+    assert listed[0]["mentions"][0]["memberId"] == "bob"
+
+
 async def test_challenge_delete_admin_only(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")

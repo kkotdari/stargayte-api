@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 피드 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
-FeedTargetType = Literal["match", "challenge"]
+FeedTargetType = Literal["match", "challenge", "rankshift"]
 
 
 class FeedCommentAuthor(BaseModel):
