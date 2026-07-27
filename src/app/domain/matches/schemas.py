@@ -84,6 +84,8 @@ class MatchReplayMerge(BaseModel):
     result: MatchResult | None = None  # None = 기존 승패 유지(리플레이가 못 가림)
     map_name: str | None = Field(default=None, alias="mapName")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
+    # 리플레이를 다시 올리면 요약도 다시 계산된 값으로 덮어쓴다(요청: 배치 업로드에서 갱신).
+    summary: str | None = None
     players: list[MatchReplayMergeSlot]
 
 
@@ -136,6 +138,8 @@ class MatchWrite(BaseModel):
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
+    # 리플레이에서 규칙으로 뽑은 경기 요약 — 사람이 쓴 글이 아니라 파생 데이터다.
+    summary: str | None = None
 
     @model_validator(mode="after")
     def _normalize(self) -> "MatchWrite":
@@ -206,6 +210,7 @@ class MatchOut(BaseModel):
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
+    summary: str | None = None
     # 이 경기에 달린 댓글(메모) — 목록 응답에 함께 실어 클라이언트가 펼침 시 바로 렌더하고
     # 검색창에서 댓글 내용으로도 필터할 수 있게 한다(요청). 오래된 순.
     notes: list[MatchNoteOut] = Field(default_factory=list)

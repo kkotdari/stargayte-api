@@ -45,8 +45,28 @@ async def _ensure_schema() -> None:
         await conn.execute(text("DROP TABLE IF EXISTS rank_shifts"))
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
+        await _add_match_result_summary(conn)
         await _drop_access_screen_code_check(conn)
     await _seed_rank_snapshots()
+
+
+async def _add_match_result_summary(conn: object) -> None:
+    """match_results.summary 컬럼을 더한다(멱등).
+
+    스키마를 create_all로만 관리해(마이그레이션 없음) 이미 있는 테이블에는 새 컬럼이
+    반영되지 않는다 — build_count 때와 같은 이유로 여기서 직접 ALTER 한다. IF NOT EXISTS는
+    PostgreSQL/SQLite(3.35+) 모두 지원하고, 안 되는 환경이면 조용히 넘어간다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE match_results ADD COLUMN IF NOT EXISTS summary TEXT")
+        )
+    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("match_results.summary 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:

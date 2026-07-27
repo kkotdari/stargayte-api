@@ -119,6 +119,54 @@ async def test_replay_filename_new_format_and_merge_updates_it(client):
     )
 
 
+async def test_summary_is_stored_and_backfilled_by_merge(client):
+    """리플레이에서 만든 전황 요약이 등록 때 저장되고, 요약이 없던 예전 경기도 리플레이를
+    다시 올리면(머지) 채워진다(요청: "일단 요약 등록", "배치 업로드에서 갱신")."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    def body(gsa: str, summary: str | None) -> dict:
+        return {
+            "date": "2026-07-01",
+            "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01"}],
+            "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02"}],
+            "result": "team1", "gameStartedAt": gsa, "summary": summary,
+        }
+
+    # 등록 때 요약이 그대로 저장된다.
+    with_sum = "player01이 마린과 탱크 조합으로 승리. player02는 저글링으로 맞섰지만 역부족"
+    a = await client.post("/api/matches", headers=headers,
+                          json=body("2026-07-01T03:00:00+00:00", with_sum))
+    assert a.status_code == 200, a.text
+    assert a.json()["summary"] == with_sum
+
+    # 요약 없이 등록된 예전 경기.
+    gsa = "2026-07-01T04:00:00+00:00"
+    b = await client.post("/api/matches", headers=headers, json=body(gsa, None))
+    assert b.status_code == 200, b.text
+    old_id = b.json()["id"]
+    assert b.json()["summary"] is None
+
+    # 리플레이 재등록(머지)으로 요약만 백필된다.
+    backfilled = "player01이 후반 배틀크루저로 승리"
+    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+        "gameStartedAt": gsa, "result": None, "summary": backfilled, "players": [],
+    })
+    assert merge.status_code == 200, merge.text
+    assert merge.json()["merged"] is True
+    got = (await client.get(f"/api/matches/{old_id}", headers=headers)).json()
+    assert got["summary"] == backfilled
+
+    # 요약을 못 만든 머지(summary=None)는 기존 문장을 지우지 않는다.
+    again = await client.post("/api/matches/merge-replay", headers=headers, json={
+        "gameStartedAt": gsa, "result": None, "summary": None, "players": [],
+    })
+    assert again.status_code == 200, again.text
+    got2 = (await client.get(f"/api/matches/{old_id}", headers=headers)).json()
+    assert got2["summary"] == backfilled
+
+
 async def test_merge_no_matching_game_returns_false(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}

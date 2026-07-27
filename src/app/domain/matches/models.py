@@ -133,6 +133,10 @@ class MatchResult(Base):
     map_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     game_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 리플레이 커맨드 스트림에서 규칙으로 뽑아낸 경기 요약 문장(프론트 replaySummary.ts).
+    # 사람이 쓴 글이 아니라 파생 데이터라, 리플레이를 다시 올리면 그대로 덮어쓴다.
+    # 재료가 모자라면 아예 만들지 않으므로 NULL이 정상이다(수동 등록 경기도 NULL).
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
