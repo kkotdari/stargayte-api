@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.security import (
     create_access_token,
@@ -43,7 +44,11 @@ class AuthService:
         if member is None or not verify_password(password, member.password_hash):
             raise UnauthorizedError("아이디 또는 비밀번호가 올바르지 않습니다.")
         ensure_member_usable(member)
-        await self.record_access(member, ip_address=ip_address, user_agent=user_agent)
+        # 화면 이동이 아닌 로그인 자체도 "login" 코드로 남긴다(요청) — 예전엔 NULL이라
+        # 접속 기록 목록에서 화면 칸이 비어 무슨 행인지 구분이 안 됐다.
+        await self.record_access(
+            member, ip_address=ip_address, user_agent=user_agent, screen_code="login",
+        )
         refresh_token = await self._issue_refresh_token(member)
         return member, create_access_token(str(member.pk)), refresh_token
 
@@ -99,7 +104,12 @@ class AuthService:
         코드로) 양쪽에서 공유하는 접속 기록. "같은 세션이면 한 행"이 아니라 화면별로 구분해서
         남기는 게 목적이라, 중복 판단은 member_pk뿐 아니라 screen_code까지 함께 봐서 같은
         화면을 짧은 시간 안에 또 조회한 경우만(=진짜 중복) 새 행 대신 그 행의 시각/IP/기기
-        정보를 갱신한다 — 다른 화면으로 넘어가면 항상 새 행이 생긴다."""
+        정보를 갱신한다 — 다른 화면으로 넘어가면 항상 새 행이 생긴다.
+
+        운영(production)에서만 쌓는다(요청) — 로컬 개발은 화면을 옮길 때마다 행이 쌓여
+        실제 접속 이력을 덮어버리고, 개발자 한 명의 기록이라 분석 가치도 없다."""
+        if get_settings().environment != "production":
+            return
         now = datetime.now(UTC)
         stmt = (
             select(AccessHistory)

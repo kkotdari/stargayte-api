@@ -11,14 +11,19 @@ from app.domain.members.schemas import MemberOut
 # 나와!)/gameId(게임아이디)는 나중에 추가된 실제 화면인데 여기 누락돼 있었다 — 그 값으로
 # 오는 pingAccess가 검증 단계(422)에서 그대로 막혀 조용히 기록이 안 됐다(요청: "접속
 # 이력 남길때 새 메뉴인 너 나와의 코드가 안들어가는거 같음").
+# 지금 실제로 존재하는 화면(프론트 types/index.ts의 ScreenKey)만 남긴다(요청: "feed
+# stats user league 이런거 남은거만 사용하게 정리"). 지금까지는 없어진 화면 코드
+# (ranking·official·imageSettings·menuPermissions·userMapping·accessHistory·gameId)가
+# 계속 남아 있는 반면 정작 홈인 feed가 빠져 있어, 피드 진입 핑이 422로 조용히 막혔다.
+# 여기 목록이 유일한 기준이다 — 화면이 늘면 프론트 ScreenKey와 함께 이 줄만 고친다
+# (예전엔 DB CHECK 제약이 같은 목록을 이중으로 들고 있었는데, 스키마를 create_all로만
+# 관리해 기존 DB의 제약이 갱신되지 않아 새 화면마다 조용히 막히는 사고가 반복됐다 —
+# models.py에서 제약을 걷어내고 검증은 이 한 곳으로 모았다).
 ScreenCode = Literal[
-    "ranking", "match", "official", "stats", "members", "accessHistory",
-    "imageSettings", "menuPermissions", "userMapping", "challenge", "gameId",
-    # 리그 화면 — 프론트 ScreenKey에 추가된 뒤 여기 누락돼 리그 진입 핑이 422로 막혔다
-    # (지적된 버그, challenge/gameId 때와 같은 유형).
-    "leagues",
-    # 유저 상성 맵(운영 메뉴) 화면.
-    "rivalry",
+    "feed", "match", "challenge", "stats", "members", "leagues", "rivalry",
+    # 화면 이동이 아니라 로그인 자체 — 예전엔 NULL로 남겼는데 목록에서 구분이 안 돼
+    # 명시적인 코드로 남긴다(요청: "단순 로그인도 login 으로").
+    "login",
 ]
 
 
@@ -70,7 +75,7 @@ class AccessPingRequest(BaseModel):
 
 
 class AccessHistoryEntry(BaseModel):
-    """관리자 전용 접속 기록 한 건. /auth/login(screen=NULL)과, 화면을 전환할 때마다 오는
+    """관리자 전용 접속 기록 한 건. /auth/login(screen="login")과, 화면을 전환할 때마다 오는
     /auth/access-ping(해당 화면 코드) 양쪽에서 기록된다. 같은 사람이 같은 화면을 짧은 시간
     안에 다시 조회하면 새 행 대신 그 행의 시각만 갱신한다(AuthService.record_access 참고).
     IP/기기 정보는 개인정보라 관리 화면에 노출하지 않으므로 이 응답에도 포함하지 않는다."""
@@ -81,4 +86,7 @@ class AccessHistoryEntry(BaseModel):
     member_id: str = Field(alias="memberId")
     member_nickname: str = Field(alias="memberNickname")
     logged_in_at: datetime = Field(alias="loggedInAt")
-    screen_code: ScreenCode | None = Field(alias="screenCode")
+    # 입력(ScreenCode)과 달리 출력은 느슨한 str — 이미 쌓인 옛 화면 코드(ranking·official·
+    # gameId 등)와 로그인 NULL 행이 그대로 남아 있어서, 현재 목록으로 좁히면 조회가
+    # 응답 검증에서 통째로 500이 난다.
+    screen_code: str | None = Field(alias="screenCode")

@@ -45,7 +45,29 @@ async def _ensure_schema() -> None:
         await conn.execute(text("DROP TABLE IF EXISTS rank_shifts"))
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
+        await _drop_access_screen_code_check(conn)
     await _seed_rank_snapshots()
+
+
+async def _drop_access_screen_code_check(conn: object) -> None:
+    """access_history의 낡은 화면코드 CHECK 제약을 떼어낸다(멱등).
+
+    이 제약은 테이블이 처음 만들어질 때의 화면 목록으로 굳어 있는데, 스키마를 create_all로만
+    관리해(마이그레이션 없음) 코드에서 목록을 고쳐도 기존 DB에는 영원히 반영되지 않았다 —
+    그래서 새 화면(feed 등)의 접속 기록이 INSERT 단계에서 조용히 터졌다. 검증은 API 계층
+    (schemas.ScreenCode)이 하므로 제약 자체를 없앤다. SQLite는 제약 삭제를 지원하지 않지만
+    로컬/테스트는 새 DB로 만들어지면 이 제약이 아예 안 생기므로 문제되지 않는다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE access_history DROP CONSTRAINT IF EXISTS ck_access_history_screen_code")
+        )
+    except Exception:  # noqa: BLE001 — SQLite 등 미지원 DB는 그냥 넘어간다.
+        logging.getLogger(__name__).debug("access_history 화면코드 제약 삭제 건너뜀", exc_info=True)
 
 
 async def _seed_rank_snapshots() -> None:
