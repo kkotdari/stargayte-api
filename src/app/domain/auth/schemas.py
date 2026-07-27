@@ -77,7 +77,7 @@ class AccessPingRequest(BaseModel):
 class AccessHistoryEntry(BaseModel):
     """관리자 전용 접속 기록 한 건. /auth/login(screen="login")과, 화면을 전환할 때마다 오는
     /auth/access-ping(해당 화면 코드) 양쪽에서 기록된다. 같은 사람이 같은 화면을 짧은 시간
-    안에 다시 조회하면 새 행 대신 그 행의 시각만 갱신한다(AuthService.record_access 참고).
+    부를 때마다 한 행씩 그대로 쌓인다 — 합치지 않는다(AuthService.record_access 참고).
     IP/기기 정보는 개인정보라 관리 화면에 노출하지 않으므로 이 응답에도 포함하지 않는다."""
 
     model_config = ConfigDict(populate_by_name=True)

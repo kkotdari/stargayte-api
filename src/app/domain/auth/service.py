@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,12 +17,6 @@ from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 from app.domain.members.service import MemberService, ensure_member_usable
 from app.storage.base import FileStorage
-
-
-# 같은 사람이 같은 화면(screen_code)에서 이 시간 안에 또 기록되면(예: 짧은 새로고침 반복)
-# 새 행을 추가하는 대신 기존 최근 행의 시각만 갱신한다. 다른 화면으로 넘어가는 것 자체는
-# 항상 새 행이 된다 — 세션 단위가 아니라 화면 단위로 구분하는 게 목적이라서.
-ACCESS_DEDUPE_WINDOW = timedelta(minutes=30)
 
 
 class AuthService:
@@ -102,11 +96,13 @@ class AuthService:
         screen_code: str | None = None,
         client_env: str | None = None,
     ) -> None:
-        """/auth/login(screen_code=None)과 /auth/access-ping(화면을 전환할 때마다, 해당 화면
-        코드로) 양쪽에서 공유하는 접속 기록. "같은 세션이면 한 행"이 아니라 화면별로 구분해서
-        남기는 게 목적이라, 중복 판단은 member_pk뿐 아니라 screen_code까지 함께 봐서 같은
-        화면을 짧은 시간 안에 또 조회한 경우만(=진짜 중복) 새 행 대신 그 행의 시각/IP/기기
-        정보를 갱신한다 — 다른 화면으로 넘어가면 항상 새 행이 생긴다.
+        """/auth/login(screen_code="login")과 /auth/access-ping(화면을 전환할 때마다, 해당
+        화면 코드로) 양쪽에서 공유하는 접속 기록. 부를 때마다 항상 새 행을 남긴다(요청).
+
+        예전엔 같은 사람이 같은 화면을 30분 안에 다시 보면 새 행 대신 기존 행의 시각만
+        갱신했다(행 폭증 방지). 그런데 그러면 그 화면에 '처음 들어온 시각'이 덮여 사라져서,
+        이력에서 언제부터 봤는지를 알 수 없었다 — 새로고침 한 번에 앞선 방문 기록이 통째로
+        지워지는 셈이다. 지금은 한 줄도 잃지 않는 쪽을 택한다.
 
         운영에서만 쌓는다(요청) — 로컬 개발은 화면을 옮길 때마다 행이 쌓여 실제 접속
         이력을 덮어버리고, 개발자 한 명의 기록이라 분석 가치도 없다. 다만 여기서 말하는
@@ -120,32 +116,14 @@ class AuthService:
         빠지는 순간 접속 이력이 조용히 통째로 비어버린다."""
         if client_env is not None and client_env != "production":
             return
-        now = datetime.now(UTC)
-        stmt = (
-            select(AccessHistory)
-            .where(AccessHistory.member_pk == member.pk)
-            .where(
-                AccessHistory.screen_code.is_(None)
-                if screen_code is None
-                else AccessHistory.screen_code == screen_code
+        self._session.add(
+            AccessHistory(
+                member_pk=member.pk,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                screen_code=screen_code,
             )
-            .order_by(AccessHistory.logged_in_at.desc())
-            .limit(1)
         )
-        latest = (await self._session.execute(stmt)).scalar_one_or_none()
-        if latest is not None and now - latest.logged_in_at < ACCESS_DEDUPE_WINDOW:
-            latest.logged_in_at = now
-            latest.ip_address = ip_address
-            latest.user_agent = user_agent
-        else:
-            self._session.add(
-                AccessHistory(
-                    member_pk=member.pk,
-                    ip_address=ip_address,
-                    user_agent=user_agent,
-                    screen_code=screen_code,
-                )
-            )
         await self._session.commit()
 
     async def list_access_history(self, *, limit: int = 300) -> list[AccessHistoryEntry]:

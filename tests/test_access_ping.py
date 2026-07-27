@@ -81,3 +81,25 @@ async def test_access_is_recorded_only_for_production_client(client):
     )
     assert res.status_code == 204, res.text
     assert await history_len() == base + 2
+
+
+async def test_same_screen_twice_keeps_both_rows(client):
+    """같은 화면을 다시 봐도 합치지 않고 한 줄씩 그대로 쌓는다(요청).
+
+    예전엔 30분 안의 재방문을 기존 행의 시각 갱신으로 처리해서, 새로고침 한 번에 그 화면에
+    처음 들어온 시각이 덮여 사라졌다."""
+    admin = await _signup(client, "admin", "Admin#1000")
+    headers = {"Authorization": f"Bearer {admin['accessToken']}", "X-Client-Env": "production"}
+
+    async def rows() -> list:
+        res = await client.get("/api/auth/access-history", headers=headers)
+        assert res.status_code == 200, res.text
+        return res.json()
+
+    base = len(await rows())
+    for _ in range(3):
+        res = await client.post("/api/auth/access-ping", headers=headers, json={"screen": "feed"})
+        assert res.status_code == 204, res.text
+    after = await rows()
+    assert len(after) == base + 3
+    assert [r["screenCode"] for r in after[:3]] == ["feed", "feed", "feed"]
