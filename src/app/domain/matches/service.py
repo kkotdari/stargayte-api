@@ -291,13 +291,6 @@ class _Record:
 HeadToHead = dict[int, dict[int, _Record]]
 
 
-def _points_against(h2h: HeadToHead, pk: int, opponents: set[int]) -> int:
-    """pk가 opponents 전체를 상대로 딴 승점 합 — 한 번도 안 붙어본 상대는 0점으로 친다
-    (붙어본 적 없는 상대는 애초에 opponents에 들어오지 않으므로 실제로는 건너뛰기만 한다)."""
-    row = h2h.get(pk, {})
-    return sum(row[opp].points for opp in opponents if opp in row)
-
-
 # 팀으로 인정하는 최소 인원 — 2명 이상이면 (2:2든 3:3이든) 그 팀 구성 그대로 하나의 팀이다.
 TEAM_MIN_SIZE = 2
 

@@ -11,8 +11,6 @@ ChallengeMatchType = Literal["0101", "0102"]
 # 4개 상태만 있다 — 응답대기(pending)/성사(confirmed, 대결 대기)/완료(done)/폐기(discarded,
 # 휴지통). 거절·무응답·미실시·(레거시)취소는 모두 폐기로 통합됐다.
 ChallengeStatus = Literal["pending", "confirmed", "done", "discarded"]
-# 도전자 쪽/지목된 쪽 — 재대결 신청 자격 판정(패배한 쪽) 등에 쓰인다.
-ChallengeSide = Literal["creator", "target"]
 # 확정 대결의 결과 — 이긴 쪽(creator/target) 외에 무승부(draw)/미실시(not_held)도 있다.
 # not_held(미실시)는 완료가 아니라 폐기(휴지통)로 간다.
 ChallengeResult = Literal["creator", "target", "draw", "not_held"]

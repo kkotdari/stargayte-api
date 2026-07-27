@@ -65,17 +65,6 @@ class RankShiftEntry(BaseModel):
     to_rank: int = Field(alias="to")
 
 
-class RankStandingEntry(BaseModel):
-    """스냅샷 순위표 한 줄 — 그 시점의 포인트(표시 스케일 반올림)와 순위."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    member_id: str = Field(alias="memberId")
-    nickname: str
-    points: int
-    rank: int
-
-
 class RankSnapshotOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

@@ -10,7 +10,8 @@ from app.core.exceptions import InvalidTokenError
 
 
 def hash_password(plain_password: str) -> str:
-    return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    salt = bcrypt.gensalt(rounds=settings.password_hash_rounds)
+    return bcrypt.hashpw(plain_password.encode("utf-8"), salt).decode("utf-8")
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
