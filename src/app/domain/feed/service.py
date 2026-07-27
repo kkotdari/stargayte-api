@@ -83,6 +83,12 @@ class FeedCommentService:
         comment.text = cleaned
         comment.updated_by = actor.pk
         mentions = await self._resolve_mentions(target_member_ids)
+        # 기존 멘션을 지우고 flush로 DELETE를 먼저 반영한 뒤 새로 넣는다 — 한 flush에서
+        # 통째로 재할당하면 SQLAlchemy가 같은 멘션(comment_id, member_pk)을 지우기 전에
+        # 다시 INSERT해 UNIQUE 제약에 걸려 500이 났다(버그: 같은 유저 언급을 유지한 채
+        # 수정 시 실패). 지운 뒤 flush하면 재삽입 충돌이 없다.
+        comment.mentions.clear()
+        await self._session.flush()
         comment.mentions = [FeedCommentMention(member_pk=m.pk, member=m) for m in mentions]
         await self._session.commit()
         refreshed = await self._repo.get(comment.id)

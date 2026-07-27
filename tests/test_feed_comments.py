@@ -105,6 +105,56 @@ async def test_feed_comment_crud_on_match(client):
     assert res.json() == []
 
 
+async def test_feed_comment_edit_keeps_same_mention(client):
+    """언급을 그대로 유지한 채 수정해도 UNIQUE 제약 충돌로 500이 나면 안 된다(버그 회귀).
+
+    예전엔 한 flush에서 멘션을 통째로 재할당해 같은 (comment_id, member_pk)를
+    지우기 전에 다시 INSERT하다 UNIQUE 제약에 걸렸다.
+    """
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    c = await _signup(client, "choi", "Choi#1003")
+    await _approve(client, a["accessToken"], "bob")
+    await _approve(client, a["accessToken"], "choi")
+    match = await _register_match(client, _h(a))
+    mid = match["id"]
+
+    res = await client.post(
+        "/api/feed/comments",
+        headers=_h(a),
+        json={"targetType": "match", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
+    )
+    assert res.status_code == 201, res.text
+    cid = res.json()["id"]
+
+    # 같은 언급 유지 — 예전 버그 재현 지점.
+    res = await client.patch(
+        f"/api/feed/comments/{cid}",
+        headers=_h(a),
+        json={"text": "@bob 수정했어요", "targetMemberIds": ["bob"]},
+    )
+    assert res.status_code == 200, res.text
+    assert [m["memberId"] for m in res.json()["mentions"]] == ["bob"]
+
+    # 언급 제거.
+    res = await client.patch(
+        f"/api/feed/comments/{cid}",
+        headers=_h(a),
+        json={"text": "언급 없앰", "targetMemberIds": []},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["mentions"] == []
+
+    # 다른 유저로 언급 교체.
+    res = await client.patch(
+        f"/api/feed/comments/{cid}",
+        headers=_h(a),
+        json={"text": "@choi 로 바꿈", "targetMemberIds": ["choi"]},
+    )
+    assert res.status_code == 200, res.text
+    assert [m["memberId"] for m in res.json()["mentions"]] == ["choi"]
+
+
 async def test_feed_comment_on_challenge_target(client):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
