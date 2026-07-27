@@ -44,3 +44,40 @@ async def test_access_ping_rejects_removed_screen(client):
         "/api/auth/access-ping", headers=headers, json={"screen": "ranking"},
     )
     assert res.status_code == 422, res.text
+
+
+async def test_access_is_recorded_only_for_production_client(client):
+    """기록 여부는 이 백엔드가 아니라 '요청을 보낸 프론트'가 운영 빌드인지로 가른다 —
+    로컬 프론트가 운영 백엔드를 바라보고 개발하는 경우를 막는 게 목적이라, 백엔드의
+    ENVIRONMENT로 걸면 정작 그 경우를 못 막는다(지적). 헤더가 없으면 기록한다."""
+    admin = await _signup(client, "admin", "Admin#1000")
+    headers = {"Authorization": f"Bearer {admin['accessToken']}"}
+
+    async def history_len() -> int:
+        res = await client.get("/api/auth/access-history", headers=headers)
+        assert res.status_code == 200, res.text
+        return len(res.json())
+
+    # 헤더 없음 → 기록한다(옛 빌드/외부 호출을 개발 중이라 단정할 수 없다).
+    base = await history_len()
+    res = await client.post("/api/auth/access-ping", headers=headers, json={"screen": "feed"})
+    assert res.status_code == 204, res.text
+    assert await history_len() == base + 1
+
+    # 개발 빌드 프론트 → 남기지 않는다.
+    res = await client.post(
+        "/api/auth/access-ping",
+        headers={**headers, "X-Client-Env": "development"},
+        json={"screen": "stats"},
+    )
+    assert res.status_code == 204, res.text
+    assert await history_len() == base + 1
+
+    # 운영 빌드 프론트 → 남긴다.
+    res = await client.post(
+        "/api/auth/access-ping",
+        headers={**headers, "X-Client-Env": "production"},
+        json={"screen": "stats"},
+    )
+    assert res.status_code == 204, res.text
+    assert await history_len() == base + 2

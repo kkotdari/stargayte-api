@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.security import (
     create_access_token,
@@ -39,6 +38,7 @@ class AuthService:
         *,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        client_env: str | None = None,
     ) -> tuple[Member, str, str]:
         member = await self._repo.get_by_login_id(member_id)
         if member is None or not verify_password(password, member.password_hash):
@@ -48,6 +48,7 @@ class AuthService:
         # 접속 기록 목록에서 화면 칸이 비어 무슨 행인지 구분이 안 됐다.
         await self.record_access(
             member, ip_address=ip_address, user_agent=user_agent, screen_code="login",
+            client_env=client_env,
         )
         refresh_token = await self._issue_refresh_token(member)
         return member, create_access_token(str(member.pk)), refresh_token
@@ -99,6 +100,7 @@ class AuthService:
         ip_address: str | None,
         user_agent: str | None,
         screen_code: str | None = None,
+        client_env: str | None = None,
     ) -> None:
         """/auth/login(screen_code=None)과 /auth/access-ping(화면을 전환할 때마다, 해당 화면
         코드로) 양쪽에서 공유하는 접속 기록. "같은 세션이면 한 행"이 아니라 화면별로 구분해서
@@ -106,9 +108,17 @@ class AuthService:
         화면을 짧은 시간 안에 또 조회한 경우만(=진짜 중복) 새 행 대신 그 행의 시각/IP/기기
         정보를 갱신한다 — 다른 화면으로 넘어가면 항상 새 행이 생긴다.
 
-        운영(production)에서만 쌓는다(요청) — 로컬 개발은 화면을 옮길 때마다 행이 쌓여
-        실제 접속 이력을 덮어버리고, 개발자 한 명의 기록이라 분석 가치도 없다."""
-        if get_settings().environment != "production":
+        운영에서만 쌓는다(요청) — 로컬 개발은 화면을 옮길 때마다 행이 쌓여 실제 접속
+        이력을 덮어버리고, 개발자 한 명의 기록이라 분석 가치도 없다. 다만 여기서 말하는
+        '운영'은 이 백엔드가 아니라 요청을 보낸 프론트 기준이다(지적) — 로컬 프론트가
+        운영 백엔드를 바라보고 개발하는 경우가 실제로 그런 경우라, 백엔드의 ENVIRONMENT로
+        걸면 정작 막아야 할 그 경우를 못 막고 반대로 로컬 백엔드에서만 막힌다. 프론트가
+        빌드 모드를 X-Client-Env로 실어 보내고(client.ts) 그 값으로 판단한다.
+
+        헤더가 아예 없으면 기록한다 — 값을 안 보내는 건 우리 프론트가 아닌 호출(옛 빌드,
+        외부 도구)이라 개발 중이라고 단정할 근거가 없고, 기본값이 '안 남김'이면 헤더가
+        빠지는 순간 접속 이력이 조용히 통째로 비어버린다."""
+        if client_env is not None and client_env != "production":
             return
         now = datetime.now(UTC)
         stmt = (

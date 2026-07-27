@@ -23,6 +23,7 @@ async def login(payload: LoginRequest, request: Request, db: DbSession, storage:
         payload.password,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
+        client_env=request.headers.get("x-client-env"),
     )
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=MemberOut.model_validate(member))
 
@@ -63,6 +64,7 @@ async def access_ping(
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
         screen_code=payload.screen,
+        client_env=request.headers.get("x-client-env"),
     )
 
 
