@@ -466,7 +466,6 @@ def to_match_out(
         game_started_at=result_row.game_started_at,
         duration_seconds=result_row.duration_seconds,
         summary_data=result_row.summary_data,
-        summary=result_row.summary,
         notes=[to_note_out(c, actor_pk=actor_pk, is_admin=is_admin) for c in match.notes],
     )
 

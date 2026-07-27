@@ -141,9 +141,6 @@ class MatchResult(Base):
     # 사람이 쓴 글이 아니라 파생 데이터라, 리플레이를 다시 올리면 그대로 덮어쓴다.
     # 재료가 모자라면 아예 만들지 않으므로 NULL이 정상이다(수동 등록 경기도 NULL).
     summary_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    # 구조화 이전에 등록된 경기가 들고 있는 옛 요약 문장 — 새로 쓰지는 않고, summary_data가
-    # 없을 때 프론트가 그대로 보여주기만 한다(그 문장의 닉네임은 등록 시점에 굳어 있다).
-    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

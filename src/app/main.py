@@ -51,7 +51,7 @@ async def _ensure_schema() -> None:
 
 
 async def _add_match_result_summary(conn: object) -> None:
-    """match_results의 요약 컬럼들을 더한다(멱등).
+    """match_results.summary_data 컬럼을 더한다(멱등).
 
     스키마를 create_all로만 관리해(마이그레이션 없음) 이미 있는 테이블에는 새 컬럼이
     반영되지 않는다 — build_count 때와 같은 이유로 여기서 직접 ALTER 한다. IF NOT EXISTS는
@@ -63,13 +63,10 @@ async def _add_match_result_summary(conn: object) -> None:
 
     try:
         await conn.execute(  # type: ignore[attr-defined]
-            text("ALTER TABLE match_results ADD COLUMN IF NOT EXISTS summary TEXT")
-        )
-        await conn.execute(  # type: ignore[attr-defined]
             text("ALTER TABLE match_results ADD COLUMN IF NOT EXISTS summary_data JSONB")
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
-        logging.getLogger(__name__).debug("match_results.summary 컬럼 추가 건너뜀", exc_info=True)
+        logging.getLogger(__name__).debug("match_results.summary_data 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:

@@ -212,8 +212,6 @@ class MatchOut(BaseModel):
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
     summary_data: dict | None = Field(default=None, alias="summaryData")
-    # 구조화 이전에 등록된 경기의 옛 요약 문장 — 읽기 전용이다(새로 쓰지 않는다).
-    summary: str | None = None
     # 이 경기에 달린 댓글(메모) — 목록 응답에 함께 실어 클라이언트가 펼침 시 바로 렌더하고
     # 검색창에서 댓글 내용으로도 필터할 수 있게 한다(요청). 오래된 순.
     notes: list[MatchNoteOut] = Field(default_factory=list)
