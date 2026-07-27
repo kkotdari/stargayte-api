@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     SmallInteger,
     String,
     Text,
@@ -133,9 +134,15 @@ class MatchResult(Base):
     map_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     game_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # 리플레이 커맨드 스트림에서 규칙으로 뽑아낸 경기 요약 문장(프론트 replaySummary.ts).
+    # 리플레이에서 규칙으로 뽑아낸 경기 요약. 완성된 문장이 아니라 "무슨 일이 있었나"의
+    # 목록이다(프론트 replaySummaryData.ts) — 문장 틀 키와 리플레이 원본 게임 아이디, 유닛
+    # 영문 키만 들어 있고 한국어 문구는 없다. 이래야 나중에 닉네임이 바뀌거나 표현을 고쳐도
+    # 이미 등록된 경기가 옛말을 계속 보여주지 않는다(요청). 문장은 볼 때 프론트가 만든다.
     # 사람이 쓴 글이 아니라 파생 데이터라, 리플레이를 다시 올리면 그대로 덮어쓴다.
     # 재료가 모자라면 아예 만들지 않으므로 NULL이 정상이다(수동 등록 경기도 NULL).
+    summary_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 구조화 이전에 등록된 경기가 들고 있는 옛 요약 문장 — 새로 쓰지는 않고, summary_data가
+    # 없을 때 프론트가 그대로 보여주기만 한다(그 문장의 닉네임은 등록 시점에 굳어 있다).
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

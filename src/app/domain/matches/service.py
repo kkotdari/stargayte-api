@@ -465,6 +465,7 @@ def to_match_out(
         map_name=result_row.map_name,
         game_started_at=result_row.game_started_at,
         duration_seconds=result_row.duration_seconds,
+        summary_data=result_row.summary_data,
         summary=result_row.summary,
         notes=[to_note_out(c, actor_pk=actor_pk, is_admin=is_admin) for c in match.notes],
     )
@@ -1183,7 +1184,7 @@ class MatchService:
                 map_name=payload.map_name,
                 game_started_at=payload.game_started_at,
                 duration_seconds=payload.duration_seconds,
-                summary=payload.summary,
+                summary_data=payload.summary_data,
                 replay=None,
             ),
             created_by=actor.pk,
@@ -1222,7 +1223,7 @@ class MatchService:
                 map_name=payload.map_name,
                 game_started_at=payload.game_started_at,
                 duration_seconds=payload.duration_seconds,
-                summary=payload.summary,
+                summary_data=payload.summary_data,
             )
         else:
             match.result_row.result = payload.result
@@ -1230,9 +1231,9 @@ class MatchService:
             match.result_row.game_started_at = payload.game_started_at
             match.result_row.duration_seconds = payload.duration_seconds
             # 요약은 리플레이에서 다시 계산된 값이 있을 때만 갱신한다 — 수정 폼처럼 요약을
-            # 만들 재료(리플레이)를 다시 올리지 않는 경로에서 기존 문장을 지우지 않도록.
-            if payload.summary is not None:
-                match.result_row.summary = payload.summary
+            # 만들 재료(리플레이)를 다시 올리지 않는 경로에서 기존 값을 지우지 않도록.
+            if payload.summary_data is not None:
+                match.result_row.summary_data = payload.summary_data
 
         match.participants.clear()
         await self._session.flush()
@@ -1279,8 +1280,8 @@ class MatchService:
             rr.result = payload.result
         # 요약은 리플레이에서만 나오는 파생 데이터라, 다시 올린 리플레이가 만들어낸 값이 있으면
         # 그대로 덮어쓴다(요청: 배치 업로드에서 기존 경기도 갱신). 못 만들었으면 기존 값 유지.
-        if payload.summary is not None:
-            rr.summary = payload.summary
+        if payload.summary_data is not None:
+            rr.summary_data = payload.summary_data
 
         by_name = {s.player_name: s for s in payload.players}
         for p in match.participants:
