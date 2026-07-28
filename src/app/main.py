@@ -48,6 +48,7 @@ async def _ensure_schema() -> None:
         await _add_match_result_summary(conn)
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
+        await _drop_legacy_match_summary(conn)
     await _seed_rank_snapshots()
 
 
@@ -157,6 +158,34 @@ async def _migrate_match_notes(conn) -> None:
             "(SELECT COALESCE(MAX(id), 1) FROM feed_comment_mentions))"
         ))
 
+
+
+async def _drop_legacy_match_summary(conn) -> None:
+    """옛 요약 문장 컬럼(match_results.summary TEXT)을 지운다.
+
+    구조화된 summary_data로 갈아탄 뒤로는 코드 어디서도 읽지 않는다(6b7dc37) — 그때는
+    "안 읽으면 그만"이라 물리 컬럼을 남겨 뒀지만, 이제 정리한다(요청). 옛 문장은 지금
+    문구 규칙과 맞지 않아 되살릴 값이 아니고, 기존 경기는 리플레이를 다시 올려 채운다.
+
+    컬럼이 없으면(새 DB) 아무것도 하지 않는다.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    def _has(sync_conn) -> bool:
+        insp = inspect(sync_conn)
+        if "match_results" not in insp.get_table_names():
+            return False
+        return any(c["name"] == "summary" for c in insp.get_columns("match_results"))
+
+    try:
+        if not await conn.run_sync(_has):
+            return
+        await conn.execute(text("ALTER TABLE match_results DROP COLUMN summary"))
+        logging.getLogger(__name__).info("옛 요약 문장 컬럼(match_results.summary) 삭제 완료")
+    except Exception:  # noqa: BLE001 — 미지원 DB(옛 SQLite 등)면 그냥 남겨 둔다.
+        logging.getLogger(__name__).exception("match_results.summary 컬럼 삭제 실패")
 
 
 async def _drop_legacy_match_notes(conn) -> None:
