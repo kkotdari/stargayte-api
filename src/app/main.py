@@ -47,6 +47,7 @@ async def _ensure_schema() -> None:
         await _migrate_match_notes(conn)
         await _add_match_result_summary(conn)
         await _drop_access_screen_code_check(conn)
+        await _drop_legacy_match_notes(conn)
     await _seed_rank_snapshots()
 
 
@@ -124,9 +125,15 @@ async def _migrate_match_notes(conn) -> None:
 
     feed_comments가 비어 있고 match_notes에 데이터가 있을 때만 복사한다(멱등).
     id를 그대로 보존해 언급(mentions) 매핑도 함께 옮긴다.
-    """
-    from sqlalchemy import text
 
+    이제 match_notes는 모델에서 빠져 create_all이 만들지 않는다 — 새로 만든 DB에는 아예
+    없으므로, 테이블이 없으면 조용히 건너뛴다(이관할 것도 없다).
+    """
+    from sqlalchemy import inspect, text
+
+    tables = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
+    if "match_notes" not in tables:
+        return
     existing = await conn.scalar(text("SELECT COUNT(*) FROM feed_comments"))
     if existing and existing > 0:
         return
@@ -149,6 +156,41 @@ async def _migrate_match_notes(conn) -> None:
             "SELECT setval(pg_get_serial_sequence('feed_comment_mentions', 'id'), "
             "(SELECT COALESCE(MAX(id), 1) FROM feed_comment_mentions))"
         ))
+
+
+
+async def _drop_legacy_match_notes(conn) -> None:
+    """이관이 끝난 옛 경기 댓글 테이블을 지운다.
+
+    바로 위 _migrate_match_notes가 같은 트랜잭션에서 먼저 돌아 남은 행을 feed_comments로
+    옮긴 뒤라, 여기서 지우는 건 이미 복사된 것뿐이다. 그래도 되돌릴 수 없는 작업이므로
+    '이관이 실제로 끝났다'는 증거를 한 번 더 확인한다 — match_notes에 있던 만큼이
+    feed_comments에 들어와 있어야 한다. 하나라도 어긋나면 지우지 않고 그대로 둔다.
+
+    자식(match_note_mentions)을 먼저 지워야 외래키가 걸리지 않는다.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    tables = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
+    if "match_notes" not in tables:
+        return
+    try:
+        legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes")) or 0
+        moved = await conn.scalar(
+            text("SELECT COUNT(*) FROM feed_comments WHERE target_type = 'match'")
+        ) or 0
+        if legacy > moved:
+            logging.getLogger(__name__).warning(
+                "match_notes(%s건)가 feed_comments(%s건)보다 많아 옛 테이블을 남겨 둔다", legacy, moved,
+            )
+            return
+        await conn.execute(text("DROP TABLE IF EXISTS match_note_mentions"))
+        await conn.execute(text("DROP TABLE IF EXISTS match_notes"))
+        logging.getLogger(__name__).info("옛 경기 댓글 테이블 삭제 완료(%s건 이관 확인)", legacy)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("옛 경기 댓글 테이블 삭제 실패")
 
 
 @asynccontextmanager

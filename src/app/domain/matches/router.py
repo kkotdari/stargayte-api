@@ -12,8 +12,6 @@ from app.domain.matches.schemas import (
     DuplicateCheckResponse,
     EarliestDateResponse,
     MainRaceResponse,
-    MatchNoteOut,
-    MatchNoteWrite,
     MatchOut,
     MatchPage,
     MatchReplayMerge,
@@ -373,52 +371,6 @@ async def update_match(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),
     )
-
-
-# ── 경기 댓글(메모) — 게시판 댓글처럼 회원 누구나 한 줄(최대 50자), 본인/운영자만 수정·삭제 ──
-@router.get("/{match_id}/notes", response_model=list[MatchNoteOut])
-async def list_match_notes(
-    match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
-) -> list[MatchNoteOut]:
-    return await MatchService(db, storage).list_notes(match_id, actor=current)
-
-
-@router.post("/{match_id}/notes", response_model=MatchNoteOut)
-async def create_match_note(
-    match_id: int,
-    payload: MatchNoteWrite,
-    db: DbSession,
-    storage: StorageDep,
-    current: CurrentMember,
-) -> MatchNoteOut:
-    return await MatchService(db, storage).create_note(
-        match_id, payload.text, payload.target_member_ids, actor=current
-    )
-
-
-@router.patch("/{match_id}/notes/{note_id}", response_model=MatchNoteOut)
-async def update_match_note(
-    match_id: int,
-    note_id: int,
-    payload: MatchNoteWrite,
-    db: DbSession,
-    storage: StorageDep,
-    current: CurrentMember,
-) -> MatchNoteOut:
-    return await MatchService(db, storage).update_note(
-        note_id, payload.text, payload.target_member_ids, actor=current
-    )
-
-
-@router.delete("/{match_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_match_note(
-    match_id: int,
-    note_id: int,
-    db: DbSession,
-    storage: StorageDep,
-    current: CurrentMember,
-) -> None:
-    await MatchService(db, storage).delete_note(note_id, actor=current)
 
 
 @router.get("/{match_id}", response_model=MatchOut)

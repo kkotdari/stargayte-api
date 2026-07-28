@@ -6,7 +6,6 @@ from sqlalchemy.orm import aliased, selectinload
 
 from app.domain.matches.models import (
     Match,
-    MatchNote,
     MatchParticipant,
     MatchResult,
     Replay,
@@ -25,8 +24,6 @@ class MatchRepository:
             selectinload(Match.creator),
             # 댓글(메모)과 그 안의 언급/작성자 — 목록/상세 응답에 함께 실어야 하므로 eager
             # 로드한다(mentions/creator는 관계 자체가 lazy="selectin"이라 자동으로 딸려온다).
-            selectinload(Match.notes).selectinload(MatchNote.mentions),
-            selectinload(Match.notes).selectinload(MatchNote.creator),
         )
 
     async def get(self, match_id: int) -> Match | None:
@@ -35,11 +32,6 @@ class MatchRepository:
 
     async def get_by_match_no(self, match_no: str) -> Match | None:
         stmt = self._base_query().where(Match.match_no == match_no)
-        return (await self._session.execute(stmt)).scalar_one_or_none()
-
-    async def get_note(self, note_id: int) -> MatchNote | None:
-        # mentions/creator는 관계가 lazy="selectin"이라 로드 시 자동으로 딸려온다.
-        stmt = select(MatchNote).where(MatchNote.id == note_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def next_match_no_suffix(self, base: str) -> int:
