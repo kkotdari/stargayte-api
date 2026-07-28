@@ -206,20 +206,70 @@ async def _register_match_today(client, headers: dict, *, result: str = "team1")
     return res.json()
 
 
-async def test_rank_snapshot_without_seed_registers_silently(client):
-    """기준선이 없으면 첫 등록은 변동 카드 없이 기준선으로만 남는다(요청).
+async def _recompute(client) -> None:
+    """매일 자정 스케줄러가 하는 일 그대로 — 순위표를 다시 집계해 변동을 남긴다."""
+    from app.db.session import AsyncSessionLocal
+    from app.domain.feed.service import RankSnapshotService
+    from app.main import _rank_entries_computer
 
-    예전엔 비교 대상이 없어 순위표에 있는 전원이 '신규 진입'으로 쏟아졌다. 경기 등록
-    자체는 정상이고, 이 스냅샷이 다음 등록의 비교 기준이 된다."""
+    async with AsyncSessionLocal() as session:
+        await RankSnapshotService(session).recompute_daily(await _rank_entries_computer(session))
+
+
+async def test_register_no_longer_creates_snapshot(client):
+    """경기 등록만으로는 변동 카드가 생기지 않는다(요청).
+
+    예전엔 등록/삭제마다 계산해서 하루에도 여러 번 피드에 떴다. 이제 재집계는 매일
+    자정 스케줄러 한 곳에서만 한다."""
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _approve(client, a["accessToken"], "bob")
 
     m1 = await _register_match_today(client, _h(a))
-    assert m1["id"]  # 등록은 정상
+    assert m1["id"]  # 등록 자체는 정상
     res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
     assert res.status_code == 200, res.text
-    assert res.json() == []  # 피드에는 '전원 신규' 카드가 뜨지 않는다
+    assert res.json() == []
+
+
+async def test_daily_recompute_first_run_is_silent_baseline(client):
+    """기준선이 없으면 첫 재집계는 변동 없이 기준선으로만 남는다.
+
+    비교 대상이 없는데 변동을 내면 순위표에 있는 전원이 '신규 진입'으로 쏟아진다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    await _register_match_today(client, _h(a))
+    await _recompute(client)
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    assert res.json() == []  # 기준선만 깔린다
+
+    # 그다음 경기부터는 이 기준선과 비교돼 변동이 잡힌다 — 아무도 '신규'가 아니다.
+    await _register_match_today(client, _h(a), result="team2")
+    await _register_match_today(client, _h(a), result="team2")
+    await _recompute(client)
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    events = res.json()
+    assert len(events) >= 1
+    assert events[0]["reason"] == "daily"
+    assert all(s["from"] is not None for ev in events for s in ev["shifts"])
+
+
+async def test_daily_recompute_is_idempotent(client):
+    """순위표가 그대로면 다시 돌려도 아무것도 안 남는다 — 매일 도는 작업이라 중요하다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    await _register_match_today(client, _h(a))
+    await _recompute(client)
+    await _register_match_today(client, _h(a), result="team2")
+    await _recompute(client)
+    before = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+
+    await _recompute(client)  # 경기 변화 없이 한 번 더
+    after = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+    assert [e["id"] for e in after] == [e["id"] for e in before]
 
 
 async def test_seed_lays_baseline_per_match_type(client, db_session):
@@ -249,8 +299,8 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
     """달이 바뀌면 지난달 순위표와 비교하지 않는다(요청).
 
     순위표가 '이번 달' 성적만으로 매겨지므로, 지난달 표를 기준 삼으면 이번 달에 처음
-    뛴 사람이 전부 '신규 진입'이 된다(매달 1일마다). 그 첫 이벤트는 조용한 기준선으로만
-    남고, 그 뒤 등록부터 정상적으로 변동이 잡힌다."""
+    뛴 사람이 전부 '신규 진입'이 된다(매달 1일마다). 그 첫 재집계는 조용한 기준선으로만
+    남고, 그다음부터 정상적으로 변동이 잡힌다."""
     from datetime import timedelta
 
     from sqlalchemy import select
@@ -269,65 +319,30 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
     await db_session.commit()
 
     await _register_match_today(client, _h(a))
+    await _recompute(client)
     res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
-    assert res.status_code == 200, res.text
     assert res.json() == []  # 월초 '전원 신규' 카드가 뜨지 않는다
 
-    # 그 뒤 등록은 이번 달 기준선과 비교돼 정상 동작한다 — 아무도 신규가 아니다.
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
-    events = res.json()
+    await _recompute(client)
+    events = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
     assert len(events) >= 1
     assert all(s["from"] is not None for ev in events for s in ev["shifts"])
 
 
-async def test_rank_snapshot_on_register_and_batch_merge(client):
-    from app.main import _seed_rank_snapshots
-
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
-    # 부팅 훅과 같은 기준선(빈 순위표)을 먼저 깐다 — 이게 있어야 첫 등록이 변동으로 잡힌다.
-    await _seed_rank_snapshots()
-
-    # 첫 등록 — 두 명 모두 신규 진입 변동이 스냅샷으로 남는다(서버가 자동 계산·저장).
-    m1 = await _register_match_today(client, _h(a))
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
-    assert res.status_code == 200, res.text
-    events = res.json()
-    assert len(events) == 1
-    ev = events[0]
-    assert ev["matchType"] == "0101"
-    assert ev["reason"] == "register"
-    assert m1["id"] in ev["matchIds"]
-    assert all(s["from"] is None for s in ev["shifts"])  # 전원 신규 진입
-    assert [s["to"] for s in ev["shifts"]] == sorted(s["to"] for s in ev["shifts"])
-
-    # 연속 등록(배치) — 시간창 안이라 별도 이벤트가 아니라 기존 이벤트에 합쳐진다.
-    m2 = await _register_match_today(client, _h(a))
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
-    events = res.json()
-    assert len(events) == 1
-    assert set(events[0]["matchIds"]) >= {m1["id"], m2["id"]}
-
-    # 삭제 훅도 본 작업을 막지 않고 정상 동작한다(운영자 삭제).
-    res = await client.delete(f"/api/matches/{m2['id']}", headers=_h(a))
-    assert res.status_code == 204, res.text
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
-    assert res.status_code == 200
-
-
 async def test_feed_comment_on_rankshift_target(client):
     """순위변동 알림 카드에도 같은 댓글 API가 그대로 붙는다(요청)."""
-    from app.main import _seed_rank_snapshots
-
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _approve(client, a["accessToken"], "bob")
-    await _seed_rank_snapshots()  # 기준선이 있어야 첫 등록이 변동 카드로 남는다
 
+    # 기준선 한 번, 그다음 변동 한 번 — 그래야 댓글을 달 변동 카드가 생긴다.
     await _register_match_today(client, _h(a))
+    await _recompute(client)
+    await _register_match_today(client, _h(a), result="team2")
+    await _register_match_today(client, _h(a), result="team2")
+    await _recompute(client)
     res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
     assert res.status_code == 200, res.text
     snap_id = res.json()[0]["id"]

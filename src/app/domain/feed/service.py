@@ -1,5 +1,5 @@
 import calendar
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,11 +133,6 @@ def _to_snapshot_out(snap: RankSnapshot) -> RankSnapshotOut:
     )
 
 
-# 같은 이유(등록/삭제)의 이벤트가 이 시간 안에 연달아 오면 한 이벤트로 합친다 — 리플레이
-# 배치 등록/연속 삭제는 경기 하나마다 API가 따로 오지만 사용자 입장에선 한 번의 행동이라
-# 스냅샷(과 피드 변동 카드)도 하나만 남긴다(요청: "여러개 등록시 한번만 저장").
-MERGE_WINDOW = timedelta(seconds=180)
-
 # 스냅샷 산정 기간 — 랭킹과 동일하게 "이번 달"(KST 기준) 성적만으로 매긴다.
 KST = ZoneInfo("Asia/Seoul")
 
@@ -190,17 +185,6 @@ class RankSnapshotService:
         )
         return await self._session.scalar(stmt)
 
-    async def _previous_of(self, snap: RankSnapshot) -> RankSnapshot | None:
-        from sqlalchemy import select
-
-        stmt = (
-            select(RankSnapshot)
-            .where(RankSnapshot.match_type == snap.match_type, RankSnapshot.id < snap.id)
-            .order_by(RankSnapshot.id.desc())
-            .limit(1)
-        )
-        return await self._session.scalar(stmt)
-
     async def _compute_standings(self, match_type: str, compute_entries) -> list[dict]:
         """이번 달 기준 현재 순위표 — 활성 회원 중 그 유형 경기를 뛴 사람만.
 
@@ -248,59 +232,60 @@ class RankSnapshotService:
         ]
         return sorted(shifts, key=lambda s: s["to"])
 
-    async def record_event(
-        self, *, reason: str, match_ids: list[int], match_types: list[str], compute_entries,
-    ) -> None:
-        """경기 등록/삭제 직후 호출 — 영향받은 유형의 순위표를 다시 계산해 저장한다.
+    async def recompute_daily(self, compute_entries) -> None:
+        """하루 한 번(자정) 순위표를 다시 집계해 변동이 있으면 스냅샷으로 남긴다(요청).
 
-        직전 스냅샷과 순위표가 같으면 아무것도 안 남긴다. 같은 이유의 이벤트가
-        MERGE_WINDOW 안에 연달아 오면(배치 등록/연속 삭제) 최신 스냅샷을 갱신해 한
-        이벤트로 합치고, 변동분은 그 배치 시작 전 순위표와 다시 비교해 만든다.
+        예전에는 경기 등록/삭제 때마다 계산했는데, 그러면 하루에도 여러 번 변동 카드가
+        피드에 떠서 목록이 그 카드로 도배됐다(지적: "지금처럼 등록/삭제 시마다 계산을
+        하면 너무 자주 목록에 노출되는 문제"). 이제 하루치를 모아 한 번만 남긴다 —
+        같은 날 열 경기를 등록해도 카드는 하나다.
 
-        비교 기준이 될 수 있는 건 '같은 달' 스냅샷뿐이다 — 아래 _baseline_only 참고.
+        기준선(같은 달 스냅샷)이 없으면 변동 없이 기준선만 남긴다. 최초 도입 직후와
+        매달 1일이 그런 경우인데, 그때 전원을 '신규 진입'으로 쏟아내면 안 되기 때문이다.
         """
-        for match_type in dict.fromkeys(match_types):  # 순서 보존 중복 제거
-            if match_type not in ("0101", "0102"):
-                continue
+        for match_type in ("0101", "0102"):
             standings = await self._compute_standings(match_type, compute_entries)
             latest = await self._latest(match_type)
+            # 순위표가 그대로면 남길 이야기가 없다.
             if latest is not None and list(latest.standings or []) == standings:
                 continue
+            baseline = latest is None or _period_of(latest.created_at) != _current_period()
+            base = [] if baseline else list(latest.standings or [])
+            self._session.add(RankSnapshot(
+                match_type=match_type,
+                reason="seed" if baseline else "daily",
+                match_ids=[],
+                standings=standings,
+                shifts=[] if baseline else self._diff(base, standings),
+            ))
+        await self._session.commit()
 
-            # 기준선 없이(또는 지난달 표를 기준으로) 변동을 내면 전원이 '신규 진입'으로
-            # 쏟아진다(지적) — 순위표가 이번 달 성적만으로 매겨지므로 매달 1일 첫 등록에서
-            # 반드시 그렇게 된다. 시드가 아예 없는 최초 등록도 같은 상황이다. 그런 이벤트는
-            # 변동 없이 기준선으로만 남긴다(reason="seed", shifts=[]) — 경기 등록 자체는
-            # 정상이고 피드에 변동 카드만 안 뜬다. 다음 등록부터는 이 기준선과 비교된다.
-            if latest is None or _period_of(latest.created_at) != _current_period():
+    async def reseed_now(self, compute_entries) -> dict[str, int]:
+        """지금 데이터 기준으로 기준선을 다시 깐다 — 제어판에서 손으로 누르는 1회용(요청).
+
+        변동 없이(reason="seed", shifts=[]) 저장되므로 피드 목록에는 안 보인다. 이번 달
+        기준선이 이미 있으면 그 행을 갱신한다 — 여러 번 눌러도 행이 쌓이지 않는다.
+        돌려주는 값은 유형별로 몇 명이 순위표에 들어갔는지다.
+        """
+        out: dict[str, int] = {}
+        for match_type in ("0101", "0102"):
+            standings = await self._compute_standings(match_type, compute_entries)
+            latest = await self._latest(match_type)
+            if (
+                latest is not None
+                and latest.reason == "seed"
+                and _period_of(latest.created_at) == _current_period()
+            ):
+                latest.standings = standings
+                latest.shifts = []
+            else:
                 self._session.add(RankSnapshot(
                     match_type=match_type, reason="seed",
-                    match_ids=list(match_ids), standings=standings, shifts=[],
+                    match_ids=[], standings=standings, shifts=[],
                 ))
-                continue
-
-            mergeable = (
-                latest is not None
-                and latest.reason == reason
-                and reason in ("register", "delete")
-                and self._age_of(latest) < MERGE_WINDOW
-            )
-            if mergeable:
-                prev = await self._previous_of(latest)
-                base = list(prev.standings or []) if prev is not None else []
-                latest.match_ids = list(dict.fromkeys([*(latest.match_ids or []), *match_ids]))
-                latest.standings = standings
-                latest.shifts = self._diff(base, standings)
-            else:
-                base = list(latest.standings or []) if latest is not None else []
-                self._session.add(RankSnapshot(
-                    match_type=match_type,
-                    reason=reason,
-                    match_ids=list(match_ids),
-                    standings=standings,
-                    shifts=self._diff(base, standings),
-                ))
+            out[match_type] = len(standings)
         await self._session.commit()
+        return out
 
     async def seed_if_empty(self, compute_entries) -> None:
         """최초 부팅 시 현재 순위표를 기준선으로 적재 — 다음 등록/삭제의 비교 대상이 된다.
@@ -326,10 +311,3 @@ class RankSnapshotService:
                 match_ids=[], standings=standings, shifts=[],
             ))
         await self._session.commit()
-
-    @staticmethod
-    def _age_of(snap: RankSnapshot) -> timedelta:
-        created = snap.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=UTC)
-        return datetime.now(UTC) - created

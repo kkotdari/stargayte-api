@@ -1,5 +1,8 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,33 +95,73 @@ async def _drop_access_screen_code_check(conn: object) -> None:
         logging.getLogger(__name__).debug("access_history 화면코드 제약 삭제 건너뜀", exc_info=True)
 
 
+async def _rank_entries_computer(session):
+    """랭크 스냅샷 계산기 — 피드 도메인이 경기 통계를 되부르는 순환을 피해 콜백으로 넘긴다."""
+    from app.domain.matches.service import MatchService
+    from app.storage import get_storage
+
+    match_service = MatchService(session, get_storage())
+
+    async def compute_entries(match_type: str, date_from: str, date_to: str):
+        return await match_service.get_stats(
+            member_ids=None, date_from=date_from, date_to=date_to,
+            match_type=match_type, race=None,
+        )
+
+    return compute_entries
+
+
 async def _seed_rank_snapshots() -> None:
     """rank_snapshots가 비어 있으면 현재 포인트·순위표를 기준선으로 1회 적재(멱등).
 
-    다음 경기 등록/삭제가 이 기준선과 비교해 변동분을 만든다(요청: "최초 현 데이터
-    쌓아주기"). 실패해도 부팅은 막지 않는다 — 첫 이벤트 때 기준 없이 전원 신규로 잡히는
-    것 이상의 문제는 없다.
+    변동분 없이(reason="seed") 저장되므로 피드에는 안 보인다. 실패해도 부팅은 막지 않는다.
     """
     import logging
 
     from app.db.session import AsyncSessionLocal
     from app.domain.feed.service import RankSnapshotService
-    from app.domain.matches.service import MatchService
-    from app.storage import get_storage
 
     try:
         async with AsyncSessionLocal() as session:
-            match_service = MatchService(session, get_storage())
-
-            async def compute_entries(match_type: str, date_from: str, date_to: str):
-                return await match_service.get_stats(
-                    member_ids=None, date_from=date_from, date_to=date_to,
-                    match_type=match_type, race=None,
-                )
-
-            await RankSnapshotService(session).seed_if_empty(compute_entries)
+            await RankSnapshotService(session).seed_if_empty(await _rank_entries_computer(session))
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("랭크 스냅샷 기준선 적재 실패")
+
+
+# 매일 자정(KST)에 순위표를 다시 집계한다(요청) — 예전처럼 경기 등록/삭제마다 계산하면
+# 하루에도 여러 번 변동 카드가 떠서 피드가 그 카드로 도배됐다. 하루치를 모아 한 번만 남긴다.
+# 별도 스케줄러 프로세스를 두지 않고 앱 수명주기에 붙인 백그라운드 태스크로 돈다 — 의존성이
+# 늘지 않고, 재시작해도 다음 자정을 다시 계산하므로 상태를 들고 있을 필요가 없다.
+_RANK_RECOMPUTE_TZ = ZoneInfo("Asia/Seoul")
+
+
+def _seconds_until_next_midnight() -> float:
+    now = datetime.now(_RANK_RECOMPUTE_TZ)
+    nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(1.0, (nxt - now).total_seconds())
+
+
+async def _rank_snapshot_scheduler() -> None:
+    import asyncio
+    import logging
+
+    from app.db.session import AsyncSessionLocal
+    from app.domain.feed.service import RankSnapshotService
+
+    log = logging.getLogger(__name__)
+    while True:
+        await asyncio.sleep(_seconds_until_next_midnight())
+        try:
+            async with AsyncSessionLocal() as session:
+                await RankSnapshotService(session).recompute_daily(
+                    await _rank_entries_computer(session)
+                )
+            log.info("랭크 스냅샷 재집계 완료")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            # 하루 실패해도 다음 자정에 다시 돈다 — 루프를 죽이지 않는다.
+            log.exception("랭크 스냅샷 재집계 실패")
 
 
 async def _migrate_match_notes(conn) -> None:
@@ -225,7 +268,13 @@ async def _drop_legacy_match_notes(conn) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await _ensure_schema()
-    yield
+    task = asyncio.create_task(_rank_snapshot_scheduler())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 def create_app() -> FastAPI:

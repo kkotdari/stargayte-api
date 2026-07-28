@@ -1170,7 +1170,6 @@ class MatchService:
         await self._session.commit()
         # 등록으로 달라진 포인트/순위를 스냅샷으로 남긴다 — 배치 등록(연속 POST)은 피드
         # 서비스가 시간창 안에서 한 이벤트로 합친다. 실패해도 등록 자체는 성공으로 둔다.
-        await self._record_rank_event("register", [match.id], [payload.match_type])
         return await self._repo.refresh(match)
 
     async def update_match(self, match_id: int, payload: MatchWrite, *, actor: Member) -> Match:
@@ -1291,7 +1290,6 @@ class MatchService:
         await self._repo.delete(match)
         await self._session.commit()
         # 삭제로 달라진 포인트/순위 스냅샷 — 연속 삭제(배치)도 한 이벤트로 합쳐진다.
-        await self._record_rank_event("delete", [match_id], [match_type])
 
     async def delete_all_matches(self, *, actor: Member) -> int:
         """모든 경기기록을 삭제한다(운영자 제어판). 리플레이(.rep) 파일과 replays 행도 함께
@@ -1308,31 +1306,12 @@ class MatchService:
         count = await self._repo.delete_all_matches()
         await self._repo.delete_all_replays()
         await self._session.commit()
-        # 전체 삭제도 하나의 이벤트 — 순위표가 비면 변동분(shifts)도 없어 피드엔 안 뜨지만,
-        # 다음 등록이 비교할 기준선은 갱신된다.
-        await self._record_rank_event("delete", [], ["0101", "0102"])
         return count
 
-    async def _record_rank_event(self, reason: str, match_ids: list[int], match_types: list[str]) -> None:
-        """등록/삭제 직후 포인트·순위 스냅샷을 남긴다 — 실패해도 본 작업엔 영향을 주지 않는다.
-
-        피드 도메인이 여기(get_stats)를 되부르는 순환을 피하려고 콜백으로 계산기를 넘긴다.
-        """
-        from app.domain.feed.service import RankSnapshotService
-
-        async def compute_entries(match_type: str, date_from: str, date_to: str):
-            return await self.get_stats(
-                member_ids=None, date_from=date_from, date_to=date_to,
-                match_type=match_type, race=None,
-            )
-
-        try:
-            await RankSnapshotService(self._session).record_event(
-                reason=reason, match_ids=match_ids, match_types=match_types,
-                compute_entries=compute_entries,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("랭크 스냅샷 저장 실패 (reason=%s, ids=%s)", reason, match_ids)
+    # (삭제) 등록/삭제 직후 랭크 스냅샷을 남기던 훅 — 하루에도 여러 번 변동 카드가 피드에
+    # 떠서 목록이 그 카드로 도배됐다(지적: "지금처럼 등록/삭제 시마다 계산을 하면 너무 자주
+    # 목록에 노출되는 문제"). 이제 재집계는 매일 자정 스케줄러 한 곳에서만 한다
+    # (app/main.py의 _rank_snapshot_scheduler → RankSnapshotService.recompute_daily).
 
     # ── 경기 댓글(메모) ─────────────────────────────────────────────────────
     # 게시판 댓글처럼 회원 누구나 한 줄(최대 50자)을 남기고, 본인/운영자만 수정·삭제한다.

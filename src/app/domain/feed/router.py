@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query, status
 
-from app.api.deps import CurrentMember, DbSession
+from app.api.deps import CurrentAdmin, CurrentMember, DbSession
 from app.domain.feed.schemas import (
     FeedCommentCreate,
     FeedCommentOut,
@@ -53,3 +53,12 @@ async def list_rank_snapshots(
     db: DbSession, current: CurrentMember, limit: int = Query(default=100, le=500),
 ) -> list[RankSnapshotOut]:
     return await RankSnapshotService(db).list_events(limit)
+
+
+# 순위 기준선 다시 깔기 — 제어판에서 손으로 누르는 1회용(요청). 변동 없이 저장되므로
+# 피드 목록에는 안 뜨고, 다음 자정 재집계가 이 기준선과 비교해 변동을 낸다.
+@router.post("/rank-snapshots/seed")
+async def reseed_rank_snapshots(db: DbSession, current: CurrentAdmin) -> dict[str, int]:
+    from app.main import _rank_entries_computer
+
+    return await RankSnapshotService(db).reseed_now(await _rank_entries_computer(db))
