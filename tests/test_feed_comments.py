@@ -206,10 +206,90 @@ async def _register_match_today(client, headers: dict, *, result: str = "team1")
     return res.json()
 
 
-async def test_rank_snapshot_on_register_and_batch_merge(client):
+async def test_rank_snapshot_without_seed_registers_silently(client):
+    """기준선이 없으면 첫 등록은 변동 카드 없이 기준선으로만 남는다(요청).
+
+    예전엔 비교 대상이 없어 순위표에 있는 전원이 '신규 진입'으로 쏟아졌다. 경기 등록
+    자체는 정상이고, 이 스냅샷이 다음 등록의 비교 기준이 된다."""
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _approve(client, a["accessToken"], "bob")
+
+    m1 = await _register_match_today(client, _h(a))
+    assert m1["id"]  # 등록은 정상
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    assert res.status_code == 200, res.text
+    assert res.json() == []  # 피드에는 '전원 신규' 카드가 뜨지 않는다
+
+
+async def test_seed_lays_baseline_per_match_type(client, db_session):
+    """시드 멱등 판정은 경기유형별로 한다(지적).
+
+    예전엔 테이블 전체 건수를 봐서, 개인전 행만 있고 팀전 행이 없는 DB에서는 팀전
+    기준선이 영영 안 깔렸다."""
+    from sqlalchemy import delete, select
+
+    from app.domain.feed.models import RankSnapshot
+    from app.main import _seed_rank_snapshots
+
+    await _signup(client, "alice", "Alice#1001")
+    await _seed_rank_snapshots()
+    db_session.expire_all()
+    assert set((await db_session.scalars(select(RankSnapshot.match_type))).all()) == {"0101", "0102"}
+
+    # 팀전 기준선만 지우고 다시 부팅 — 팀전만 새로 깔려야 한다.
+    await db_session.execute(delete(RankSnapshot).where(RankSnapshot.match_type == "0102"))
+    await db_session.commit()
+    await _seed_rank_snapshots()
+    db_session.expire_all()
+    assert set((await db_session.scalars(select(RankSnapshot.match_type))).all()) == {"0101", "0102"}
+
+
+async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session):
+    """달이 바뀌면 지난달 순위표와 비교하지 않는다(요청).
+
+    순위표가 '이번 달' 성적만으로 매겨지므로, 지난달 표를 기준 삼으면 이번 달에 처음
+    뛴 사람이 전부 '신규 진입'이 된다(매달 1일마다). 그 첫 이벤트는 조용한 기준선으로만
+    남고, 그 뒤 등록부터 정상적으로 변동이 잡힌다."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.domain.feed.models import RankSnapshot
+    from app.main import _seed_rank_snapshots
+
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    await _seed_rank_snapshots()
+
+    # 기준선을 '지난달'로 밀어 둔다.
+    for row in (await db_session.scalars(select(RankSnapshot))).all():
+        row.created_at = row.created_at - timedelta(days=40)
+    await db_session.commit()
+
+    await _register_match_today(client, _h(a))
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    assert res.status_code == 200, res.text
+    assert res.json() == []  # 월초 '전원 신규' 카드가 뜨지 않는다
+
+    # 그 뒤 등록은 이번 달 기준선과 비교돼 정상 동작한다 — 아무도 신규가 아니다.
+    await _register_match_today(client, _h(a), result="team2")
+    await _register_match_today(client, _h(a), result="team2")
+    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    events = res.json()
+    assert len(events) >= 1
+    assert all(s["from"] is not None for ev in events for s in ev["shifts"])
+
+
+async def test_rank_snapshot_on_register_and_batch_merge(client):
+    from app.main import _seed_rank_snapshots
+
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    # 부팅 훅과 같은 기준선(빈 순위표)을 먼저 깐다 — 이게 있어야 첫 등록이 변동으로 잡힌다.
+    await _seed_rank_snapshots()
 
     # 첫 등록 — 두 명 모두 신규 진입 변동이 스냅샷으로 남는다(서버가 자동 계산·저장).
     m1 = await _register_match_today(client, _h(a))
@@ -240,9 +320,12 @@ async def test_rank_snapshot_on_register_and_batch_merge(client):
 
 async def test_feed_comment_on_rankshift_target(client):
     """순위변동 알림 카드에도 같은 댓글 API가 그대로 붙는다(요청)."""
+    from app.main import _seed_rank_snapshots
+
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _approve(client, a["accessToken"], "bob")
+    await _seed_rank_snapshots()  # 기준선이 있어야 첫 등록이 변동 카드로 남는다
 
     await _register_match_today(client, _h(a))
     res = await client.get("/api/feed/rank-snapshots", headers=_h(a))

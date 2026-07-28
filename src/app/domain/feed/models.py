@@ -58,7 +58,10 @@ class RankSnapshot(TimestampMixin, Base):
     - standings: [{"memberId", "nickname", "points", "rank"}, ...] (그 시점 전체 순위표)
     - shifts:    [{"memberId", "nickname", "from", "to"}, ...] (from=None 은 신규 진입)
     - match_ids: 이 이벤트를 만든 경기 id들(배치면 여러 개, 전체 삭제면 빈 배열)
-    - reason:    "register" | "delete" | "seed"(부팅 시 최초 기준 적재)
+    - reason:    "register" | "delete" | "seed"
+                 seed = 비교 기준선. 부팅 시 최초 적재분과, 비교할 '같은 달' 스냅샷이
+                 없는 이벤트(최초 등록·매달 첫 등록)가 여기 해당한다 — 변동 없이
+                 기준선으로만 남아 피드에 안 보인다.
     """
 
     __tablename__ = "rank_snapshots"
