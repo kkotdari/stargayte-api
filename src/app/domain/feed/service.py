@@ -220,12 +220,18 @@ class RankSnapshotService:
     @staticmethod
     def _diff(base: list[dict], new: list[dict]) -> list[dict]:
         """직전 순위표 대비 순위 변동 — 새 순위표에 있는 사람 중 순위가 바뀐/신규인 사람만,
-        변동 후 순위가 높은 순으로."""
+        변동 후 순위가 높은 순으로.
+
+        순위와 함께 포인트도 담는다(요청: 순위 변동 옆에 포인트 변동도 수치로) — 몇 계단
+        올랐는지만으로는 그게 한 판 차이인지 몰아친 결과인지 알 수가 없다.
+        """
         base_rank = {e["memberId"]: e["rank"] for e in base}
+        base_points = {e["memberId"]: e["points"] for e in base}
         shifts = [
             {
                 "memberId": e["memberId"], "nickname": e["nickname"],
                 "from": base_rank.get(e["memberId"]), "to": e["rank"],
+                "fromPoints": base_points.get(e["memberId"]), "toPoints": e["points"],
             }
             for e in new
             if base_rank.get(e["memberId"]) != e["rank"]

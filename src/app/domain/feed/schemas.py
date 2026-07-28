@@ -63,6 +63,10 @@ class RankShiftEntry(BaseModel):
     nickname: str
     from_rank: int | None = Field(default=None, alias="from")
     to_rank: int = Field(alias="to")
+    # 포인트 변동(요청) — 이 필드가 생기기 전에 쌓인 스냅샷에는 없으므로 둘 다 optional로
+    # 둔다. 보여주는 쪽에서 둘 다 있을 때만 증감을 표시한다.
+    from_points: int | None = Field(default=None, alias="fromPoints")
+    to_points: int | None = Field(default=None, alias="toPoints")
 
 
 class RankSnapshotOut(BaseModel):

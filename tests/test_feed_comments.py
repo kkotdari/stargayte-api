@@ -256,6 +256,28 @@ async def test_daily_recompute_first_run_is_silent_baseline(client):
     assert all(s["from"] is not None for ev in events for s in ev["shifts"])
 
 
+async def test_shift_carries_point_change(client):
+    """순위 변동에 포인트 변동도 함께 실린다(요청: 순위 변동 옆에 "+100p").
+
+    몇 계단 올랐는지만으로는 그게 한 판 차이인지 몰아친 결과인지 알 수가 없다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    await _register_match_today(client, _h(a))
+    await _recompute(client)  # 기준선
+    await _register_match_today(client, _h(a), result="team2")
+    await _register_match_today(client, _h(a), result="team2")
+    await _recompute(client)
+
+    events = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+    shifts = [s for ev in events for s in ev["shifts"]]
+    assert shifts
+    assert all(s["fromPoints"] is not None and s["toPoints"] is not None for s in shifts)
+    # 순위가 바뀔 만큼 경기를 했으면 포인트도 실제로 움직였어야 한다.
+    assert any(s["toPoints"] != s["fromPoints"] for s in shifts)
+
+
 async def test_daily_recompute_is_idempotent(client):
     """순위표가 그대로면 다시 돌려도 아무것도 안 남는다 — 매일 도는 작업이라 중요하다."""
     a = await _signup(client, "alice", "Alice#1001")
