@@ -8,7 +8,6 @@ from app.domain.challenges.schemas import (
     ChallengeRescheduleIn,
     ChallengeRespondIn,
     ChallengeResultIn,
-    ChallengeRevengeIn,
 )
 from app.domain.challenges.service import ChallengeService
 
@@ -68,18 +67,6 @@ async def enter_challenge_result(
     return await ChallengeService(db).enter_result(
         challenge_id, payload.winner_side, actor=current,
         scheduled_date=payload.scheduled_date,
-    )
-
-
-# 완료된 대결에서 패배한 쪽의 재대결(설욕전). 취소/연기/재신청 엔드포인트는 제거됐다 —
-# 취소/미실시/거절은 모두 폐기(휴지통)로 통합됐고, 재신청은 없앴다.
-@router.post("/{challenge_id}/revenge", response_model=ChallengeOut)
-async def revenge_challenge(
-    challenge_id: int, payload: ChallengeRevengeIn, db: DbSession, current: CurrentMember
-) -> ChallengeOut:
-    return await ChallengeService(db).revenge_challenge(
-        challenge_id, actor=current, scheduled_date=payload.scheduled_date,
-        scheduled_time_note=payload.scheduled_time_note, message=payload.message,
     )
 
 

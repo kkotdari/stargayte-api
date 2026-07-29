@@ -56,6 +56,7 @@ async def _ensure_schema() -> None:
         await _add_match_result_summary(conn)
         await _add_challenge_time_note(conn)
         await _drop_challenge_time(conn)
+        await _drop_challenge_revenge_chain(conn)
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
         await _drop_legacy_match_summary(conn)
@@ -135,6 +136,38 @@ async def _add_challenge_time_note(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("challenges.scheduled_time_note 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _drop_challenge_revenge_chain(conn: object) -> None:
+    """challenges.reapplied_from_id(설욕전 체인 컬럼)를 지운다(멱등).
+
+    "너 나와!"에서 설욕전(재대결) 개념 자체를 없앴다(요청) — 도전장끼리 이어 붙는 연계가
+    사라졌으므로 원본을 가리키던 이 컬럼도 쓸 데가 없다.
+
+    운영(PostgreSQL)은 컬럼을 지우면 딸린 외래키 제약도 함께 사라져 그대로 성공한다.
+    SQLite는 외래키에 걸린 컬럼을 못 지운다고 거절하는데, 그래도 문제는 없다 — 로컬/테스트
+    DB는 create_all로 새로 만들어지고 모델에서 이 컬럼이 빠졌으니 애초에 생기지 않는다.
+    이미 컬럼이 있는 옛 SQLite 파일에만 값이 남고, 아무 코드도 그 값을 읽지 않는다.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    try:
+        # IF EXISTS는 PostgreSQL만 받는다(SQLite는 DROP COLUMN까지만) — 있는지 먼저 보고
+        # 조건 없는 DROP COLUMN을 날려 두 DB 모두에서 실제로 지워지게 한다.
+        cols = await conn.run_sync(  # type: ignore[attr-defined]
+            lambda c: {col["name"] for col in inspect(c).get_columns("challenges")}
+        )
+        if "reapplied_from_id" not in cols:
+            return
+        await conn.execute(text("ALTER TABLE challenges DROP COLUMN reapplied_from_id"))  # type: ignore[attr-defined]
+        logging.getLogger(__name__).info("challenges.reapplied_from_id 삭제 완료")
+    except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(컬럼이 그대로 남는다).
+        logging.getLogger(__name__).warning(
+            "challenges.reapplied_from_id 삭제 건너뜀(외래키에 걸린 컬럼을 못 지우는 DB)",
+            exc_info=True,
+        )
 
 
 async def _drop_challenge_time(conn: object) -> None:

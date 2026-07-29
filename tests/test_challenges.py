@@ -1,6 +1,6 @@
-"""도전장("너 나와!") 게시판 스모크 테스트 — 상태 4개(응답대기/성사/완료/폐기)와
-재대결(revenge)만 남긴 구조. 취소/연기/재신청은 제거됐고, 거절·무응답·미실시는 모두
-폐기(휴지통)로 통합됐다."""
+"""도전장("너 나와!") 게시판 스모크 테스트 — 상태 4개(응답대기/성사/완료/폐기)뿐인 구조.
+취소/연기/재신청/설욕전(재대결)은 모두 제거됐고, 거절·무응답·미실시는 폐기(휴지통)로
+통합됐다. 도전장끼리 이어 붙는 연계 개념은 이제 없다 — 한 건은 그 자체로 끝난다."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -480,133 +480,6 @@ async def test_not_held_result_goes_to_trash(client):
     assert res.json()["status"] == "discarded"
 
 
-async def test_revenge_only_by_losing_side_and_links_chain(client):
-    a = await _signup(client, "alice", "Alice#1001")
-    b = await _signup(client, "bob", "Bob#1002")
-    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
-    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
-    await _approve(client, a["accessToken"], "bob")
-
-    res = await client.post(
-        "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01"},
-    )
-    original_id = res.json()["id"]
-    await client.post(
-        f"/api/challenges/{original_id}/respond", headers=headers_b,
-        json={"response": "accepted", "reason": "OK!"},
-    )
-    # alice(creator)가 이겼다 — bob(target)이 패배한 쪽.
-    await client.post(
-        f"/api/challenges/{original_id}/result", headers=headers_a,
-        json={"winnerSide": "creator", "scheduledDate": "2020-01-01"},
-    )
-
-    # 이긴 쪽(alice)은 재대결을 신청할 수 없다.
-    res = await client.post(f"/api/challenges/{original_id}/revenge", headers=headers_a, json={})
-    assert res.status_code == 403, res.text
-
-    # 패배한 쪽(bob)은 신청할 수 있고, bob이 새 도전장의 요청자가 된다.
-    res = await client.post(
-        f"/api/challenges/{original_id}/revenge", headers=headers_b,
-        json={"scheduledDate": "2026-09-01", "message": "이번엔 진짜 설욕한다"},
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["reappliedFromId"] == original_id
-    assert body["createdBy"]["id"] == "bob"
-    assert [t["memberId"] for t in body["targets"]] == ["alice"]
-    # 리벤지 신청 시 보낸 한마디가 새 도전장에 저장된다(요청).
-    assert body["message"] == "이번엔 진짜 설욕한다"
-
-    # 원래 대결은 목록에서 더 안 보인다(체인 최신건만 노출).
-    res = await client.get("/api/challenges", headers=headers_a)
-    ids = [c["id"] for c in res.json()["items"]]
-    assert original_id not in ids
-    assert body["id"] in ids
-
-
-async def test_discarded_revenge_revives_original_for_another_revenge(client):
-    """완료된 건에 재대결했는데 그 재대결이 폐기되면, 원래 완료 건이 목록에 다시 나타나고
-    또 재대결을 신청할 수 있다(요청)."""
-    a = await _signup(client, "alice", "Alice#1001")
-    b = await _signup(client, "bob", "Bob#1002")
-    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
-    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
-    await _approve(client, a["accessToken"], "bob")
-
-    res = await client.post(
-        "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01"},
-    )
-    original_id = res.json()["id"]
-    await client.post(
-        f"/api/challenges/{original_id}/respond", headers=headers_b,
-        json={"response": "accepted", "reason": "OK!"},
-    )
-    await client.post(
-        f"/api/challenges/{original_id}/result", headers=headers_a,
-        json={"winnerSide": "creator", "scheduledDate": "2020-01-01"},
-    )
-    # bob이 재대결 신청(bob=요청자, alice=지목).
-    res = await client.post(
-        f"/api/challenges/{original_id}/revenge", headers=headers_b,
-        json={"scheduledDate": "2026-09-01"},
-    )
-    revenge_id = res.json()["id"]
-
-    # alice가 재대결을 거절 → 재대결이 폐기된다.
-    res = await client.post(
-        f"/api/challenges/{revenge_id}/respond", headers=headers_a,
-        json={"response": "rejected", "reason": "다음에"},
-    )
-    assert res.json()["status"] == "discarded"
-
-    # 목록: 원래 완료 건이 되살아나고(더는 재대결에 가려지지 않음), 폐기된 재대결은
-    # 폐기 상태로 남아 휴지통에 담긴다(프론트가 status로 갈라 넣는다).
-    res = await client.get("/api/challenges", headers=headers_a)
-    by_id = {c["id"]: c for c in res.json()["items"]}
-    assert original_id in by_id
-    assert by_id[revenge_id]["status"] == "discarded"
-
-    # bob은 원래 건에 다시 재대결을 신청할 수 있다.
-    res = await client.post(
-        f"/api/challenges/{original_id}/revenge", headers=headers_b,
-        json={"scheduledDate": "2026-10-01"},
-    )
-    assert res.status_code == 200, res.text
-
-
-async def test_result_draw_and_not_held_block_revenge(client):
-    admin = await _signup(client, "admin", "Admin#1000")
-    for winner in ("draw", "not_held"):
-        a = await _signup(client, f"alice_{winner}", f"Alice{winner}#1001")
-        b = await _signup(client, f"bob_{winner}", f"Bob{winner}#1002")
-        headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
-        headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
-        await _approve(client, admin["accessToken"], f"alice_{winner}")
-        await _approve(client, admin["accessToken"], f"bob_{winner}")
-
-        res = await client.post(
-            "/api/challenges", headers=headers_a,
-            json={"targetMemberIds": [f"bob_{winner}"], "scheduledDate": "2020-01-01"},
-        )
-        challenge_id = res.json()["id"]
-        await client.post(
-            f"/api/challenges/{challenge_id}/respond", headers=headers_b,
-            json={"response": "accepted", "reason": "OK!"},
-        )
-        res = await client.post(
-            f"/api/challenges/{challenge_id}/result", headers=headers_a,
-            json={"winnerSide": winner, "scheduledDate": "2020-01-01"},
-        )
-        assert res.status_code == 200, res.text
-
-        for headers in (headers_a, headers_b):
-            res = await client.post(f"/api/challenges/{challenge_id}/revenge", headers=headers, json={})
-            assert res.status_code == 400, res.text
-
-
 async def test_listing_expires_stale_pending_as_discarded(client, db_session):
     """응답 기한(요청일+72시간)이 지난 pending 도전장은 목록 조회 시 폐기(휴지통)로 넘어간다 —
     지목자는 응답하지 않았으므로 response는 그대로 pending이고, 폐기는 예정 일시를 건드리지
@@ -858,7 +731,12 @@ async def test_target_can_add_time_note_when_creator_left_it_blank(client):
     assert res.json()["scheduledDate"] == "2026-08-01"
 
 
-async def test_time_note_dropped_when_no_date(client):
+async def test_time_note_kept_without_date(client):
+    """날짜와 "언제"는 서로 상관없이 따로 적는다(요청: "둘은 이제 상관없이 별도로 입력가능").
+
+    예전에는 날짜가 없으면 "언제" 메모를 버렸는데, 그러면 사람이 적어 넣은 말이 소리 없이
+    사라졌다. 날짜 없이 "아무도 몰래"만 적어 보내는 것도 이제 그대로 남는다.
+    """
     a = await _signup(client, "alice", "Alice#1001")
     headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
     await _signup(client, "bob", "Bob#1002")
@@ -869,6 +747,20 @@ async def test_time_note_dropped_when_no_date(client):
         json={"targetMemberIds": ["bob"], "scheduledTimeNote": "아무도 몰래"},
     )
     assert res.status_code == 200, res.text
-    # 날짜가 없으면 일정 자체가 미정이라 메모도 버린다.
     assert res.json()["scheduledDate"] is None
-    assert res.json()["scheduledTimeNote"] == ""
+    assert res.json()["scheduledTimeNote"] == "아무도 몰래"
+
+    # 수락하는 쪽도 날짜 없이 "언제"만 덧붙일 수 있다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]},
+    )
+    cid = res.json()["id"]
+    b_token = (await client.post("/api/auth/login", json={"id": "bob", "password": "pass1234"})).json()
+    res = await client.post(
+        f"/api/challenges/{cid}/respond",
+        headers={"Authorization": f"Bearer {b_token['accessToken']}"},
+        json={"response": "accepted", "scheduledTimeNote": "그날 봐서"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["scheduledDate"] is None
+    assert res.json()["scheduledTimeNote"] == "그날 봐서"

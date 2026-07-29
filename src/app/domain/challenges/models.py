@@ -53,14 +53,6 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 소프트 삭제 — 폐기(discarded_at)된 지 7일이 지나면 목록 조회 시 배치가 이 값을 찍어
     # 이후로는 어떤 조회에도 안 나온다(DB에서는 남겨둔다). NULL이면 살아있음.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # 재대결(설욕전) 체인 — 완료된 대결에서 패배한 쪽이 같은 대진으로 다시 신청하면, 원래
-    # 행은 그대로 두고 새 행을 만들어 여기에 원래 행의 id를 남긴다. service.py가 이 컬럼을
-    # 따라 올라가며 이력(history)을 만든다. (예전엔 거절/취소 뒤 '재신청(reapply)'도 이
-    # 체인을 썼지만, 재신청 기능은 제거됐고 이제 체인은 재대결(revenge) 하나뿐이라 chain_kind
-    # 컬럼도 없앴다 — reapplied_from_id가 있으면 곧 재대결이다.)
-    reapplied_from_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("challenges.id", ondelete="SET NULL"), nullable=True
-    )
     # "대결 요청 코너"의 요청을 누군가 "들어주기"로 받아 만든 도전장이면 True — 카드에 "요청대결"
     # 배지를 붙이는 데 쓴다(요청). 일반 도전장은 False.
     from_match_request: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

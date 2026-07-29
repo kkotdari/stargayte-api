@@ -43,26 +43,6 @@ class ChallengeOwnMemberOut(BaseModel):
     avatar: str | None
 
 
-class ChallengeHistoryEntry(BaseModel):
-    """재대결 체인에서 지금 이 도전장보다 앞선(더 예전) 기록 한 건 — 목록 화면 카드
-    안에서 좌우로 슬라이드해 볼 수 있게 넘겨준다."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: int
-    # 정렬/날짜 그룹핑/카운트다운용 파생 일시(UTC) — 시간이 미정이면 자정으로 채워 내려간다.
-    scheduled_at: datetime | None = Field(alias="scheduledAt")
-    # 실제 저장값 — 날짜 하나뿐이다(시각 필드는 없앴다).
-    scheduled_date: str | None = Field(default=None, alias="scheduledDate")
-    # 시간을 사람 말로 적어 둔 것(요청) — "저녁 9시쯤" 같은 자유 텍스트. 안 적었으면 빈 문자열.
-    # 정렬/마감 계산에는 안 쓴다(그건 계속 scheduledDate만 본다).
-    scheduled_time_note: str = Field(default="", alias="scheduledTimeNote")
-    status: ChallengeStatus
-    targets: list[ChallengeTargetOut]
-    created_at: datetime = Field(alias="createdAt")
-    result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
-
-
 class ChallengeOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -85,13 +65,8 @@ class ChallengeOut(BaseModel):
     # 폐기(휴지통)된 시각 — 폐기 상태가 아니면 None. 휴지통 목록을 "최근 버려진 순"으로
     # 정렬하는 데 쓴다(프론트 요청: "최근 버려진게 위에 오게").
     discarded_at: datetime | None = Field(default=None, alias="discardedAt")
-    # 재대결 체인 — 이 도전장이 재대결(설욕전)로 만들어졌으면 원래 도전장의 id, 아니면 None.
-    # (값이 있으면 곧 재대결이다 — 재신청은 제거돼 chain_kind 구분이 필요 없어졌다.)
-    reapplied_from_id: int | None = Field(default=None, alias="reappliedFromId")
     # 확정된 대결의 결과(이긴 쪽) — 아직 아무도 입력하지 않았으면 None.
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
-    # 이 도전장보다 앞선 체인 기록(오래된 순) — 재대결 이력이 없으면 빈 배열.
-    history: list[ChallengeHistoryEntry] = Field(default_factory=list)
     # "대결 요청 들어주기"로 만들어졌으면 True — 카드에 "요청대결" 배지를 붙인다.
     from_match_request: bool = Field(default=False, alias="fromMatchRequest")
 
@@ -99,8 +74,10 @@ class ChallengeOut(BaseModel):
 class ChallengeCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    # 날짜/시간 각각 선택(요청: 시간 null 가능, 날짜만 지정 가능). 날짜 없이 시간만은 UI에서
-    # 막혀 오지 않지만, 서버는 날짜가 없으면 시간도 무시한다(_normalize).
+    # 날짜/시간 각각 선택(요청: 시간 null 가능, 날짜만 지정 가능). 둘은 서로 상관없다
+    # (요청: "둘은 이제 상관없이 별도로 입력가능") — 날짜 없이 "이번 주말쯤"만 적어 보낼
+    # 수도 있다. 예전엔 날짜가 없으면 "언제"를 버렸는데, 그러면 사람이 적어 넣은 말이
+    # 소리 없이 사라졌다.
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
     # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
     scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
@@ -122,9 +99,6 @@ class ChallengeCreate(BaseModel):
             raise ValueError("같은 회원을 두 번 지목할 수 없습니다.")
         if set(self.target_member_ids) & set(self.own_team_member_ids):
             raise ValueError("상대 팀과 내 팀에 같은 회원을 동시에 넣을 수 없습니다.")
-        # 날짜가 없으면 일정 자체가 미정이다 — "언제" 메모도 함께 버린다.
-        if self.scheduled_date is None:
-            self.scheduled_time_note = ""
         return self
 
 
@@ -142,18 +116,6 @@ class ChallengeRespondIn(BaseModel):
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
     # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
     scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
-
-
-class ChallengeRevengeIn(BaseModel):
-    """완료된 대결에서 패배한 쪽이 같은 대진으로 재대결(설욕전)을 신청 — 원래 도전장은
-    손대지 않고 새 도전장을 만든다. 시간은 비워서 보낼 수 있다. 한마디(선택)도 함께."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    scheduled_date: date | None = Field(default=None, alias="scheduledDate")
-    # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
-    scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
-    message: str = Field(default="", max_length=50)
 
 
 class ChallengeRescheduleIn(BaseModel):

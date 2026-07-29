@@ -28,20 +28,6 @@ class ChallengeRepository:
         )
         return list(result.scalars().unique().all())
 
-    async def is_superseded(self, challenge_id: int) -> bool:
-        """다른 (살아있는) 도전장이 이미 이 id를 reapplied_from_id로 가리키고 있으면 True —
-        같은 원본에서 재대결 체인이 두 갈래로 갈라지는 것을 막는다. 단 그 자식이 폐기(휴지통)
-        됐거나 소프트삭제됐으면 세지 않는다 — 재대결이 버려지면 원래 완료 건이 다시 재대결
-        대상이 돼야 하기 때문(요청)."""
-        result = await self._session.execute(
-            select(Challenge.id).where(
-                Challenge.reapplied_from_id == challenge_id,
-                Challenge.discarded_at.is_(None),
-                Challenge.deleted_at.is_(None),
-            ).limit(1)
-        )
-        return result.scalar_one_or_none() is not None
-
     async def list_pending_targets_for_member(self, member_pk: int) -> list[ChallengeParticipant]:
         result = await self._session.execute(
             select(ChallengeParticipant).where(

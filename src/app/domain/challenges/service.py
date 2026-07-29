@@ -9,7 +9,6 @@ from app.domain.challenges.repository import ChallengeRepository
 from app.domain.challenges.schemas import (
     ChallengeAuthor,
     ChallengeCreate,
-    ChallengeHistoryEntry,
     ChallengeOut,
     ChallengeOwnMemberOut,
     ChallengeTargetOut,
@@ -99,40 +98,7 @@ def _discard(challenge: Challenge, now: datetime) -> None:
         challenge.discarded_at = now
 
 
-def _losing_side(challenge: Challenge) -> str | None:
-    # 승패가 갈린 경우에만 패자가 있다 — 무승부(draw)/미실시(not_held)/미입력(None)은 없다.
-    if challenge.result_winner_side == "creator":
-        return "target"
-    if challenge.result_winner_side == "target":
-        return "creator"
-    return None
-
-
-def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
-    targets = [p for p in challenge.participants if p.side == "target"]
-    return ChallengeHistoryEntry(
-        id=challenge.id,
-        scheduledAt=_scheduled_at_iso(challenge),
-        scheduledDate=challenge.scheduled_date.isoformat() if challenge.scheduled_date else None,
-        scheduledTimeNote=challenge.scheduled_time_note or "",
-        status=_status_of(challenge),
-        resultWinnerSide=challenge.result_winner_side,
-        targets=[
-            ChallengeTargetOut(
-                memberId=p.member.id,
-                nickname=p.member.nickname,
-                battletag=p.member.battletag,
-                avatar=p.member.avatar_url,
-                response=p.response,
-                responseMessage=p.response_message,
-            )
-            for p in targets
-        ],
-        createdAt=challenge.created_at,
-    )
-
-
-def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = None) -> ChallengeOut:
+def to_challenge_out(challenge: Challenge) -> ChallengeOut:
     targets = [p for p in challenge.participants if p.side == "target"]
     own_members = [
         p for p in challenge.participants if p.side == "creator" and p.member_pk != challenge.created_by
@@ -170,9 +136,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         ],
         createdAt=challenge.created_at,
         discardedAt=challenge.discarded_at,
-        reappliedFromId=challenge.reapplied_from_id,
         resultWinnerSide=challenge.result_winner_side,
-        history=[_history_entry(c) for c in (history or [])],
         fromMatchRequest=challenge.from_match_request,
     )
 
@@ -202,36 +166,6 @@ class ChallengeService:
         )
         await self._session.delete(challenge)
         await self._session.commit()
-
-    # 재대결 체인(reapplied_from_id를 따라 올라가는 사슬)에서 이 도전장보다 앞선 기록을
-    # 오래된 순으로 모은다 — 단일 도전장 하나만 다루는 엔드포인트(respond/result/revenge)
-    # 에서 쓴다. 체인은 실제로는 몇 단계 안 넘을 것으로 보고, 매번 get()으로 한 단계씩
-    # 거슬러 올라가는 정도의 비용은 감수한다 —
-    # list_challenges처럼 전체 목록을 한 번에 다룰 때는 그 안에서 이미 불러온 것들로
-    # 메모리에서 처리한다(_history_chain_from_map 참고).
-    async def _history_chain(self, challenge: Challenge) -> list[Challenge]:
-        chain: list[Challenge] = []
-        cur = challenge
-        while cur.reapplied_from_id is not None:
-            parent = await self._repo.get(cur.reapplied_from_id)
-            if parent is None:
-                break
-            chain.append(parent)
-            cur = parent
-        chain.reverse()
-        return chain
-
-    def _history_chain_from_map(self, challenge: Challenge, by_id: dict[int, Challenge]) -> list[Challenge]:
-        chain: list[Challenge] = []
-        cur = challenge
-        while cur.reapplied_from_id is not None:
-            parent = by_id.get(cur.reapplied_from_id)
-            if parent is None:
-                break
-            chain.append(parent)
-            cur = parent
-        chain.reverse()
-        return chain
 
     async def _run_batches(self, challenges: list[Challenge]) -> None:
         """목록을 조회할 때마다 도는 가벼운 배치 두 가지 — 이미 로드된 목록을 메모리에서
@@ -264,20 +198,7 @@ class ChallengeService:
         await self._run_batches(challenges)
         # 방금 배치가 소프트 삭제한 건은 이번 응답에서도 바로 빼준다(메모리 값 반영).
         alive = [c for c in challenges if c.deleted_at is None]
-        by_id = {c.id: c for c in alive}
-        # 재대결로 새 행이 생기면 원래(완료) 행은 그 새 행에 가려 목록에서 숨는다 — 단
-        # 그 새 행이 폐기(휴지통)됐다면 가리지 못한다(요청: "완료된 건에 재대결했는데 그게
-        # 버려지면 원래 완료된 건은 다시 재대결 신청 가능"). 그래서 폐기된 자식은
-        # superseded 집합에서 제외해, 원래 완료 건이 목록에 되살아나 재대결 대상이 된다.
-        superseded_ids = {
-            c.reapplied_from_id for c in alive
-            if c.reapplied_from_id is not None and not _is_discarded(c)
-        }
-        visible = [c for c in alive if c.id not in superseded_ids]
-        return [
-            to_challenge_out(c, history=self._history_chain_from_map(c, by_id))
-            for c in visible
-        ]
+        return [to_challenge_out(c) for c in alive]
 
     async def create_challenge(self, payload: ChallengeCreate, *, actor: Member) -> ChallengeOut:
         target_members: list[Member] = []
@@ -395,15 +316,16 @@ class ChallengeService:
         # 요청자가 일정(날짜)을 안 정하고 보냈으면, 수락하는 이 시점에 상대가 날짜/시간을 정할
         # 수 있다 — 둘 다 선택이라 안 정한 채 수락도 가능하다(요청: "시간 null 가능", "날짜만
         # 지정 가능"). 이미 요청자가 날짜를 정한 도전장은 응답하는 쪽이 바꿀 수 없으므로 무시한다.
-        # 날짜 없이 시간만 온 경우는 의미가 없어 시간도 버린다.
+        # 날짜와 "언제"는 서로 상관없다(요청) — 날짜 없이 "언제"만 적어 수락할 수도 있다.
         if response == "accepted":
             note = scheduled_time_note.strip()
             if challenge.scheduled_date is None and scheduled_date is not None:
                 # 요청자가 날짜를 아예 안 정한 도전장 — 응답자가 날짜(+"언제")를 정한다.
                 challenge.scheduled_date = scheduled_date
-                challenge.scheduled_time_note = note
+                if note:
+                    challenge.scheduled_time_note = note
                 challenge.updated_by = actor.pk
-            elif challenge.scheduled_date is not None and not challenge.scheduled_time_note and note:
+            elif not challenge.scheduled_time_note and note:
                 # 요청자가 날짜만 정하고 "언제"는 안 적은 도전장 — 응답자가 그것만 덧붙일 수
                 # 있다(요청: "날짜가 입력되었어도 시간은 별도로 입력 가능"). 날짜는 못 바꾼다.
                 challenge.scheduled_time_note = note
@@ -417,7 +339,7 @@ class ChallengeService:
             _discard(challenge, datetime.now(UTC))
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, history=await self._history_chain(challenge))
+        return to_challenge_out(challenge)
 
     async def reschedule(
         self, challenge_id: int, *, scheduled_date: date | None,
@@ -436,11 +358,11 @@ class ChallengeService:
         if not is_participant and not actor.has_any_role("0202"):
             raise ForbiddenError("참가자 또는 운영자만 일정을 수정할 수 있습니다.")
         challenge.scheduled_date = scheduled_date
-        challenge.scheduled_time_note = scheduled_time_note.strip() if scheduled_date is not None else ""
+        challenge.scheduled_time_note = scheduled_time_note.strip()
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, history=await self._history_chain(challenge))
+        return to_challenge_out(challenge)
 
     async def enter_result(
         self,
@@ -476,56 +398,4 @@ class ChallengeService:
             _discard(challenge, datetime.now(UTC))
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
-        return to_challenge_out(challenge, history=await self._history_chain(challenge))
-
-    async def revenge_challenge(
-        self,
-        challenge_id: int,
-        *,
-        actor: Member,
-        scheduled_date: date | None = None,
-        scheduled_time_note: str = "",
-        message: str = "",
-    ) -> ChallengeOut:
-        """결과가 입력된 확정 대결에서, 패배한 쪽 참가자가 같은 대진으로 설욕전을
-        신청한다(요청: "완료시 패배한 쪽에서 설욕전 신청 가능... 이경우 너나와 체인으로
-        연결"). 패배한 편 전원이 새 도전장의 요청자 쪽이 되고, 승리한 편이 새 지목
-        대상이 된다."""
-        challenge = await self._repo.get(challenge_id)
-        if challenge is None:
-            raise NotFoundError("도전장을 찾을 수 없습니다.")
-        if challenge.result_winner_side is None:
-            raise ValidationError("결과가 입력된 대결만 재대결을 신청할 수 있습니다.")
-        losing_side = _losing_side(challenge)
-        if losing_side is None:
-            # 무승부/미실시는 패자가 없어 재대결 대상이 아니다(요청: "무승부나 미실시도 있게").
-            raise ValidationError("무승부/미실시 대결은 재대결을 신청할 수 없습니다.")
-        loser_pks = {p.member_pk for p in challenge.participants if p.side == losing_side}
-        if actor.pk not in loser_pks:
-            raise ForbiddenError("패배한 쪽만 재대결을 신청할 수 있습니다.")
-        if await self._repo.is_superseded(challenge.id):
-            raise ValidationError("이미 이어진 도전장이 있습니다.")
-
-        winning_side = "creator" if losing_side == "target" else "target"
-        new_challenge = Challenge(
-            match_type=challenge.match_type,
-            scheduled_date=scheduled_date,
-            scheduled_time_note=scheduled_time_note.strip() if scheduled_date is not None else "",
-            message=message.strip(),
-            created_by=actor.pk,
-            updated_by=actor.pk,
-            reapplied_from_id=challenge.id,
-        )
-        new_challenge.participants = (
-            [ChallengeParticipant(member_pk=pk, side="creator") for pk in loser_pks]
-            + [
-                ChallengeParticipant(member_pk=p.member_pk, side="target")
-                for p in challenge.participants
-                if p.side == winning_side
-            ]
-        )
-        self._repo.add(new_challenge)
-        await self._repo.flush()
-        await self._session.commit()
-        await self._session.refresh(new_challenge, attribute_names=["creator", "participants"])
-        return to_challenge_out(new_challenge, history=await self._history_chain(new_challenge))
+        return to_challenge_out(challenge)
