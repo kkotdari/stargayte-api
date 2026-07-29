@@ -4,60 +4,60 @@ from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, o
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.domain.matches.models import (
-    Match,
-    MatchParticipant,
-    MatchResult,
+from app.domain.game_results.models import (
+    GameResult,
+    GameResultParticipant,
+    GameOutcome,
     Replay,
 )
 from app.domain.members.models import Member, ReplayAlias
 
 
-class MatchRepository:
+class GameResultRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def _base_query(self) -> Select[tuple[Match]]:
-        return select(Match).options(
-            selectinload(Match.participants),
-            selectinload(Match.result_row).selectinload(MatchResult.replay),
-            selectinload(Match.creator),
+    def _base_query(self) -> Select[tuple[GameResult]]:
+        return select(GameResult).options(
+            selectinload(GameResult.participants),
+            selectinload(GameResult.result_row).selectinload(GameOutcome.replay),
+            selectinload(GameResult.creator),
             # 댓글(메모)과 그 안의 언급/작성자 — 목록/상세 응답에 함께 실어야 하므로 eager
             # 로드한다(mentions/creator는 관계 자체가 lazy="selectin"이라 자동으로 딸려온다).
         )
 
-    async def get(self, match_id: int) -> Match | None:
-        stmt = self._base_query().where(Match.id == match_id)
+    async def get(self, match_id: int) -> GameResult | None:
+        stmt = self._base_query().where(GameResult.id == match_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
-    async def get_by_match_no(self, match_no: str) -> Match | None:
-        stmt = self._base_query().where(Match.match_no == match_no)
+    async def get_by_match_no(self, match_no: str) -> GameResult | None:
+        stmt = self._base_query().where(GameResult.match_no == match_no)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def next_match_no_suffix(self, base: str) -> int:
         # 같은 12자리(YYMMDDHHMMSS) base를 쓰는 행 중 가장 큰 2자리 일련번호 다음 값을
         # 돌려준다 — 문자열 뒤 2자리를 정수로 잘라 비교(같은 자릿수라 문자열 정렬=숫자
         # 정렬이지만 명시적으로 캐스팅해 안전하게 최댓값을 구한다).
-        suffix_expr = func.cast(func.substr(Match.match_no, len(base) + 1, 2), Integer)
-        stmt = select(func.max(suffix_expr)).where(Match.match_no.like(f"{base}%"))
+        suffix_expr = func.cast(func.substr(GameResult.match_no, len(base) + 1, 2), Integer)
+        stmt = select(func.max(suffix_expr)).where(GameResult.match_no.like(f"{base}%"))
         max_suffix = (await self._session.execute(stmt)).scalar_one_or_none()
         return 0 if max_suffix is None else max_suffix + 1
 
-    def add(self, match: Match) -> None:
+    def add(self, match: GameResult) -> None:
         self._session.add(match)
 
-    async def delete(self, match: Match) -> None:
+    async def delete(self, match: GameResult) -> None:
         await self._session.delete(match)
 
     async def delete_all_matches(self) -> int:
         # 참가자/첨부/결과는 FK ondelete=CASCADE라 matches 한 방 삭제로 함께 지워진다.
-        result = await self._session.execute(delete(Match))
+        result = await self._session.execute(delete(GameResult))
         return int(result.rowcount or 0)
 
     async def flush(self) -> None:
         await self._session.flush()
 
-    async def refresh(self, match: Match) -> Match:
+    async def refresh(self, match: GameResult) -> GameResult:
         """commit 이후 participants까지 eager load 된 상태로 다시 읽어온다.
         session.refresh(attribute_names=[...])는 참가자 목록을 새로 로드해주지 않아,
         이후 응답 직렬화 시 동기 컨텍스트에서 lazy-load 예외가 난다."""
@@ -76,25 +76,25 @@ class MatchRepository:
         return member_alias, condition
 
     def _participant_term_exists(self, term: str):
-        # 참가자(match_participants) 중 이 경기(Match.id)에 속하면서, 닉네임/배틀태그/
+        # 참가자(match_participants) 중 이 경기(GameResult.id)에 속하면서, 닉네임/배틀태그/
         # (그 회원이 등록한 모든 게임 아이디)/이 경기에서 실제로 쓴 이름 중 하나라도 이
         # 검색어를 포함하는 사람이 있는지 — EXISTS로 확인한다(메인 쿼리에 JOIN하면 LIMIT
         # 적용 전에 행이 참가자 수만큼 불어난다).
         like = f"%{term}%"
-        own_alias, own_condition = self._member_alias_join(MatchParticipant.player_name)
+        own_alias, own_condition = self._member_alias_join(GameResultParticipant.player_name)
         return exists(
             select(1)
-            .select_from(MatchParticipant)
+            .select_from(GameResultParticipant)
             .outerjoin(own_alias, own_condition)
             .outerjoin(Member, Member.pk == own_alias.member_pk)
             .outerjoin(ReplayAlias, ReplayAlias.member_pk == Member.pk)
             .where(
-                MatchParticipant.match_id == Match.id,
+                GameResultParticipant.match_id == GameResult.id,
                 or_(
                     Member.nickname.ilike(like),
                     Member.battletag.ilike(like),
                     ReplayAlias.raw_name.ilike(like),
-                    MatchParticipant.player_name.ilike(like),
+                    GameResultParticipant.player_name.ilike(like),
                 ),
             )
         )
@@ -115,14 +115,14 @@ class MatchRepository:
         각 참가행이 어느 회원인지는 player_name을 replay_aliases(kind='member')와 조인해
         구한다(더 이상 member_pk 컬럼이 없다).
 
-        안쪽 EXISTS에서 경기를 가리킬 때 Match.id가 아니라 anchor.match_id를 쓴다 — 바깥
+        안쪽 EXISTS에서 경기를 가리킬 때 GameResult.id가 아니라 anchor.match_id를 쓴다 — 바깥
         테이블(matches)을 안쪽에서 참조하면 SQLAlchemy가 그 테이블을 서브쿼리의 FROM에 다시
         넣어버려(상관 서브쿼리가 아니라 카티전 곱이 된다) 조건이 사실상 항상 참이 됐다."""
-        anchor = aliased(MatchParticipant)
+        anchor = aliased(GameResultParticipant)
         anchor_alias, anchor_condition = self._member_alias_join(anchor.player_name)
-        conditions = [anchor.match_id == Match.id, anchor_alias.member_pk == member_pks[0]]
+        conditions = [anchor.match_id == GameResult.id, anchor_alias.member_pk == member_pks[0]]
         for pk in member_pks[1:]:
-            mate = aliased(MatchParticipant)
+            mate = aliased(GameResultParticipant)
             mate_alias, mate_condition = self._member_alias_join(mate.player_name)
             conditions.append(
                 exists(
@@ -143,7 +143,7 @@ class MatchRepository:
         # 지적받은 버그). 이 경우 조건은 "그 회원이 이 경기에 참가했는가"뿐이고, 개인전/팀전
         # 구분은 호출부의 match_type 필터가 맡는다.
         if len(member_pks) > 1:
-            side_size = aliased(MatchParticipant)
+            side_size = aliased(GameResultParticipant)
             conditions.append(
                 select(func.count())
                 .select_from(side_size)
@@ -168,11 +168,11 @@ class MatchRepository:
         """목록 조회(list_page)와 총 건수(count_page)가 공유하는 필터 조건 — 정렬/커서/limit은
         건수 집계와 무관하므로 여기 포함하지 않는다."""
         if match_type is not None:
-            stmt = stmt.where(Match.match_type == match_type)
+            stmt = stmt.where(GameResult.match_type == match_type)
         if date_from is not None:
-            stmt = stmt.where(Match.match_date >= date_from)
+            stmt = stmt.where(GameResult.match_date >= date_from)
         if date_to is not None:
-            stmt = stmt.where(Match.match_date <= date_to)
+            stmt = stmt.where(GameResult.match_date <= date_to)
         if terms:
             conditions = [self._participant_term_exists(t) for t in terms]
             stmt = stmt.where(and_(*conditions) if match_all_terms else or_(*conditions))
@@ -186,10 +186,10 @@ class MatchRepository:
             stmt = stmt.where(
                 exists(
                     select(1)
-                    .select_from(MatchParticipant)
-                    .join(ReplayAlias, ReplayAlias.raw_name == MatchParticipant.player_name)
+                    .select_from(GameResultParticipant)
+                    .join(ReplayAlias, ReplayAlias.raw_name == GameResultParticipant.player_name)
                     .where(
-                        MatchParticipant.match_id == Match.id,
+                        GameResultParticipant.match_id == GameResult.id,
                         ReplayAlias.kind.in_(("computer", "unregistered")),
                     )
                 )
@@ -209,7 +209,7 @@ class MatchRepository:
         match_all_terms: bool,
         has_placeholder: bool = False,
         team_member_pks: list[int] | None = None,
-    ) -> tuple[list[Match], bool]:
+    ) -> tuple[list[GameResult], bool]:
         stmt = self._apply_list_filters(
             self._base_query(),
             date_from=date_from, date_to=date_to, match_type=match_type,
@@ -224,15 +224,15 @@ class MatchRepository:
         # 이 값 하나로 한다. 14자리 고정폭 숫자 문자열이라 문자열 정렬 = 시각 정렬이다.
         descending = sort != "oldest"
         if descending:
-            stmt = stmt.order_by(Match.match_no.desc())
+            stmt = stmt.order_by(GameResult.match_no.desc())
         else:
-            stmt = stmt.order_by(Match.match_no.asc())
+            stmt = stmt.order_by(GameResult.match_no.asc())
 
         if cursor is not None:
             if descending:
-                stmt = stmt.where(Match.match_no < cursor)
+                stmt = stmt.where(GameResult.match_no < cursor)
             else:
-                stmt = stmt.where(Match.match_no > cursor)
+                stmt = stmt.where(GameResult.match_no > cursor)
 
         # 다음 페이지가 있는지 알기 위해 하나 더 가져오고, 실제로 돌려줄 때는 잘라낸다.
         stmt = stmt.limit(limit + 1)
@@ -254,7 +254,7 @@ class MatchRepository:
         """무한스크롤로 일부만 로드된 상태에서도 화면에 정확한 총 건수를 보여주기 위한
         조회 — list_page와 완전히 같은 필터 조건을 커서/정렬 없이 그대로 적용한다."""
         stmt = self._apply_list_filters(
-            select(func.count(Match.id)),
+            select(func.count(GameResult.id)),
             date_from=date_from, date_to=date_to, match_type=match_type,
             terms=terms, match_all_terms=match_all_terms,
             has_placeholder=has_placeholder,
@@ -272,11 +272,11 @@ class MatchRepository:
     ) -> Select:
         """aggregate_stats/raw_eapm_ecmd_rows가 공통으로 쓰는 기간/유형 필터."""
         if date_from is not None:
-            stmt = stmt.where(Match.match_date >= date_from)
+            stmt = stmt.where(GameResult.match_date >= date_from)
         if date_to is not None:
-            stmt = stmt.where(Match.match_date <= date_to)
+            stmt = stmt.where(GameResult.match_date <= date_to)
         if match_type is not None:
-            stmt = stmt.where(Match.match_type == match_type)
+            stmt = stmt.where(GameResult.match_type == match_type)
         return stmt
 
     async def aggregate_stats(
@@ -296,22 +296,22 @@ class MatchRepository:
             count = func.sum(case((col.is_not(None), 1), else_=0))
             return total, count
 
-        apm_sum, apm_cnt = _avg_pair(MatchParticipant.apm)
-        eapm_sum, eapm_cnt = _avg_pair(MatchParticipant.eapm)
-        cmd_sum, cmd_cnt = _avg_pair(MatchParticipant.cmd_count)
-        build_sum, build_cnt = _avg_pair(MatchParticipant.build_count)
+        apm_sum, apm_cnt = _avg_pair(GameResultParticipant.apm)
+        eapm_sum, eapm_cnt = _avg_pair(GameResultParticipant.eapm)
+        cmd_sum, cmd_cnt = _avg_pair(GameResultParticipant.cmd_count)
+        build_sum, build_cnt = _avg_pair(GameResultParticipant.build_count)
         # 한때 "분당" 값(경기시간 합으로 나눔)이었지만 그냥 경기당 평균 유효커맨드로 되돌린다
         # (요청: "분당 유효커맨드를 그냥 유효커맨드로") — 다른 항목들과 같은 합계/개수 쌍.
-        ecmd_sum, ecmd_cnt = _avg_pair(MatchParticipant.effective_cmd_count)
+        ecmd_sum, ecmd_cnt = _avg_pair(GameResultParticipant.effective_cmd_count)
 
-        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
                 member_alias.member_pk,
-                MatchParticipant.race,
+                GameResultParticipant.race,
                 func.count().label("plays"),
-                func.sum(case((MatchResult.result == "draw", 1), else_=0)).label("draws"),
-                func.sum(case((MatchResult.result == MatchParticipant.team, 1), else_=0)).label("wins"),
+                func.sum(case((GameOutcome.result == "draw", 1), else_=0)).label("draws"),
+                func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
                 apm_sum.label("apm_sum"),
                 apm_cnt.label("apm_cnt"),
                 eapm_sum.label("eapm_sum"),
@@ -323,15 +323,15 @@ class MatchRepository:
                 ecmd_sum.label("ecmd_sum"),
                 ecmd_cnt.label("ecmd_cnt"),
             )
-            .select_from(MatchParticipant)
-            .join(Match, Match.id == MatchParticipant.match_id)
-            .join(MatchResult, MatchResult.match_id == Match.id)
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .join(member_alias, member_condition)
             .where(
                 member_alias.member_pk.in_(member_pks),
-                MatchResult.result != "not_held",
+                GameOutcome.result != "not_held",
             )
-            .group_by(member_alias.member_pk, MatchParticipant.race)
+            .group_by(member_alias.member_pk, GameResultParticipant.race)
         )
         stmt = self._apply_common_match_filters(
             stmt, date_from=date_from, date_to=date_to, match_type=match_type,
@@ -351,22 +351,22 @@ class MatchRepository:
         서비스 레이어에서 개인 단위 쌍으로 환산한다(요청: 상성맵 팀전 탭). 회원 매칭은
         aggregate_stats와 같은 replay_aliases(kind='member') 조인이라, 비회원/컴퓨터가
         낀 경기는 그 참가자 행이 아예 안 나와 서비스 레이어 검증에서 자연히 걸러진다."""
-        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
-                MatchParticipant.match_id,
-                MatchResult.result,
-                MatchParticipant.team,
+                GameResultParticipant.match_id,
+                GameOutcome.result,
+                GameResultParticipant.team,
                 member_alias.member_pk,
             )
-            .select_from(MatchParticipant)
-            .join(Match, Match.id == MatchParticipant.match_id)
-            .join(MatchResult, MatchResult.match_id == Match.id)
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .join(member_alias, member_condition)
-            .where(MatchResult.result != "not_held")
+            .where(GameOutcome.result != "not_held")
         )
         if team:
-            stmt = stmt.where(Match.match_type != "0101")
+            stmt = stmt.where(GameResult.match_type != "0101")
         stmt = self._apply_common_match_filters(
             stmt, date_from=date_from, date_to=date_to,
             match_type=None if team else "0101",
@@ -385,22 +385,22 @@ class MatchRepository:
         aggregate_stats는 SQL에서 이미 합계/개수로 뭉쳐서 내려주기 때문에, 평균을 내기
         전에 회원 한 명 안에서 유독 튀는(편차가 심한) 경기 하나만 골라 빼는 계산(서비스
         레이어의 _trimmed_avg_eapm/_trimmed_avg_ecmd)에는 쓸 수 없어 원본 단위로 따로 받는다."""
-        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
                 member_alias.member_pk,
-                MatchParticipant.race,
-                MatchParticipant.eapm,
-                MatchParticipant.effective_cmd_count,
-                MatchResult.duration_seconds,
+                GameResultParticipant.race,
+                GameResultParticipant.eapm,
+                GameResultParticipant.effective_cmd_count,
+                GameOutcome.duration_seconds,
             )
-            .select_from(MatchParticipant)
-            .join(Match, Match.id == MatchParticipant.match_id)
-            .join(MatchResult, MatchResult.match_id == Match.id)
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .join(member_alias, member_condition)
             .where(
                 member_alias.member_pk.in_(member_pks),
-                MatchResult.result != "not_held",
+                GameOutcome.result != "not_held",
             )
         )
         stmt = self._apply_common_match_filters(
@@ -423,37 +423,37 @@ class MatchRepository:
         "공통으로 붙어본 상대"에는 지금 동률인 두 사람 말고도 클럽의 아무나 들어올 수 있어서다.
         팀전이면 상대팀 전원 각각과 한 번씩 붙은 것으로 센다(1:1이면 자연히 한 명).
         race 필터는 "그 경기에서 본인이 고른 종족" 기준 — 개인 전적 집계(aggregate_stats)와 같다."""
-        opponent = aliased(MatchParticipant)
-        self_alias, self_condition = self._member_alias_join(MatchParticipant.player_name)
+        opponent = aliased(GameResultParticipant)
+        self_alias, self_condition = self._member_alias_join(GameResultParticipant.player_name)
         opponent_alias, opponent_condition = self._member_alias_join(opponent.player_name)
         stmt = (
             select(
                 self_alias.member_pk,
                 opponent_alias.member_pk.label("opponent_pk"),
                 func.count().label("plays"),
-                func.sum(case((MatchResult.result == "draw", 1), else_=0)).label("draws"),
-                func.sum(case((MatchResult.result == MatchParticipant.team, 1), else_=0)).label("wins"),
+                func.sum(case((GameOutcome.result == "draw", 1), else_=0)).label("draws"),
+                func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
             )
-            .select_from(MatchParticipant)
-            .join(Match, Match.id == MatchParticipant.match_id)
-            .join(MatchResult, MatchResult.match_id == Match.id)
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .join(self_alias, self_condition)
             .join(
                 opponent,
                 and_(
-                    opponent.match_id == MatchParticipant.match_id,
-                    opponent.team != MatchParticipant.team,
+                    opponent.match_id == GameResultParticipant.match_id,
+                    opponent.team != GameResultParticipant.team,
                 ),
             )
             .join(opponent_alias, opponent_condition)
             .where(
                 self_alias.member_pk.in_(member_pks),
-                MatchResult.result != "not_held",
+                GameOutcome.result != "not_held",
             )
             .group_by(self_alias.member_pk, opponent_alias.member_pk)
         )
         if race is not None and race != "all":
-            stmt = stmt.where(MatchParticipant.race == race)
+            stmt = stmt.where(GameResultParticipant.race == race)
         stmt = self._apply_common_match_filters(
             stmt, date_from=date_from, date_to=date_to, match_type=match_type,
         )
@@ -472,23 +472,23 @@ class MatchRepository:
         (요청: "랭킹 조회시 해당 월이나 년도만의 리셋된 데이터로 조회") — date_from을 주면 그
         이전 경기는 아예 재생 대상에서 빠져, 이 기간 시작 시점에 전원이 기본 레이팅(μ0)에서
         다시 시작한 것과 같다. 컴퓨터/비회원(member_pk=NULL)도 포함해야 팀 구성(인원수)이 맞다."""
-        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
-                MatchParticipant.match_id,
-                MatchParticipant.team,
+                GameResultParticipant.match_id,
+                GameResultParticipant.team,
                 member_alias.member_pk,
-                MatchParticipant.race,
-                MatchResult.result,
-                MatchResult.game_started_at,
-                Match.match_date,
-                Match.match_no,
+                GameResultParticipant.race,
+                GameOutcome.result,
+                GameOutcome.game_started_at,
+                GameResult.match_date,
+                GameResult.match_no,
             )
-            .select_from(MatchParticipant)
-            .join(Match, Match.id == MatchParticipant.match_id)
-            .join(MatchResult, MatchResult.match_id == Match.id)
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .outerjoin(member_alias, member_condition)
-            .where(MatchResult.result != "not_held")
+            .where(GameOutcome.result != "not_held")
         )
         stmt = self._apply_common_match_filters(
             stmt, date_from=date_from, date_to=date_to, match_type=match_type,
@@ -506,31 +506,31 @@ class MatchRepository:
         하기 때문이다(섞여 있으면 남은 실제 회원끼리를 별개의 팀으로 잘못 집계하게 된다 —
         예: 3:3에 컴퓨터 1명이 끼면 실제 회원 2명만 남아 2인 팀처럼 보이는데, 실제로는 그
         둘이 2:2를 뛴 적이 없다)."""
-        member_alias, member_condition = self._member_alias_join(MatchParticipant.player_name)
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
-                MatchParticipant.match_id,
-                MatchParticipant.team,
+                GameResultParticipant.match_id,
+                GameResultParticipant.team,
                 member_alias.member_pk,
-                MatchResult.result,
+                GameOutcome.result,
             )
-            .select_from(MatchParticipant)
-            .join(Match, Match.id == MatchParticipant.match_id)
-            .join(MatchResult, MatchResult.match_id == Match.id)
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .outerjoin(member_alias, member_condition)
-            .where(MatchResult.result != "not_held")
+            .where(GameOutcome.result != "not_held")
         )
         if date_from is not None:
-            stmt = stmt.where(Match.match_date >= date_from)
+            stmt = stmt.where(GameResult.match_date >= date_from)
         if date_to is not None:
-            stmt = stmt.where(Match.match_date <= date_to)
+            stmt = stmt.where(GameResult.match_date <= date_to)
         return list((await self._session.execute(stmt)).all())
 
     async def earliest_match_date(self) -> date | None:
         # 랭킹 화면의 "이전" 버튼 비활성화 판단용 — 실제 결과가 있는 가장 이른 날짜.
-        stmt = select(func.min(Match.match_date)).where(
-            MatchResult.result != "not_held"
-        ).select_from(Match).join(MatchResult, MatchResult.match_id == Match.id)
+        stmt = select(func.min(GameResult.match_date)).where(
+            GameOutcome.result != "not_held"
+        ).select_from(GameResult).join(GameOutcome, GameOutcome.match_id == GameResult.id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def list_game_started_ats(self):
@@ -538,7 +538,7 @@ class MatchRepository:
         # 정확히 매칭하려면 SQL WHERE IN 비교 대신 값을 전부 가져와 파이썬에서(서비스 계층에서)
         # UTC로 정규화해 비교하는 편이 드라이버/방언에 안전하다. 리플레이 중복확인은 admin이
         # 배치 업로드할 때만 호출되는 저빈도 동작이라 이 정도 전체 조회는 무겁지 않다.
-        stmt = select(MatchResult.game_started_at).where(MatchResult.game_started_at.is_not(None))
+        stmt = select(GameOutcome.game_started_at).where(GameOutcome.game_started_at.is_not(None))
         return list((await self._session.execute(stmt)).scalars().all())
 
     async def list_match_id_game_started_ats(self):
@@ -546,9 +546,9 @@ class MatchRepository:
         # 표현 차이) SQL에서 바로 매칭하지 않고 서비스에서 UTC 정규화해 찾는다. 머지 대상
         # 경기 한 건을 game_started_at으로 지목하는 데 쓴다.
         stmt = (
-            select(Match.id, MatchResult.game_started_at)
-            .join(MatchResult, MatchResult.match_id == Match.id)
-            .where(MatchResult.game_started_at.is_not(None))
+            select(GameResult.id, GameOutcome.game_started_at)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
+            .where(GameOutcome.game_started_at.is_not(None))
         )
         return list((await self._session.execute(stmt)).all())
 
@@ -615,7 +615,7 @@ class MatchRepository:
         # 실제 경기 기록은 그대로 남아 있어(player_name은 영구 보존) list_placeholder_
         # raw_names_with_last_seen을 통해 곧바로 "미지정"으로 되돌아와 버린다 — 삭제한
         # 게 아니라 그냥 되돌리기와 같아져 사용자 의도(목록에서 완전히 사라짐)와 어긋난다.
-        stmt = select(exists().where(MatchParticipant.player_name == raw_name))
+        stmt = select(exists().where(GameResultParticipant.player_name == raw_name))
         return bool((await self._session.execute(stmt)).scalar())
 
     async def all_participant_player_names(self) -> set[str]:
@@ -623,7 +623,7 @@ class MatchRepository:
         # 위한 조회 — 회원 연결 여부와 무관하게 경기 참가 기록에 실제로 등장한 모든
         # player_name을 모은다(회원으로 소급 연결된 이름은 placeholder 조회에서 빠지므로
         # last_seen만으로는 판단할 수 없다).
-        stmt = select(MatchParticipant.player_name).distinct()
+        stmt = select(GameResultParticipant.player_name).distinct()
         return set((await self._session.execute(stmt)).scalars())
 
     async def list_placeholder_raw_names_with_last_seen(self) -> list[tuple[str, date]]:
@@ -634,17 +634,17 @@ class MatchRepository:
         # 가져다 쓰고, "아직 미분류"인 것만 새 entry로 만든다). 마지막으로 나온 경기
         # 날짜가 필요해 matches와 조인해 그룹별 최댓값을 구한다.
         stmt = (
-            select(MatchParticipant.player_name, func.max(Match.match_date))
-            .join(Match, Match.id == MatchParticipant.match_id)
+            select(GameResultParticipant.player_name, func.max(GameResult.match_date))
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
             .where(
                 ~exists(
                     select(1).where(
-                        ReplayAlias.raw_name == MatchParticipant.player_name,
+                        ReplayAlias.raw_name == GameResultParticipant.player_name,
                         ReplayAlias.kind == "member",
                     )
                 )
             )
-            .group_by(MatchParticipant.player_name)
+            .group_by(GameResultParticipant.player_name)
         )
         rows = (await self._session.execute(stmt)).all()
         return [(raw_name, last_seen) for raw_name, last_seen in rows]

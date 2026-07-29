@@ -38,7 +38,7 @@ async def _ensure_schema() -> None:
     from app.domain.env_vars import models as _env_vars_models  # noqa: F401
     from app.domain.feed import models as _feed_models  # noqa: F401
     from app.domain.match_requests import models as _match_requests_models  # noqa: F401
-    from app.domain.matches import models as _matches_models  # noqa: F401
+    from app.domain.game_results import models as _game_results_models  # noqa: F401
     from app.domain.members import models as _members_models  # noqa: F401
 
     async with engine.begin() as conn:
@@ -46,6 +46,10 @@ async def _ensure_schema() -> None:
         # 쌓인 데이터까지 함께 버린다(요청: 기존 랭킹변동 저장 테이블 드롭).
         from sqlalchemy import text
         await conn.execute(text("DROP TABLE IF EXISTS rank_shifts"))
+        # 이름 정리(요청: 계층에 맞춰 통일)로 테이블 몇 개의 이름이 바뀌었다 — create_all보다
+        # 반드시 먼저 돌려야 한다. 나중에 돌리면 create_all이 새 이름의 빈 테이블을 먼저
+        # 만들어 버려서, 옛 테이블은 데이터를 안은 채 이름을 못 바꾸고 남는다.
+        await _rename_legacy_tables(conn)
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
         await _add_match_result_summary(conn)
@@ -54,11 +58,49 @@ async def _ensure_schema() -> None:
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
         await _drop_legacy_match_summary(conn)
-    await _seed_rank_snapshots()
+    await _seed_ranking_shifts()
+
+
+# 이름 정리(요청) 이전에 쓰던 테이블 이름 → 지금 이름. 피드 1뎁스가 게임결과/너 나와/
+# 랭크변동이고 게임결과 포스트 안의 2뎁스가 게임결과 카드라는 계층에 맞춘 것이다.
+# match_requests(@지목 공개 요청글)는 이 셋과 별개 기능이라 손대지 않는다.
+_TABLE_RENAMES = [
+    ("matches", "game_results"),
+    ("match_participants", "game_result_participants"),
+    ("match_results", "game_outcomes"),
+    ("rank_snapshots", "ranking_shifts"),
+]
+
+
+async def _rename_legacy_tables(conn) -> None:
+    """옛 이름의 테이블을 지금 이름으로 바꾼다(멱등).
+
+    옛 이름이 있고 새 이름이 아직 없을 때만 바꾼다 — 이미 바뀐 DB에서는 아무 일도 안 하고,
+    둘 다 있는(사람이 손댔거나 create_all이 먼저 돈) 이상한 상태에서도 덮어쓰지 않는다.
+    ALTER TABLE … RENAME TO는 PostgreSQL·SQLite 모두 지원하고, 두 DB 다 이 테이블을
+    가리키는 외래키 참조를 자동으로 따라 고친다.
+
+    컬럼 이름(match_id·match_no·match_type 등)은 그대로 둔다 — 물리 이름까지 바꾸면
+    되돌리기가 훨씬 어려워지는데, 밖으로 나가는 이름은 어차피 ORM 속성과 API 스키마가
+    정하므로 얻는 게 없다.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    have = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
+    for old, new in _TABLE_RENAMES:
+        if old not in have or new in have:
+            continue
+        try:
+            await conn.execute(text(f"ALTER TABLE {old} RENAME TO {new}"))
+            logging.getLogger(__name__).info("테이블 이름 변경: %s -> %s", old, new)
+        except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(옛 이름 그대로 남는다).
+            logging.getLogger(__name__).exception("테이블 이름 변경 실패: %s -> %s", old, new)
 
 
 async def _add_match_result_summary(conn: object) -> None:
-    """match_results.summary_data 컬럼을 더한다(멱등).
+    """game_outcomes.summary_data 컬럼을 더한다(멱등).
 
     스키마를 create_all로만 관리해(마이그레이션 없음) 이미 있는 테이블에는 새 컬럼이
     반영되지 않는다 — build_count 때와 같은 이유로 여기서 직접 ALTER 한다. IF NOT EXISTS는
@@ -70,10 +112,10 @@ async def _add_match_result_summary(conn: object) -> None:
 
     try:
         await conn.execute(  # type: ignore[attr-defined]
-            text("ALTER TABLE match_results ADD COLUMN IF NOT EXISTS summary_data JSONB")
+            text("ALTER TABLE game_outcomes ADD COLUMN IF NOT EXISTS summary_data JSONB")
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
-        logging.getLogger(__name__).debug("match_results.summary_data 컬럼 추가 건너뜀", exc_info=True)
+        logging.getLogger(__name__).debug("game_outcomes.summary_data 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_challenge_time_note(conn: object) -> None:
@@ -135,13 +177,13 @@ async def _drop_access_screen_code_check(conn: object) -> None:
 
 async def _rank_entries_computer(session):
     """랭크 스냅샷 계산기 — 피드 도메인이 경기 통계를 되부르는 순환을 피해 콜백으로 넘긴다."""
-    from app.domain.matches.service import MatchService
+    from app.domain.game_results.service import GameResultService
     from app.storage import get_storage
 
-    match_service = MatchService(session, get_storage())
+    game_result_service = GameResultService(session, get_storage())
 
     async def compute_entries(match_type: str, date_from: str, date_to: str):
-        return await match_service.get_stats(
+        return await game_result_service.get_stats(
             member_ids=None, date_from=date_from, date_to=date_to,
             match_type=match_type, race=None,
         )
@@ -149,7 +191,7 @@ async def _rank_entries_computer(session):
     return compute_entries
 
 
-async def _seed_rank_snapshots() -> None:
+async def _seed_ranking_shifts() -> None:
     """rank_snapshots가 비어 있으면 현재 포인트·순위표를 기준선으로 1회 적재(멱등).
 
     변동분 없이(reason="seed") 저장되므로 피드에는 안 보인다. 실패해도 부팅은 막지 않는다.
@@ -157,11 +199,11 @@ async def _seed_rank_snapshots() -> None:
     import logging
 
     from app.db.session import AsyncSessionLocal
-    from app.domain.feed.service import RankSnapshotService
+    from app.domain.feed.service import RankingShiftService
 
     try:
         async with AsyncSessionLocal() as session:
-            await RankSnapshotService(session).seed_if_empty(await _rank_entries_computer(session))
+            await RankingShiftService(session).seed_if_empty(await _rank_entries_computer(session))
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("랭크 스냅샷 기준선 적재 실패")
 
@@ -179,19 +221,19 @@ def _seconds_until_next_midnight() -> float:
     return max(1.0, (nxt - now).total_seconds())
 
 
-async def _rank_snapshot_scheduler() -> None:
+async def _ranking_shift_scheduler() -> None:
     import asyncio
     import logging
 
     from app.db.session import AsyncSessionLocal
-    from app.domain.feed.service import RankSnapshotService
+    from app.domain.feed.service import RankingShiftService
 
     log = logging.getLogger(__name__)
     while True:
         await asyncio.sleep(_seconds_until_next_midnight())
         try:
             async with AsyncSessionLocal() as session:
-                await RankSnapshotService(session).recompute_daily(
+                await RankingShiftService(session).recompute_daily(
                     await _rank_entries_computer(session)
                 )
             log.info("랭크 스냅샷 재집계 완료")
@@ -242,7 +284,7 @@ async def _migrate_match_notes(conn) -> None:
 
 
 async def _drop_legacy_match_summary(conn) -> None:
-    """옛 요약 문장 컬럼(match_results.summary TEXT)을 지운다.
+    """옛 요약 문장 컬럼(game_outcomes.summary TEXT)을 지운다.
 
     구조화된 summary_data로 갈아탄 뒤로는 코드 어디서도 읽지 않는다(6b7dc37) — 그때는
     "안 읽으면 그만"이라 물리 컬럼을 남겨 뒀지만, 이제 정리한다(요청). 옛 문장은 지금
@@ -256,14 +298,14 @@ async def _drop_legacy_match_summary(conn) -> None:
 
     def _has(sync_conn) -> bool:
         insp = inspect(sync_conn)
-        if "match_results" not in insp.get_table_names():
+        if "game_outcomes" not in insp.get_table_names():
             return False
-        return any(c["name"] == "summary" for c in insp.get_columns("match_results"))
+        return any(c["name"] == "summary" for c in insp.get_columns("game_outcomes"))
 
     try:
         if not await conn.run_sync(_has):
             return
-        await conn.execute(text("ALTER TABLE match_results DROP COLUMN summary"))
+        await conn.execute(text("ALTER TABLE game_outcomes DROP COLUMN summary"))
         logging.getLogger(__name__).info("옛 요약 문장 컬럼(match_results.summary) 삭제 완료")
     except Exception:  # noqa: BLE001 — 미지원 DB(옛 SQLite 등)면 그냥 남겨 둔다.
         logging.getLogger(__name__).exception("match_results.summary 컬럼 삭제 실패")
@@ -306,7 +348,7 @@ async def _drop_legacy_match_notes(conn) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await _ensure_schema()
-    task = asyncio.create_task(_rank_snapshot_scheduler())
+    task = asyncio.create_task(_ranking_shift_scheduler())
     try:
         yield
     finally:

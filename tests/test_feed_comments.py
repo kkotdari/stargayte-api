@@ -33,7 +33,7 @@ async def _approve(client, admin_token: str, member_id: str) -> None:
 
 async def _register_match(client, headers: dict) -> dict:
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-04-01",
@@ -192,7 +192,7 @@ async def _register_match_today(client, headers: dict, *, result: str = "team1")
 
     today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": today,
@@ -209,11 +209,11 @@ async def _register_match_today(client, headers: dict, *, result: str = "team1")
 async def _recompute(client) -> None:
     """매일 자정 스케줄러가 하는 일 그대로 — 순위표를 다시 집계해 변동을 남긴다."""
     from app.db.session import AsyncSessionLocal
-    from app.domain.feed.service import RankSnapshotService
+    from app.domain.feed.service import RankingShiftService
     from app.main import _rank_entries_computer
 
     async with AsyncSessionLocal() as session:
-        await RankSnapshotService(session).recompute_daily(await _rank_entries_computer(session))
+        await RankingShiftService(session).recompute_daily(await _rank_entries_computer(session))
 
 
 async def test_register_no_longer_creates_snapshot(client):
@@ -227,7 +227,7 @@ async def test_register_no_longer_creates_snapshot(client):
 
     m1 = await _register_match_today(client, _h(a))
     assert m1["id"]  # 등록 자체는 정상
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    res = await client.get("/api/feed/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
     assert res.json() == []
 
@@ -242,14 +242,14 @@ async def test_daily_recompute_first_run_is_silent_baseline(client):
 
     await _register_match_today(client, _h(a))
     await _recompute(client)
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    res = await client.get("/api/feed/ranking-shifts", headers=_h(a))
     assert res.json() == []  # 기준선만 깔린다
 
     # 그다음 경기부터는 이 기준선과 비교돼 변동이 잡힌다 — 아무도 '신규'가 아니다.
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    res = await client.get("/api/feed/ranking-shifts", headers=_h(a))
     events = res.json()
     assert len(events) >= 1
     assert events[0]["reason"] == "daily"
@@ -270,7 +270,7 @@ async def test_shift_carries_point_change(client):
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
 
-    events = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+    events = (await client.get("/api/feed/ranking-shifts", headers=_h(a))).json()
     shifts = [s for ev in events for s in ev["shifts"]]
     assert shifts
     assert all(s["fromPoints"] is not None and s["toPoints"] is not None for s in shifts)
@@ -287,10 +287,10 @@ async def test_daily_recompute_is_idempotent(client):
     await _recompute(client)
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    before = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+    before = (await client.get("/api/feed/ranking-shifts", headers=_h(a))).json()
 
     await _recompute(client)  # 경기 변화 없이 한 번 더
-    after = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+    after = (await client.get("/api/feed/ranking-shifts", headers=_h(a))).json()
     assert [e["id"] for e in after] == [e["id"] for e in before]
 
 
@@ -301,20 +301,20 @@ async def test_seed_lays_baseline_per_match_type(client, db_session):
     기준선이 영영 안 깔렸다."""
     from sqlalchemy import delete, select
 
-    from app.domain.feed.models import RankSnapshot
-    from app.main import _seed_rank_snapshots
+    from app.domain.feed.models import RankingShift
+    from app.main import _seed_ranking_shifts
 
     await _signup(client, "alice", "Alice#1001")
-    await _seed_rank_snapshots()
+    await _seed_ranking_shifts()
     db_session.expire_all()
-    assert set((await db_session.scalars(select(RankSnapshot.match_type))).all()) == {"0101", "0102"}
+    assert set((await db_session.scalars(select(RankingShift.match_type))).all()) == {"0101", "0102"}
 
     # 팀전 기준선만 지우고 다시 부팅 — 팀전만 새로 깔려야 한다.
-    await db_session.execute(delete(RankSnapshot).where(RankSnapshot.match_type == "0102"))
+    await db_session.execute(delete(RankingShift).where(RankingShift.match_type == "0102"))
     await db_session.commit()
-    await _seed_rank_snapshots()
+    await _seed_ranking_shifts()
     db_session.expire_all()
-    assert set((await db_session.scalars(select(RankSnapshot.match_type))).all()) == {"0101", "0102"}
+    assert set((await db_session.scalars(select(RankingShift.match_type))).all()) == {"0101", "0102"}
 
 
 async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session):
@@ -327,28 +327,28 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
 
     from sqlalchemy import select
 
-    from app.domain.feed.models import RankSnapshot
-    from app.main import _seed_rank_snapshots
+    from app.domain.feed.models import RankingShift
+    from app.main import _seed_ranking_shifts
 
     a = await _signup(client, "alice", "Alice#1001")
     await _signup(client, "bob", "Bob#1002")
     await _approve(client, a["accessToken"], "bob")
-    await _seed_rank_snapshots()
+    await _seed_ranking_shifts()
 
     # 기준선을 '지난달'로 밀어 둔다.
-    for row in (await db_session.scalars(select(RankSnapshot))).all():
+    for row in (await db_session.scalars(select(RankingShift))).all():
         row.created_at = row.created_at - timedelta(days=40)
     await db_session.commit()
 
     await _register_match_today(client, _h(a))
     await _recompute(client)
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    res = await client.get("/api/feed/ranking-shifts", headers=_h(a))
     assert res.json() == []  # 월초 '전원 신규' 카드가 뜨지 않는다
 
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    events = (await client.get("/api/feed/rank-snapshots", headers=_h(a))).json()
+    events = (await client.get("/api/feed/ranking-shifts", headers=_h(a))).json()
     assert len(events) >= 1
     assert all(s["from"] is not None for ev in events for s in ev["shifts"])
 
@@ -365,7 +365,7 @@ async def test_feed_comment_on_rankshift_target(client):
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    res = await client.get("/api/feed/rank-snapshots", headers=_h(a))
+    res = await client.get("/api/feed/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
     snap_id = res.json()[0]["id"]
 

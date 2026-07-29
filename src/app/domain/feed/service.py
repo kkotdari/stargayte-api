@@ -5,14 +5,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.feed.models import FeedComment, FeedCommentMention, RankSnapshot
+from app.domain.feed.models import FeedComment, FeedCommentMention, RankingShift
 from app.domain.feed.repository import FeedCommentRepository
 from app.domain.feed.schemas import (
     FeedCommentAuthor,
     FeedCommentMentionOut,
     FeedCommentOut,
-    RankShiftEntry,
-    RankSnapshotOut,
+    RankingShiftEntry,
+    RankingShiftOut,
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
@@ -122,14 +122,14 @@ class FeedCommentService:
         return members
 
 
-def _to_snapshot_out(snap: RankSnapshot) -> RankSnapshotOut:
-    return RankSnapshotOut(
+def _to_ranking_shift_out(snap: RankingShift) -> RankingShiftOut:
+    return RankingShiftOut(
         id=snap.id,
         matchType=snap.match_type,
         reason=snap.reason,
         createdAt=snap.created_at,
         matchIds=list(snap.match_ids or []),
-        shifts=[RankShiftEntry.model_validate(e) for e in snap.shifts or []],
+        shifts=[RankingShiftEntry.model_validate(e) for e in snap.shifts or []],
     )
 
 
@@ -160,27 +160,27 @@ def _current_period() -> str:
     return _period_of(datetime.now(UTC))
 
 
-class RankSnapshotService:
+class RankingShiftService:
     """포인트·순위 스냅샷 — 경기 등록/삭제 때마다 계산해 저장하고, 변동분을 피드에 내보낸다."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_events(self, limit: int) -> list[RankSnapshotOut]:
+    async def list_events(self, limit: int) -> list[RankingShiftOut]:
         """피드에 보여줄 이벤트 — 변동(shifts)이 실제로 있었던 스냅샷만."""
         from sqlalchemy import select
 
-        stmt = select(RankSnapshot).order_by(RankSnapshot.created_at.desc()).limit(limit * 3)
+        stmt = select(RankingShift).order_by(RankingShift.created_at.desc()).limit(limit * 3)
         rows = list((await self._session.scalars(stmt)).all())
-        return [_to_snapshot_out(s) for s in rows if s.shifts][:limit]
+        return [_to_ranking_shift_out(s) for s in rows if s.shifts][:limit]
 
-    async def _latest(self, match_type: str) -> RankSnapshot | None:
+    async def _latest(self, match_type: str) -> RankingShift | None:
         from sqlalchemy import select
 
         stmt = (
-            select(RankSnapshot)
-            .where(RankSnapshot.match_type == match_type)
-            .order_by(RankSnapshot.created_at.desc(), RankSnapshot.id.desc())
+            select(RankingShift)
+            .where(RankingShift.match_type == match_type)
+            .order_by(RankingShift.created_at.desc(), RankingShift.id.desc())
             .limit(1)
         )
         return await self._session.scalar(stmt)
@@ -257,7 +257,7 @@ class RankSnapshotService:
                 continue
             baseline = latest is None or _period_of(latest.created_at) != _current_period()
             base = [] if baseline else list(latest.standings or [])
-            self._session.add(RankSnapshot(
+            self._session.add(RankingShift(
                 match_type=match_type,
                 reason="seed" if baseline else "daily",
                 match_ids=[],
@@ -285,7 +285,7 @@ class RankSnapshotService:
                 latest.standings = standings
                 latest.shifts = []
             else:
-                self._session.add(RankSnapshot(
+                self._session.add(RankingShift(
                     match_type=match_type, reason="seed",
                     match_ids=[], standings=standings, shifts=[],
                 ))
@@ -306,13 +306,13 @@ class RankSnapshotService:
 
         for match_type in ("0101", "0102"):
             count = await self._session.scalar(
-                select(func.count()).select_from(RankSnapshot)
-                .where(RankSnapshot.match_type == match_type)
+                select(func.count()).select_from(RankingShift)
+                .where(RankingShift.match_type == match_type)
             )
             if count and count > 0:
                 continue
             standings = await self._compute_standings(match_type, compute_entries)
-            self._session.add(RankSnapshot(
+            self._session.add(RankingShift(
                 match_type=match_type, reason="seed",
                 match_ids=[], standings=standings, shifts=[],
             ))

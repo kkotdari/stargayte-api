@@ -150,7 +150,7 @@ async def test_match_lifecycle_with_attachment(client):
     headers = {"Authorization": f"Bearer {token}"}
 
     create_res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-07-01",
@@ -175,18 +175,18 @@ async def test_match_lifecycle_with_attachment(client):
     assert match["replay"]["originalName"] == "replay.rep"
     assert match["replay"]["url"].startswith("http://testserver/uploads/replays/")
 
-    download_res = await client.get(f"/api/matches/{match['id']}/replay", headers=headers)
+    download_res = await client.get(f"/api/game-results/{match['id']}/replay", headers=headers)
     assert download_res.status_code == 200
     # Content-Disposition 파일명은 생성된 표시 이름 — 숫자인 경기번호는 URL 인코딩돼도 그대로 들어간다.
     assert match["matchNo"] in download_res.headers["content-disposition"]
     assert len(download_res.content) > 0
 
-    list_res = await client.get("/api/matches", headers=headers)
+    list_res = await client.get("/api/game-results", headers=headers)
     assert list_res.status_code == 200
     assert len(list_res.json()["items"]) == 1
 
     update_res = await client.put(
-        f"/api/matches/{match['id']}",
+        f"/api/game-results/{match['id']}",
         headers=headers,
         json={
             "date": "2026-07-01",
@@ -213,7 +213,7 @@ async def test_manual_match_no_uses_match_date_not_registration_time(client):
 
     past_date = "2026-04-01"
     create_res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": past_date,
@@ -239,7 +239,7 @@ async def test_match_with_unregistered_slot(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     create_res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-07-01",
@@ -257,21 +257,21 @@ async def test_match_with_unregistered_slot(client):
     assert match["team2"][0]["memberId"] == "__unregistered__0"
 
     # 다시 조회해도(목록) 같은 값으로 안정적으로 재생성된다.
-    list_res = await client.get("/api/matches", headers=headers)
+    list_res = await client.get("/api/game-results", headers=headers)
     assert list_res.status_code == 200
     refetched = list_res.json()["items"][0]
     assert refetched["team2"][0]["memberId"] == "__unregistered__0"
 
     # 통계 조회도 이 경기 때문에 깨지지 않아야 한다(비회원은 회원이 아니라 자연히 제외).
     stats_res = await client.get(
-        "/api/matches/stats", headers=headers, params={"memberIds": "player01"}
+        "/api/game-results/stats", headers=headers, params={"memberIds": "player01"}
     )
     assert stats_res.status_code == 200, stats_res.text
     assert stats_res.json()["members"][0]["overall"]["plays"] == 1
 
 
 async def test_matches_require_auth(client):
-    res = await client.get("/api/matches")
+    res = await client.get("/api/game-results")
     assert res.status_code == 401
 
 
@@ -281,7 +281,7 @@ async def test_match_attachment_rejects_non_rep_file(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-07-01",
@@ -339,7 +339,7 @@ async def test_avatar_replace_and_reprocess_produce_new_urls(client):
 
 async def _create_match(client, token: str) -> dict:
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers={"Authorization": f"Bearer {token}"},
         json={
             "date": "2026-07-01",
@@ -381,24 +381,24 @@ async def test_only_author_or_admin_can_update_or_delete_match(client):
         "note": "몰래 수정",
     }
     forbidden_update = await client.put(
-        f"/api/matches/{match['id']}", headers=other_headers, json=update_payload
+        f"/api/game-results/{match['id']}", headers=other_headers, json=update_payload
     )
     assert forbidden_update.status_code == 403
 
-    forbidden_delete = await client.delete(f"/api/matches/{match['id']}", headers=other_headers)
+    forbidden_delete = await client.delete(f"/api/game-results/{match['id']}", headers=other_headers)
     assert forbidden_delete.status_code == 403
 
     # 작성자 본인은 수정 가능
     author_headers = {"Authorization": f"Bearer {admin['accessToken']}"}
     own_update = await client.put(
-        f"/api/matches/{match['id']}", headers=author_headers, json=update_payload
+        f"/api/game-results/{match['id']}", headers=author_headers, json=update_payload
     )
     assert own_update.status_code == 200
 
     # 작성자 본인은 삭제도 가능, 삭제 후 목록에서 사라진다
-    own_delete = await client.delete(f"/api/matches/{match['id']}", headers=author_headers)
+    own_delete = await client.delete(f"/api/game-results/{match['id']}", headers=author_headers)
     assert own_delete.status_code == 204
-    list_res = await client.get("/api/matches", headers=author_headers)
+    list_res = await client.get("/api/game-results", headers=author_headers)
     assert list_res.json()["items"] == []
 
 
@@ -413,7 +413,7 @@ async def test_admin_can_delete_others_match(client):
     match = await _create_match(client, member["accessToken"])
 
     res = await client.delete(
-        f"/api/matches/{match['id']}", headers={"Authorization": f"Bearer {admin['accessToken']}"}
+        f"/api/game-results/{match['id']}", headers={"Authorization": f"Bearer {admin['accessToken']}"}
     )
     assert res.status_code == 204
 

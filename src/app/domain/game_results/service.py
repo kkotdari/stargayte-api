@@ -10,22 +10,22 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.matches.models import (
-    Match,
-    MatchParticipant,
-    MatchResult,
+from app.domain.game_results.models import (
+    GameResult,
+    GameResultParticipant,
+    GameOutcome,
     Replay,
 )
-from app.domain.matches.rating import RatingEngine
-from app.domain.matches.repository import MatchRepository
-from app.domain.matches.schemas import (
+from app.domain.game_results.rating import RatingEngine
+from app.domain.game_results.repository import GameResultRepository
+from app.domain.game_results.schemas import (
     COMPUTER_ID_PREFIX,
     UNREGISTERED_ID_PREFIX,
-    MatchAuthor,
-    MatchOut,
-    MatchReplayMerge,
-    MatchSlot,
-    MatchWrite,
+    GameResultAuthor,
+    GameResultOut,
+    GameResultReplayMerge,
+    GameResultSlot,
+    GameResultWrite,
     MemberStatsEntry,
     MemberStatsMonthEntry,
     RaceStatsEntry,
@@ -147,7 +147,7 @@ def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
     # 리플레이가 있으면 실제 경기 시작 시각(KST)을, 없으면(수동 등록) 경기 날짜만 알 수
     # 있으니 자정(000000)으로 채운다 — 같은 날 여러 건이면 뒤 2자리 일련번호로 갈린다.
     #
-    # 수기등록은 실제 경기 시각을 몰라도 "제N경기" 순서(gameStartedAt 비교, MatchList.tsx의
+    # 수기등록은 실제 경기 시각을 몰라도 "제N경기" 순서(gameStartedAt 비교, GameResultList.tsx의
     # compareByPlayOrder)를 매길 기준값이 필요해서, 프론트가 신규 등록 시점의 "지금"을
     # gameStartedAt에 채워 넣는다(서비스 다른 곳 참고) — 그 값은 사용자가 고른 경기
     # 날짜(match_date)와 전혀 무관한 "등록한 시각"일 뿐이라 match_no에 그대로 쓰면 안 된다
@@ -182,7 +182,7 @@ def _fname_safe(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def build_replay_display_name(match: "Match") -> str:
+def build_replay_display_name(match: "GameResult") -> str:
     def roster(team: str) -> str:
         players = sorted(
             (p for p in match.participants if p.team == team), key=lambda p: p.position
@@ -365,7 +365,7 @@ def _replay_ratings(
     return engine, deltas, dict(running)
 
 
-def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> MatchSlot:
+def _to_match_slot(p: GameResultParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> GameResultSlot:
     # 회원인지, 아니면 컴퓨터(AI)/비회원 참가자인지는 더 이상 member_pk 컬럼이 아니라
     # player_name → replay_aliases 조회로 판단한다(alias_by_player_name, 라우터에서
     # 한 번만 가져와 여러 경기를 직렬화하는 동안 재사용 — list_all_replay_aliases는
@@ -385,7 +385,7 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
         member_id = f"{COMPUTER_ID_PREFIX}{p.position}"
     else:
         member_id = f"{UNREGISTERED_ID_PREFIX}{p.position}"
-    return MatchSlot(
+    return GameResultSlot(
         member_id=member_id,
         race=p.race,
         player_name=p.player_name,
@@ -397,19 +397,19 @@ def _to_match_slot(p: MatchParticipant, alias_by_player_name: dict[str, ReplayAl
     )
 
 
-def to_match_out(
-    match: Match,
+def to_game_result_out(
+    match: GameResult,
     storage: FileStorage,
     alias_by_player_name: dict[str, ReplayAlias],
     *,
     actor_pk: int | None = None,
     is_admin: bool = False,
-) -> MatchOut:
+) -> GameResultOut:
     team1 = [_to_match_slot(p, alias_by_player_name) for p in match.participants if p.team == "team1"]
     team2 = [_to_match_slot(p, alias_by_player_name) for p in match.participants if p.team == "team2"]
     author = None
     if match.creator is not None:
-        author = MatchAuthor(id=match.creator.id, nickname=match.creator.nickname)
+        author = GameResultAuthor(id=match.creator.id, nickname=match.creator.nickname)
     # 공식경기 예약(scheduled, 결과 없이 등록) 기능이 없어진 뒤로는 모든 경기가 등록과
     # 동시에 결과를 함께 저장하므로 result_row가 항상 존재한다.
     result_row = match.result_row
@@ -422,7 +422,7 @@ def to_match_out(
             display_name=result_row.replay.display_name,
             url=storage.url_for(result_row.replay.file_path),
         )
-    return MatchOut(
+    return GameResultOut(
         id=match.id,
         match_no=match.match_no,
         date=match.match_date.isoformat(),
@@ -439,10 +439,10 @@ def to_match_out(
     )
 
 
-class MatchService:
+class GameResultService:
     def __init__(self, session: AsyncSession, storage: FileStorage) -> None:
         self._session = session
-        self._repo = MatchRepository(session)
+        self._repo = GameResultRepository(session)
         self._member_repo = MemberRepository(session)
         self._storage = storage
 
@@ -459,7 +459,7 @@ class MatchService:
         match_all_users: bool,
         has_placeholder: bool = False,
         team_member_ids: list[str] | None = None,
-    ) -> tuple[list[Match], str | None, bool]:
+    ) -> tuple[list[GameResult], str | None, bool]:
         decoded_cursor = _decode_cursor(cursor) if cursor else None
         matches, has_more = await self._repo.list_page(
             cursor=decoded_cursor,
@@ -1089,7 +1089,7 @@ class MatchService:
         await self._repo.delete_replay_alias(raw_name)
         await self._session.commit()
 
-    async def get_match(self, match_id: int) -> Match:
+    async def get_match(self, match_id: int) -> GameResult:
         match = await self._repo.get(match_id)
         if match is None:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
@@ -1132,7 +1132,7 @@ class MatchService:
         aliases = await self._repo.list_all_replay_aliases()
         return {a.raw_name: a for a in aliases}
 
-    async def create_match(self, payload: MatchWrite, *, actor: Member) -> Match:
+    async def create_match(self, payload: GameResultWrite, *, actor: Member) -> GameResult:
         await self._ensure_no_duplicate_members(payload)
         members_by_id = await self._ensure_members_exist(payload.team1 + payload.team2)
         await self._remember_placeholder_raw_names(payload)
@@ -1143,11 +1143,11 @@ class MatchService:
         match_no_suffix = await self._repo.next_match_no_suffix(match_no_base)
 
         # replay=None 을 명시해 flush 이후 접근 시 비동기 lazy-load가 걸리지 않게 한다.
-        match = Match(
+        match = GameResult(
             match_no=f"{match_no_base}{match_no_suffix:02d}",
             match_date=match_date,
             match_type=payload.match_type,
-            result_row=MatchResult(
+            result_row=GameOutcome(
                 result=payload.result,
                 map_name=payload.map_name,
                 game_started_at=payload.game_started_at,
@@ -1172,7 +1172,7 @@ class MatchService:
         # 서비스가 시간창 안에서 한 이벤트로 합친다. 실패해도 등록 자체는 성공으로 둔다.
         return await self._repo.refresh(match)
 
-    async def update_match(self, match_id: int, payload: MatchWrite, *, actor: Member) -> Match:
+    async def update_match(self, match_id: int, payload: GameResultWrite, *, actor: Member) -> GameResult:
         match = await self.get_match(match_id)
         self._ensure_can_modify(match, actor)
         await self._ensure_no_duplicate_members(payload)
@@ -1185,7 +1185,7 @@ class MatchService:
         match.updated_by = actor.pk
 
         if match.result_row is None:
-            match.result_row = MatchResult(
+            match.result_row = GameOutcome(
                 result=payload.result,
                 map_name=payload.map_name,
                 game_started_at=payload.game_started_at,
@@ -1218,7 +1218,7 @@ class MatchService:
         await self._session.commit()
         return await self._repo.refresh(match)
 
-    async def merge_replay(self, payload: MatchReplayMerge, *, actor: Member) -> Match | None:
+    async def merge_replay(self, payload: GameResultReplayMerge, *, actor: Member) -> GameResult | None:
         """이미 등록된 경기(game_started_at 일치)에 리플레이 내부 정보만 다시 덮어쓴다(요청:
         중복 리플레이 재등록 시 새 컬럼 백필). 지표(APM/커맨드/생산)·맵·플레이시간은 항상,
         승패는 리플레이가 승자를 확실히 가린 경우(payload.result is not None)에만 갱신한다.
@@ -1311,7 +1311,7 @@ class MatchService:
     # (삭제) 등록/삭제 직후 랭크 스냅샷을 남기던 훅 — 하루에도 여러 번 변동 카드가 피드에
     # 떠서 목록이 그 카드로 도배됐다(지적: "지금처럼 등록/삭제 시마다 계산을 하면 너무 자주
     # 목록에 노출되는 문제"). 이제 재집계는 매일 자정 스케줄러 한 곳에서만 한다
-    # (app/main.py의 _rank_snapshot_scheduler → RankSnapshotService.recompute_daily).
+    # (app/main.py의 _ranking_shift_scheduler → RankingShiftService.recompute_daily).
 
     # ── 경기 댓글(메모) ─────────────────────────────────────────────────────
     # 게시판 댓글처럼 회원 누구나 한 줄(최대 50자)을 남기고, 본인/운영자만 수정·삭제한다.
@@ -1330,7 +1330,7 @@ class MatchService:
             members.append(m)
         return members
 
-    def _ensure_can_modify(self, match: Match, actor: Member) -> None:
+    def _ensure_can_modify(self, match: GameResult, actor: Member) -> None:
         if not actor.has_any_role("0202") and match.created_by != actor.pk:
             raise ForbiddenError("작성자 또는 운영자만 수정할 수 있습니다.")
 
@@ -1339,9 +1339,9 @@ class MatchService:
         if not actor.has_any_role("0202"):
             raise ForbiddenError("운영자만 삭제할 수 있습니다.")
 
-    def _player_name(self, slot: MatchSlot, members_by_id: dict[str, Member]) -> str:
+    def _player_name(self, slot: GameResultSlot, members_by_id: dict[str, Member]) -> str:
         # 리플레이에서 파싱된 원본 게임 아이디는 무슨 일이 있어도 그대로 보존한다 — 회원으로
-        # 매칭됐든, 비회원/컴퓨터로 남았든 상관없다(models.py의 MatchParticipant.player_name
+        # 매칭됐든, 비회원/컴퓨터로 남았든 상관없다(models.py의 GameResultParticipant.player_name
         # 참고). 예전엔 비회원/컴퓨터면 이 값을 버리고 공용 예약값으로 덮어썼는데, 그러면
         # 그 사람이 실제로 누구였는지가 영영 사라져 나중에 회원과 연결할 수조차 없었다.
         if slot.player_name:
@@ -1356,14 +1356,14 @@ class MatchService:
 
     def _build_participants(
         self,
-        team1: list[MatchSlot],
-        team2: list[MatchSlot],
+        team1: list[GameResultSlot],
+        team2: list[GameResultSlot],
         members_by_id: dict[str, Member],
         *,
         actor_pk: int,
-    ) -> list[MatchParticipant]:
+    ) -> list[GameResultParticipant]:
         participants = [
-            MatchParticipant(
+            GameResultParticipant(
                 team="team1",
                 position=i,
                 race=slot.race,
@@ -1379,7 +1379,7 @@ class MatchService:
             for i, slot in enumerate(team1)
         ]
         participants += [
-            MatchParticipant(
+            GameResultParticipant(
                 team="team2",
                 position=i,
                 race=slot.race,
@@ -1398,8 +1398,8 @@ class MatchService:
 
     async def _ensure_player_name_classifications(
         self,
-        team1: list[MatchSlot],
-        team2: list[MatchSlot],
+        team1: list[GameResultSlot],
+        team2: list[GameResultSlot],
         members_by_id: dict[str, Member],
     ) -> None:
         """실제 회원 슬롯에 그 회원의 replay_aliases에 아직 없는 새 player_name이 쓰이면,
@@ -1420,7 +1420,7 @@ class MatchService:
                 raise ValidationError(f"'{slot.player_name}'은(는) 이미 다른 대상으로 등록된 이름입니다.")
             member.replay_aliases.append(ReplayAlias(raw_name=slot.player_name, kind="member"))
 
-    async def _remember_placeholder_raw_names(self, payload: MatchWrite) -> None:
+    async def _remember_placeholder_raw_names(self, payload: GameResultWrite) -> None:
         """리플레이에서 컴퓨터(AI)/비회원으로 등록되는 슬롯의 분류를 replay_aliases에 남긴다.
 
         새 게임아이디(rawName)는 저장 전에 반드시 회원/컴퓨터/비회원 중 하나로 확정되고,
@@ -1448,7 +1448,7 @@ class MatchService:
                 continue
             self._repo.add_replay_name_classification(ReplayAlias(raw_name=slot.player_name, kind=kind))
 
-    async def _ensure_no_duplicate_members(self, payload: MatchWrite) -> None:
+    async def _ensure_no_duplicate_members(self, payload: GameResultWrite) -> None:
         # 컴퓨터/비회원 슬롯은 실제 회원이 아니라 여러 개 있어도 "중복"이 아니므로 제외한다.
         ids = [
             s.member_id
@@ -1458,7 +1458,7 @@ class MatchService:
         if len(ids) != len(set(ids)):
             raise ValidationError("같은 회원이 양 팀에 동시에 포함될 수 없습니다.")
 
-    async def _ensure_members_exist(self, slots: list[MatchSlot]) -> dict[str, Member]:
+    async def _ensure_members_exist(self, slots: list[GameResultSlot]) -> dict[str, Member]:
         members_by_id: dict[str, Member] = {}
         for member_id in {s.member_id for s in slots if not is_placeholder_slot(s.member_id)}:
             member = await self._member_repo.get_by_login_id(member_id)
@@ -1467,7 +1467,7 @@ class MatchService:
             members_by_id[member_id] = member
         return members_by_id
 
-    async def _apply_replay(self, match: Match, payload: ReplayUpload, *, actor_pk: int) -> None:
+    async def _apply_replay(self, match: GameResult, payload: ReplayUpload, *, actor_pk: int) -> None:
         if not is_data_url(payload.url):
             return  # 기존에 저장된 리플레이 그대로 유지 (변경 없음)
 

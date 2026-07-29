@@ -50,7 +50,7 @@ class FeedCommentMention(Base):
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
 
 
-class RankSnapshot(TimestampMixin, Base):
+class RankingShift(TimestampMixin, Base):
     """경기 등록/삭제 시점의 포인트·순위 스냅샷 — 매번 다시 계산하지 않도록 저장해 둔다.
 
     한 이벤트(배치 등록/삭제)당 경기유형별로 한 행. 직전 스냅샷과 비교한 변동분(shifts)이
@@ -64,7 +64,7 @@ class RankSnapshot(TimestampMixin, Base):
                  기준선으로만 남아 피드에 안 보인다.
     """
 
-    __tablename__ = "rank_snapshots"
+    __tablename__ = "ranking_shifts"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     match_type: Mapped[str] = mapped_column(String(4), nullable=False, index=True)  # 0101=개인전, 0102=팀전

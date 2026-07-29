@@ -1,4 +1,4 @@
-"""GET /api/matches/stats, GET /api/matches/main-race, POST /api/matches/duplicate-check 검증.
+"""GET /api/game-results/stats, GET /api/game-results/main-race, POST /api/game-results/duplicate-check 검증.
 
 수치는 전부 손으로 계산 가능한 소규모 픽스처로 정확히 맞춰서 단정한다.
 """
@@ -33,7 +33,7 @@ async def _create_match(
     # matchType은 서버 기본값이 "0101"이라(프론트가 팀 크기로 계산해 보내는 값),
     # 팀전 테스트는 명시적으로 넘겨야 한다.
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": date, "team1": team1, "team2": team2, "result": result, "note": "",
@@ -77,7 +77,7 @@ async def test_stats_aggregates_exact_numbers(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
     await _seed_matches(client, headers)
 
-    res = await client.get("/api/matches/stats", headers=headers, params={"memberIds": "player01,player02"})
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"})
     assert res.status_code == 200, res.text
     by_id = {m["memberId"]: m for m in res.json()["members"]}
 
@@ -134,7 +134,7 @@ async def test_stats_excludes_extreme_outlier_game_from_eapm_ecmd_average(client
         result="team1", duration_seconds=600,
     )
 
-    res = await client.get("/api/matches/stats", headers=headers, params={"memberIds": "player01"})
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
     overall = res.json()["members"][0]["overall"]
     assert overall["plays"] == 6  # 전적 자체는 이상치 경기도 포함해서 그대로 6전
     # 이상치를 뺀 나머지 5경기만으로 평균 -> eapm 80, ecmd (400+410+390+405+395)/5경기=400
@@ -152,7 +152,7 @@ async def test_stats_race_filter_scopes_overall(client):
     await _seed_matches(client, headers)
 
     res = await client.get(
-        "/api/matches/stats", headers=headers, params={"memberIds": "player01", "race": "프로토스"}
+        "/api/game-results/stats", headers=headers, params={"memberIds": "player01", "race": "프로토스"}
     )
     overall = res.json()["members"][0]["overall"]
     assert overall == {
@@ -167,7 +167,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
-    res = await client.get("/api/matches/stats", headers=headers, params={"memberIds": "player01"})
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
     entry = res.json()["members"][0]
     assert entry["overall"] == {
         "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
@@ -182,7 +182,7 @@ async def test_main_race_picks_most_played(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
     await _seed_matches(client, headers)
 
-    res = await client.get("/api/matches/main-race", headers=headers, params={"memberId": "player01"})
+    res = await client.get("/api/game-results/main-race", headers=headers, params={"memberId": "player01"})
     assert res.status_code == 200, res.text
     assert res.json() == {"race": "테란"}
 
@@ -193,7 +193,7 @@ async def test_duplicate_check_matches_regardless_of_timestamp_format(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-07-01",
@@ -206,7 +206,7 @@ async def test_duplicate_check_matches_regardless_of_timestamp_format(client):
     )
 
     res = await client.post(
-        "/api/matches/duplicate-check",
+        "/api/game-results/duplicate-check",
         headers=headers,
         json={"gameStartedAt": ["2026-07-01T10:00:00Z", "2026-07-02T10:00:00Z"]},
     )
@@ -235,7 +235,7 @@ async def test_rivalries_pairwise_counts(client):
         team1=[_slot("rival01", "테란")], team2=[_slot("rival02", "저그")], result="draw",
     )
 
-    res = await client.get("/api/matches/stats/rivalries", headers=headers)
+    res = await client.get("/api/game-results/stats/rivalries", headers=headers)
     assert res.status_code == 200, res.text
     pairs = [p for p in res.json()["pairs"] if {p["a"], p["b"]} == {"rival01", "rival02"}]
     assert len(pairs) == 1
@@ -247,7 +247,7 @@ async def test_rivalries_pairwise_counts(client):
 
     # 기간 필터 — 첫 경기만 잡히는 범위로 좁히면 승수도 그만큼만.
     res = await client.get(
-        "/api/matches/stats/rivalries", headers=headers,
+        "/api/game-results/stats/rivalries", headers=headers,
         params={"dateFrom": "2026-07-01", "dateTo": "2026-07-01"},
     )
     pairs = [p for p in res.json()["pairs"] if {p["a"], p["b"]} == {"rival01", "rival02"}]
@@ -277,7 +277,7 @@ async def test_rivalries_team_mode_individualizes(client):
         )
 
     res = await client.get(
-        "/api/matches/stats/rivalries", headers=headers, params={"mode": "team"},
+        "/api/game-results/stats/rivalries", headers=headers, params={"mode": "team"},
     )
     assert res.status_code == 200, res.text
     ours = {"teamriv01", "teamriv02", "teamriv03", "teamriv04"}
@@ -296,5 +296,5 @@ async def test_rivalries_team_mode_individualizes(client):
         assert p["draws"] == 0
 
     # solo 모드(기본)에는 팀전이 안 섞인다.
-    res = await client.get("/api/matches/stats/rivalries", headers=headers)
+    res = await client.get("/api/game-results/stats/rivalries", headers=headers)
     assert not [p for p in res.json()["pairs"] if {p["a"], p["b"]} <= ours]

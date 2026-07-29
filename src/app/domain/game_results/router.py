@@ -7,17 +7,17 @@ from fastapi.responses import Response
 
 from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
 from app.core.exceptions import NotFoundError
-from app.domain.matches.schemas import (
+from app.domain.game_results.schemas import (
     DuplicateCheckRequest,
     DuplicateCheckResponse,
     EarliestDateResponse,
     MainRaceResponse,
-    MatchOut,
-    MatchPage,
-    MatchReplayMerge,
-    MatchReplayMergeResult,
-    MatchStatsResponse,
-    MatchWrite,
+    GameResultOut,
+    GameResultPage,
+    GameResultReplayMerge,
+    GameResultReplayMergeResult,
+    GameResultStatsResponse,
+    GameResultWrite,
     MonthlyMatchStatsResponse,
     RivalryResponse,
     MonthlyTeamRankingResponse,
@@ -33,16 +33,19 @@ from app.domain.matches.schemas import (
     ReplayNameMappingWrite,
     TeamRankingResponse,
 )
-from app.domain.matches.service import MatchService, to_match_out
+from app.domain.game_results.service import GameResultService, to_game_result_out
 
 
 def _split_months(months: str) -> list[str]:
     return [m.strip() for m in months.split(",") if m.strip()]
 
-router = APIRouter(prefix="/matches", tags=["matches"])
+# prefix는 여기서 안 붙인다 — 상위(api/router.py)가 이 라우터를 두 번 끼운다: 정식 경로
+# (/api/game-results)와, 배포가 어긋나는 순간을 위한 옛 경로(/api/matches). 한 벌의 핸들러가
+# 두 경로를 모두 받으므로 둘이 갈라질 일이 없다(요청: API URL도 통일).
+router = APIRouter(tags=["game-results"])
 
 
-@router.get("", response_model=MatchPage)
+@router.get("", response_model=GameResultPage)
 async def list_matches(
     db: DbSession,
     storage: StorageDep,
@@ -59,8 +62,8 @@ async def list_matches(
     # 팀 랭킹에서 팀 하나를 눌렀을 때 — 이 회원들이 전부 "같은 편"으로 뛴 경기만 추린다
     # (전원이 참가한 경기로만 찾으면 서로 상대편이었던 경기까지 딸려온다).
     team_member_ids: str | None = Query(default=None, alias="teamMemberIds"),
-) -> MatchPage:
-    service = MatchService(db, storage)
+) -> GameResultPage:
+    service = GameResultService(db, storage)
     team_ids = [i.strip() for i in team_member_ids.split(",") if i.strip()] if team_member_ids else None
     matches, next_cursor, has_more = await service.list_matches_page(
         cursor=cursor,
@@ -92,9 +95,9 @@ async def list_matches(
     # 목록 안의 매치 여러 개를 직렬화하는 동안 재사용 — 매치마다 다시 조회하지 않는다.
     alias_by_player_name = await service.alias_by_player_name()
     is_admin = current.has_any_role("0202")
-    return MatchPage(
+    return GameResultPage(
         items=[
-            to_match_out(m, storage, alias_by_player_name, actor_pk=current.pk, is_admin=is_admin)
+            to_game_result_out(m, storage, alias_by_player_name, actor_pk=current.pk, is_admin=is_admin)
             for m in matches
         ],
         next_cursor=next_cursor,
@@ -103,7 +106,7 @@ async def list_matches(
     )
 
 
-@router.get("/stats", response_model=MatchStatsResponse)
+@router.get("/stats", response_model=GameResultStatsResponse)
 async def get_stats(
     db: DbSession,
     storage: StorageDep,
@@ -113,16 +116,16 @@ async def get_stats(
     date_to: str | None = Query(default=None, alias="dateTo"),
     match_type: str | None = Query(default=None, alias="matchType"),
     race: str | None = None,
-) -> MatchStatsResponse:
+) -> GameResultStatsResponse:
     ids = [i.strip() for i in member_ids.split(",") if i.strip()] if member_ids else None
-    members = await MatchService(db, storage).get_stats(
+    members = await GameResultService(db, storage).get_stats(
         member_ids=ids,
         date_from=date_from,
         date_to=date_to,
         match_type=match_type,
         race=race,
     )
-    return MatchStatsResponse(members=members)
+    return GameResultStatsResponse(members=members)
 
 
 @router.get("/ranking", response_model=RankingResponse)
@@ -137,7 +140,7 @@ async def get_ranking(
 ) -> RankingResponse:
     # 랭킹 조회 — 순위/레이팅(+전적)을 회원별로 내려준다. 산정 로직은 전적통계(/stats)와
     # 공유하지만 URL은 의미(랭킹)에 맞춘다(요청). member_ids는 랭킹에선 안 쓰므로 뺐다.
-    members = await MatchService(db, storage).get_stats(
+    members = await GameResultService(db, storage).get_stats(
         member_ids=None,
         date_from=date_from,
         date_to=date_to,
@@ -161,7 +164,7 @@ async def get_rating_history(
     # 랭킹 상세의 '경기당 레이팅 변화(Δ)' — 이 회원이 뛴 경기마다의 μ 증감(match_no로 키잉).
     # 랭킹이 조회 기간(dateFrom~dateTo)만으로 리셋해 매겨지므로, 여기도 같은 기간만 재생해야
     # 목록의 μ/σ와 이 상세의 Δ 합이 서로 어긋나지 않는다. 종족 필터 시 그 종족 Δ만 나온다.
-    return await MatchService(db, storage).get_rating_history(
+    return await GameResultService(db, storage).get_rating_history(
         member_id=member_id, match_type=match_type, date_from=date_from, date_to=date_to, race=race,
     )
 
@@ -175,7 +178,7 @@ async def get_team_ranking(
     date_from: str | None = Query(default=None, alias="dateFrom"),
     date_to: str | None = Query(default=None, alias="dateTo"),
 ) -> TeamRankingResponse:
-    return await MatchService(db, storage).get_team_ranking(
+    return await GameResultService(db, storage).get_team_ranking(
         date_from=date.fromisoformat(date_from) if date_from else None,
         date_to=date.fromisoformat(date_to) if date_to else None,
     )
@@ -192,7 +195,7 @@ async def get_rivalries(
     mode: Literal["solo", "team"] = Query(default="solo"),
 ) -> RivalryResponse:
     # 유저 상성(상대전적 쌍) — 상성 맵 화면이 쓴다.
-    return await MatchService(db, storage).get_rivalries(
+    return await GameResultService(db, storage).get_rivalries(
         date_from=date_from, date_to=date_to, team=(mode == "team"),
     )
 
@@ -211,7 +214,7 @@ async def get_stats_monthly(
     race: str | None = None,
 ) -> MonthlyMatchStatsResponse:
     ids = [i.strip() for i in member_ids.split(",") if i.strip()] if member_ids else None
-    result = await MatchService(db, storage).get_stats_monthly(
+    result = await GameResultService(db, storage).get_stats_monthly(
         months=_split_months(months), member_ids=ids, match_type=match_type, race=race,
     )
     return MonthlyMatchStatsResponse(months=result)
@@ -224,7 +227,7 @@ async def get_team_ranking_monthly(
     _current: CurrentMember,
     months: str = Query(alias="months"),
 ) -> MonthlyTeamRankingResponse:
-    result = await MatchService(db, storage).get_team_ranking_monthly(months=_split_months(months))
+    result = await GameResultService(db, storage).get_team_ranking_monthly(months=_split_months(months))
     return MonthlyTeamRankingResponse(months=result)
 
 
@@ -238,7 +241,7 @@ async def get_main_race(
     date_to: str | None = Query(default=None, alias="dateTo"),
     match_type: str | None = Query(default=None, alias="matchType"),
 ) -> MainRaceResponse:
-    race = await MatchService(db, storage).get_main_race(
+    race = await GameResultService(db, storage).get_main_race(
         member_id=member_id,
         date_from=date_from,
         date_to=date_to,
@@ -251,7 +254,7 @@ async def get_main_race(
 async def get_earliest_date(
     db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> EarliestDateResponse:
-    earliest = await MatchService(db, storage).get_earliest_match_date()
+    earliest = await GameResultService(db, storage).get_earliest_match_date()
     return EarliestDateResponse(date=earliest)
 
 
@@ -259,23 +262,23 @@ async def get_earliest_date(
 async def check_duplicates(
     payload: DuplicateCheckRequest, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> DuplicateCheckResponse:
-    existing = await MatchService(db, storage).check_duplicates(payload.game_started_at)
+    existing = await GameResultService(db, storage).check_duplicates(payload.game_started_at)
     return DuplicateCheckResponse(existing=existing)
 
 
-@router.post("/merge-replay", response_model=MatchReplayMergeResult)
+@router.post("/merge-replay", response_model=GameResultReplayMergeResult)
 async def merge_replay(
-    payload: MatchReplayMerge, db: DbSession, storage: StorageDep, current: CurrentMember
-) -> MatchReplayMergeResult:
-    match = await MatchService(db, storage).merge_replay(payload, actor=current)
-    return MatchReplayMergeResult(merged=match is not None, match_no=match.match_no if match else None)
+    payload: GameResultReplayMerge, db: DbSession, storage: StorageDep, current: CurrentMember
+) -> GameResultReplayMergeResult:
+    match = await GameResultService(db, storage).merge_replay(payload, actor=current)
+    return GameResultReplayMergeResult(merged=match is not None, match_no=match.match_no if match else None)
 
 
 @router.post("/replay-name-classifications/lookup", response_model=ReplayNameClassificationLookupResponse)
 async def lookup_replay_name_classifications(
     payload: ReplayNameClassificationLookupRequest, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> ReplayNameClassificationLookupResponse:
-    rows = await MatchService(db, storage).lookup_replay_name_classifications(payload.raw_names)
+    rows = await GameResultService(db, storage).lookup_replay_name_classifications(payload.raw_names)
     return ReplayNameClassificationLookupResponse(
         classifications=[ReplayNameClassificationEntry(raw_name=r.raw_name, kind=r.kind) for r in rows]
     )
@@ -285,7 +288,7 @@ async def lookup_replay_name_classifications(
 async def set_replay_name_classification(
     payload: ReplayNameClassificationWrite, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> ReplayNameClassificationEntry:
-    entry = await MatchService(db, storage).set_replay_name_classification(payload.raw_name, payload.kind)
+    entry = await GameResultService(db, storage).set_replay_name_classification(payload.raw_name, payload.kind)
     return ReplayNameClassificationEntry(raw_name=entry.raw_name, kind=entry.kind)
 
 
@@ -305,7 +308,7 @@ def _to_mapping_entry(row: dict) -> ReplayNameMappingEntry:
 @router.get("/replay-name-mappings", response_model=ReplayNameMappingListResponse)
 async def list_replay_name_mappings(db: DbSession, storage: StorageDep, _current: CurrentMember) -> ReplayNameMappingListResponse:
     # 조회는 회원 누구나 가능 — 실제 수정/삭제(아래 두 엔드포인트)만 운영자로 제한한다.
-    rows = await MatchService(db, storage).list_replay_name_mappings()
+    rows = await GameResultService(db, storage).list_replay_name_mappings()
     return ReplayNameMappingListResponse(entries=[_to_mapping_entry(r) for r in rows])
 
 
@@ -313,7 +316,7 @@ async def list_replay_name_mappings(db: DbSession, storage: StorageDep, _current
 async def set_replay_name_mapping(
     payload: ReplayNameMappingWrite, db: DbSession, storage: StorageDep, admin: CurrentAdmin
 ) -> ReplayNameMappingEntry:
-    row = await MatchService(db, storage).set_replay_name_mapping(
+    row = await GameResultService(db, storage).set_replay_name_mapping(
         payload.raw_name, payload.kind, payload.member_id, actor_pk=admin.pk,
     )
     return _to_mapping_entry(row)
@@ -323,13 +326,13 @@ async def set_replay_name_mapping(
 async def delete_replay_name_mapping(
     raw_name: str, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
 ) -> None:
-    await MatchService(db, storage).delete_replay_name_mapping(raw_name)
+    await GameResultService(db, storage).delete_replay_name_mapping(raw_name)
 
 
 @router.get("/replays/archive")
 async def download_replay_archive(db: DbSession, storage: StorageDep, _admin: CurrentAdmin) -> Response:
     """등록된 모든 리플레이(.rep)를 zip으로 묶어 다운로드(운영자 전용)."""
-    data = await MatchService(db, storage).build_replay_archive()
+    data = await GameResultService(db, storage).build_replay_archive()
     return Response(
         content=data,
         media_type="application/zip",
@@ -341,47 +344,47 @@ async def download_replay_archive(db: DbSession, storage: StorageDep, _admin: Cu
 @router.delete("/all")
 async def delete_all_matches(db: DbSession, storage: StorageDep, admin: CurrentAdmin) -> dict[str, int]:
     """모든 경기기록 삭제(운영자 제어판). 첨부(.rep) 파일도 함께 지운다."""
-    count = await MatchService(db, storage).delete_all_matches(actor=admin)
+    count = await GameResultService(db, storage).delete_all_matches(actor=admin)
     return {"deleted": count}
 
 
-@router.post("", response_model=MatchOut)
+@router.post("", response_model=GameResultOut)
 async def create_match(
-    payload: MatchWrite, db: DbSession, storage: StorageDep, current: CurrentMember
-) -> MatchOut:
-    service = MatchService(db, storage)
+    payload: GameResultWrite, db: DbSession, storage: StorageDep, current: CurrentMember
+) -> GameResultOut:
+    service = GameResultService(db, storage)
     match = await service.create_match(payload, actor=current)
-    return to_match_out(
+    return to_game_result_out(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),
     )
 
 
-@router.put("/{match_id}", response_model=MatchOut)
+@router.put("/{match_id}", response_model=GameResultOut)
 async def update_match(
     match_id: int,
-    payload: MatchWrite,
+    payload: GameResultWrite,
     db: DbSession,
     storage: StorageDep,
     current: CurrentMember,
-) -> MatchOut:
-    service = MatchService(db, storage)
+) -> GameResultOut:
+    service = GameResultService(db, storage)
     match = await service.update_match(match_id, payload, actor=current)
-    return to_match_out(
+    return to_game_result_out(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),
     )
 
 
-@router.get("/{match_id}", response_model=MatchOut)
+@router.get("/{match_id}", response_model=GameResultOut)
 async def get_match(
     match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
-) -> MatchOut:
+) -> GameResultOut:
     # 카카오톡 공유 링크가 여는 "이 경기만 보이는" 화면에서 단건 조회에 쓴다. 정적 GET
     # 경로(/stats, /ranking 등)보다 아래에 선언해 int 경로변수가 그것들을 가리지 않게 한다.
-    service = MatchService(db, storage)
+    service = GameResultService(db, storage)
     match = await service.get_match(match_id)
-    return to_match_out(
+    return to_game_result_out(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),
     )
@@ -391,14 +394,14 @@ async def get_match(
 async def delete_match(
     match_id: int, db: DbSession, storage: StorageDep, current: CurrentMember
 ) -> None:
-    await MatchService(db, storage).delete_match(match_id, actor=current)
+    await GameResultService(db, storage).delete_match(match_id, actor=current)
 
 
 @router.get("/{match_id}/replay")
 async def download_replay(
     match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> Response:
-    match = await MatchService(db, storage).get_match(match_id)
+    match = await GameResultService(db, storage).get_match(match_id)
     replay = match.result_row.replay if match.result_row else None
     if replay is None:
         raise NotFoundError("리플레이가 없습니다.")

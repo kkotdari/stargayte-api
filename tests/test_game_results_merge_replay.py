@@ -1,4 +1,4 @@
-"""POST /api/matches/merge-replay — 이미 등록된 경기에 리플레이 내부 정보만 다시 덮어쓰는
+"""POST /api/game-results/merge-replay — 이미 등록된 경기에 리플레이 내부 정보만 다시 덮어쓰는
 머지(요청: 중복 리플레이 재등록 시 새 컬럼 백필). 지표/맵/시간은 항상, 승패는 확실할 때만
 갱신하고 경기번호·등록자·메모·참가자 회원연결은 보존하는지 검증한다."""
 
@@ -19,7 +19,7 @@ async def test_merge_backfills_metrics_and_preserves_identity(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
     gsa = "2026-07-01T03:00:00+00:00"
 
-    create = await client.post("/api/matches", headers=headers, json={
+    create = await client.post("/api/game-results", headers=headers, json={
         "date": "2026-07-01",
         "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01",
                    "apm": 100, "eapm": 80, "cmdCount": 500, "effectiveCmdCount": 400}],
@@ -34,7 +34,7 @@ async def test_merge_backfills_metrics_and_preserves_identity(client):
     assert match["team1"][0]["buildCount"] is None  # 생성 직후엔 생산 지표 없음
 
     # 머지 — 생산 백필 + 지표 갱신, 승패는 None(유지), 메모는 안 보냄.
-    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+    merge = await client.post("/api/game-results/merge-replay", headers=headers, json={
         "gameStartedAt": gsa, "result": None, "mapName": "Fighting Spirit", "durationSeconds": 600,
         "players": [
             {"playerName": "player01", "race": "테란", "apm": 111, "eapm": 88,
@@ -46,7 +46,7 @@ async def test_merge_backfills_metrics_and_preserves_identity(client):
     assert merge.status_code == 200, merge.text
     assert merge.json() == {"merged": True, "matchNo": match_no}
 
-    got = (await client.get(f"/api/matches/{match_id}", headers=headers)).json()
+    got = (await client.get(f"/api/game-results/{match_id}", headers=headers)).json()
     t1 = got["team1"][0]
     assert t1["buildCount"] == 300            # 백필됨
     assert t1["apm"] == 111 and t1["effectiveCmdCount"] == 444  # 지표 갱신
@@ -61,7 +61,7 @@ async def test_merge_overwrites_result_only_when_provided(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
     gsa = "2026-07-02T03:00:00+00:00"
 
-    create = await client.post("/api/matches", headers=headers, json={
+    create = await client.post("/api/game-results", headers=headers, json={
         "date": "2026-07-02",
         "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01"}],
         "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02"}],
@@ -71,12 +71,12 @@ async def test_merge_overwrites_result_only_when_provided(client):
     mid = create.json()["id"]
 
     # result를 team2로 확실히 덮어쓰기.
-    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+    merge = await client.post("/api/game-results/merge-replay", headers=headers, json={
         "gameStartedAt": gsa, "result": "team2",
         "players": [{"playerName": "player01"}, {"playerName": "player02"}],
     })
     assert merge.status_code == 200, merge.text
-    got = (await client.get(f"/api/matches/{mid}", headers=headers)).json()
+    got = (await client.get(f"/api/game-results/{mid}", headers=headers)).json()
     assert got["result"] == "team2"
 
 
@@ -91,7 +91,7 @@ async def test_replay_filename_new_format_and_merge_updates_it(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
     gsa = "2026-07-05T03:00:00+00:00"
 
-    create = await client.post("/api/matches", headers=headers, json={
+    create = await client.post("/api/game-results", headers=headers, json={
         "date": "2026-07-05",
         "team1": [{"memberId": "player01", "race": "테란", "playerName": "player01"}],
         "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02"}],
@@ -108,12 +108,12 @@ async def test_replay_filename_new_format_and_merge_updates_it(client):
 
     # 같은 게임시각(중복)으로 다시 올리면 파일명을 신규 포맷으로 갱신 — 맵이 바뀌면 이름도 따라간다.
     # 아포스트로피(')와 앰퍼샌드(&)는 일반 기호라 유지, *는 특수문자라 제거된다.
-    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+    merge = await client.post("/api/game-results/merge-replay", headers=headers, json={
         "gameStartedAt": gsa, "result": None, "mapName": "Gaia's & Sylph*",
         "players": [{"playerName": "player01"}, {"playerName": "player02"}],
     })
     assert merge.status_code == 200, merge.text
-    got = (await client.get(f"/api/matches/{match['id']}", headers=headers)).json()
+    got = (await client.get(f"/api/game-results/{match['id']}", headers=headers)).json()
     assert got["replay"]["displayName"] == f"[{match_no}] player01 VS player02 (Gaia's & Sylph).rep", (
         got["replay"]["displayName"]
     )
@@ -145,41 +145,41 @@ async def test_summary_is_stored_and_backfilled_by_merge(client):
             {"k": "result", "won": True, "who": ["player01"], "p": {"mode": "plain"}},
         ],
     }
-    a = await client.post("/api/matches", headers=headers,
+    a = await client.post("/api/game-results", headers=headers,
                           json=body("2026-07-01T03:00:00+00:00", with_sum))
     assert a.status_code == 200, a.text
     assert a.json()["summaryData"] == with_sum
 
     # 요약 없이 등록된 예전 경기.
     gsa = "2026-07-01T04:00:00+00:00"
-    b = await client.post("/api/matches", headers=headers, json=body(gsa, None))
+    b = await client.post("/api/game-results", headers=headers, json=body(gsa, None))
     assert b.status_code == 200, b.text
     old_id = b.json()["id"]
     assert b.json()["summaryData"] is None
 
     # 리플레이 재등록(머지)으로 요약만 백필된다.
     backfilled = {"v": 1, "beats": [{"k": "recall", "won": True, "who": ["player01"], "at": 900}]}
-    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+    merge = await client.post("/api/game-results/merge-replay", headers=headers, json={
         "gameStartedAt": gsa, "result": None, "summaryData": backfilled, "players": [],
     })
     assert merge.status_code == 200, merge.text
     assert merge.json()["merged"] is True
-    got = (await client.get(f"/api/matches/{old_id}", headers=headers)).json()
+    got = (await client.get(f"/api/game-results/{old_id}", headers=headers)).json()
     assert got["summaryData"] == backfilled
 
     # 요약을 못 만든 머지(summaryData=None)는 기존 값을 지우지 않는다.
-    again = await client.post("/api/matches/merge-replay", headers=headers, json={
+    again = await client.post("/api/game-results/merge-replay", headers=headers, json={
         "gameStartedAt": gsa, "result": None, "summaryData": None, "players": [],
     })
     assert again.status_code == 200, again.text
-    got2 = (await client.get(f"/api/matches/{old_id}", headers=headers)).json()
+    got2 = (await client.get(f"/api/game-results/{old_id}", headers=headers)).json()
     assert got2["summaryData"] == backfilled
 
 
 async def test_merge_no_matching_game_returns_false(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-    merge = await client.post("/api/matches/merge-replay", headers=headers, json={
+    merge = await client.post("/api/game-results/merge-replay", headers=headers, json={
         "gameStartedAt": "2099-01-01T00:00:00+00:00", "result": None, "players": [],
     })
     assert merge.status_code == 200, merge.text

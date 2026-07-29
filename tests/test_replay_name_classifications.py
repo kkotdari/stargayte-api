@@ -21,7 +21,7 @@ async def test_lookup_returns_empty_for_unknown_names(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     res = await client.post(
-        "/api/matches/replay-name-classifications/lookup",
+        "/api/game-results/replay-name-classifications/lookup",
         headers=headers,
         json={"rawNames": ["NoSuchPlayer"]},
     )
@@ -34,7 +34,7 @@ async def test_set_then_lookup_roundtrips_and_upserts(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     res = await client.post(
-        "/api/matches/replay-name-classifications",
+        "/api/game-results/replay-name-classifications",
         headers=headers,
         json={"rawName": "BotFriend", "kind": "computer"},
     )
@@ -42,7 +42,7 @@ async def test_set_then_lookup_roundtrips_and_upserts(client):
     assert res.json() == {"rawName": "BotFriend", "kind": "computer"}
 
     res = await client.post(
-        "/api/matches/replay-name-classifications/lookup",
+        "/api/game-results/replay-name-classifications/lookup",
         headers=headers,
         json={"rawNames": ["BotFriend", "NoSuchPlayer"]},
     )
@@ -52,7 +52,7 @@ async def test_set_then_lookup_roundtrips_and_upserts(client):
     # 같은 이름을 다른 종류로 다시 지정하면(사람이 잘못 눌렀다가 고치는 경우) 새 행이 아니라
     # 기존 행을 덮어써야 한다(raw_name UNIQUE 제약과 일치).
     res = await client.post(
-        "/api/matches/replay-name-classifications",
+        "/api/game-results/replay-name-classifications",
         headers=headers,
         json={"rawName": "BotFriend", "kind": "unregistered"},
     )
@@ -60,7 +60,7 @@ async def test_set_then_lookup_roundtrips_and_upserts(client):
     assert res.json() == {"rawName": "BotFriend", "kind": "unregistered"}
 
     res = await client.post(
-        "/api/matches/replay-name-classifications/lookup",
+        "/api/game-results/replay-name-classifications/lookup",
         headers=headers,
         json={"rawNames": ["BotFriend"]},
     )
@@ -72,7 +72,7 @@ async def test_invalid_kind_rejected(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     res = await client.post(
-        "/api/matches/replay-name-classifications",
+        "/api/game-results/replay-name-classifications",
         headers=headers,
         json={"rawName": "Someone", "kind": "not_a_real_kind"},
     )

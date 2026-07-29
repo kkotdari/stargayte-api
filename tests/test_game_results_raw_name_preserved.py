@@ -23,7 +23,7 @@ async def _signup(client, member_id: str, battletag: str) -> dict:
 
 async def _create_match(client, headers, team1: list[dict], team2: list[dict]) -> dict:
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-07-01", "team1": team1, "team2": team2,
@@ -44,7 +44,7 @@ async def test_unregistered_slot_keeps_its_replay_player_name(client):
         team2=[{"memberId": f"{UNREGISTERED_PREFIX}1", "race": "저그", "playerName": "GhostPlayer"}],
     )
 
-    res = await client.get("/api/matches", headers=headers)
+    res = await client.get("/api/game-results", headers=headers)
     match = res.json()["items"][0]
     # 회원으로 매칭된 슬롯도, 매칭 못 한 슬롯도 리플레이 원본 이름을 그대로 갖고 있어야 한다.
     assert match["team1"][0]["playerName"] == "player01"
@@ -70,14 +70,14 @@ async def test_unregistered_player_name_is_auto_classified(client):
     )
 
     res = await client.post(
-        "/api/matches/replay-name-classifications/lookup",
+        "/api/game-results/replay-name-classifications/lookup",
         headers=headers,
         json={"rawNames": ["GhostPlayer"]},
     )
     assert res.json()["classifications"] == [{"rawName": "GhostPlayer", "kind": "unregistered"}]
 
     # 경기결과에서도 컴퓨터가 아니라 비회원으로 보여야 한다.
-    match = (await client.get("/api/matches", headers=headers)).json()["items"][0]
+    match = (await client.get("/api/game-results", headers=headers)).json()["items"][0]
     assert match["team2"][0]["memberId"].startswith(UNREGISTERED_PREFIX)
 
 
@@ -91,12 +91,12 @@ async def test_computer_slot_from_replay_keeps_player_name_and_kind(client):
         team2=[{"memberId": f"{COMPUTER_PREFIX}1", "race": "저그", "playerName": "Computer"}],
     )
 
-    match = (await client.get("/api/matches", headers=headers)).json()["items"][0]
+    match = (await client.get("/api/game-results", headers=headers)).json()["items"][0]
     assert match["team2"][0]["playerName"] == "Computer"
     assert match["team2"][0]["memberId"].startswith(COMPUTER_PREFIX)
 
     res = await client.post(
-        "/api/matches/replay-name-classifications/lookup",
+        "/api/game-results/replay-name-classifications/lookup",
         headers=headers,
         json={"rawNames": ["Computer"]},
     )
@@ -116,7 +116,7 @@ async def test_member_slot_without_player_name_falls_back_to_latest_alias(client
         team2=[{"memberId": f"{UNREGISTERED_PREFIX}1", "race": "저그", "playerName": "GhostGuy"}],
     )
 
-    match = (await client.get("/api/matches", headers=headers)).json()["items"][0]
+    match = (await client.get("/api/game-results", headers=headers)).json()["items"][0]
     assert match["team1"][0]["playerName"] == "player01"
     assert match["team2"][0]["playerName"] == "GhostGuy"
     assert match["team2"][0]["memberId"].startswith(UNREGISTERED_PREFIX)
@@ -138,7 +138,7 @@ async def test_existing_member_alias_is_not_overwritten(client):
 
     # 회원 매핑은 그대로 남아야 한다 — 분류 조회(kind != 'member')에는 안 잡힌다.
     res = await client.post(
-        "/api/matches/replay-name-classifications/lookup",
+        "/api/game-results/replay-name-classifications/lookup",
         headers=headers,
         json={"rawNames": ["player02"]},
     )

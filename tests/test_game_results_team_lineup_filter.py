@@ -1,4 +1,4 @@
-"""GET /api/matches?teamMemberIds=... — 팀 랭킹에서 팀 하나를 눌렀을 때 그 팀이 실제로
+"""GET /api/game-results?teamMemberIds=... — 팀 랭킹에서 팀 하나를 눌렀을 때 그 팀이 실제로
 "같은 편"으로 뛴 경기만 나오는지 검증한다. 단순히 "전원이 참가한 경기"로 찾으면 서로
 상대편이었던 경기까지 딸려오는데, 그건 그 팀의 전적이 아니다.
 """
@@ -29,7 +29,7 @@ async def _match(client, headers, team1, team2, when: str) -> str:
         return [{"memberId": i, "race": "테란"} for i in ids]
 
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": when, "team1": slots(team1), "team2": slots(team2),
@@ -41,7 +41,7 @@ async def _match(client, headers, team1, team2, when: str) -> str:
 
 
 async def _list(client, headers, team_member_ids: str) -> dict:
-    res = await client.get("/api/matches", headers=headers, params={"teamMemberIds": team_member_ids})
+    res = await client.get("/api/game-results", headers=headers, params={"teamMemberIds": team_member_ids})
     assert res.status_code == 200, res.text
     return res.json()
 
@@ -110,13 +110,13 @@ async def test_single_member_filter_returns_matches_of_any_side_size(client):
 
     # 팀전만(0102) → 2:2·3:3 둘.
     team = await client.get(
-        "/api/matches", headers=headers, params={"teamMemberIds": "player01", "matchType": "0102"}
+        "/api/game-results", headers=headers, params={"teamMemberIds": "player01", "matchType": "0102"}
     )
     assert {m["matchNo"] for m in team.json()["items"]} == {duo, trio}
 
     # 개인전만(0101) → 1:1 하나.
     one = await client.get(
-        "/api/matches", headers=headers, params={"teamMemberIds": "player01", "matchType": "0101"}
+        "/api/game-results", headers=headers, params={"teamMemberIds": "player01", "matchType": "0101"}
     )
     assert [m["matchNo"] for m in one.json()["items"]] == [solo]
 

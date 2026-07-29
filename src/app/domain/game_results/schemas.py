@@ -4,9 +4,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Race = Literal["테란", "프로토스", "저그", "랜덤"]
-MatchResult = Literal["team1", "team2", "draw", "not_held"]
+GameOutcome = Literal["team1", "team2", "draw", "not_held"]
 # 경기유형 코드: 0101=1:1, 0102=팀전
-MatchType = Literal["0101", "0102"]
+GameType = Literal["0101", "0102"]
 
 # 실제 회원이 아니라 "컴퓨터"(AI) 참가자를 나타내는 memberId 접두사 — 가끔 컴퓨터를 끼고
 # 하는 경기가 있어(팀전 인원을 채우는 등) 실제 회원 없이도 슬롯을 채울 수 있게 한다.
@@ -34,18 +34,18 @@ def is_placeholder_slot(member_id: str) -> bool:
     return is_computer_slot(member_id) or is_unregistered_slot(member_id)
 
 
-class MatchSlot(BaseModel):
+class GameResultSlot(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     member_id: str = Field(alias="memberId")
     # "랜덤"은 회원 프로필의 주종족 개념일 뿐, 실제 경기결과에는 절대 저장하지 않는다
-    # (MatchWrite._normalize 참고). 과거 데이터에는 남아있을 수 있어 읽기 위해 타입 자체는
+    # (GameResultWrite._normalize 참고). 과거 데이터에는 남아있을 수 있어 읽기 위해 타입 자체는
     # 그대로 두되, 새로 쓰는 값만 검증으로 막는다.
     race: Race
     # 실제 게임에서 쓰인 플레이어 이름 — 리플레이 파싱 원본이거나, 수기등록에서 고른 이름.
     # 보내지 않으면(수기등록 화면이 아직 선택 UI로 바뀌지 않은 경우 등) 서버가 회원의
     # 최근 등록 게임 아이디(placeholder는 예약값)로 채운다 — models.py의
-    # MatchParticipant.player_name, service.py의 MatchService._player_name 참고. 한 번
+    # GameResultParticipant.player_name, service.py의 GameResultService._player_name 참고. 한 번
     # 저장되면 영구 보존되고 이후 어떤 요청으로도 지우거나 바꿀 수 없다.
     player_name: str | None = Field(default=None, alias="playerName")
     # 아래 4개는 리플레이 파싱으로 자동 등록된 참가자만 값이 있다 (수동 등록은 항상 None).
@@ -57,7 +57,7 @@ class MatchSlot(BaseModel):
     build_count: int | None = Field(default=None, alias="buildCount")
 
 
-class MatchReplayMergeSlot(BaseModel):
+class GameResultReplayMergeSlot(BaseModel):
     """리플레이 재파싱으로 갱신할 한 참가자의 값 — player_name(리플레이 원본 게임 아이디)으로
     기존 참가자를 찾아 지표/종족만 덮어쓴다. 회원 연결(누가 뛰었는지)은 건드리지 않는다."""
 
@@ -72,7 +72,7 @@ class MatchReplayMergeSlot(BaseModel):
     build_count: int | None = Field(default=None, alias="buildCount")
 
 
-class MatchReplayMerge(BaseModel):
+class GameResultReplayMerge(BaseModel):
     """이미 등록된 경기(game_started_at으로 식별)에 리플레이 내부 정보만 다시 덮어쓰는 머지
     payload(요청: "중복건이라도 머지 방식으로 새 컬럼 덮어쓰기"). 지표(APM/커맨드/생산)·맵·
     플레이시간은 항상 갱신하고, 승패(result)는 리플레이가 승자를 확실히 가린 경우에만(None이면
@@ -81,15 +81,15 @@ class MatchReplayMerge(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     game_started_at: datetime = Field(alias="gameStartedAt")
-    result: MatchResult | None = None  # None = 기존 승패 유지(리플레이가 못 가림)
+    result: GameOutcome | None = None  # None = 기존 승패 유지(리플레이가 못 가림)
     map_name: str | None = Field(default=None, alias="mapName")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
     # 리플레이를 다시 올리면 요약도 다시 계산된 값으로 덮어쓴다(요청: 배치 업로드에서 갱신).
     summary_data: dict | None = Field(default=None, alias="summaryData")
-    players: list[MatchReplayMergeSlot]
+    players: list[GameResultReplayMergeSlot]
 
 
-class MatchReplayMergeResult(BaseModel):
+class GameResultReplayMergeResult(BaseModel):
     """머지 결과 — 게임 시각이 일치하는 경기가 있어 실제로 덮어썼는지(merged)와 그 경기번호."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -120,49 +120,49 @@ class ReplayOut(BaseModel):
     url: str
 
 
-class MatchAuthor(BaseModel):
+class GameResultAuthor(BaseModel):
     id: str
     nickname: str
 
 
-class MatchWrite(BaseModel):
+class GameResultWrite(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    team1: list[MatchSlot] = Field(min_length=1)
-    team2: list[MatchSlot] = Field(min_length=1)
-    result: MatchResult
-    match_type: MatchType = Field(default="0101", alias="matchType")
+    team1: list[GameResultSlot] = Field(min_length=1)
+    team2: list[GameResultSlot] = Field(min_length=1)
+    result: GameOutcome
+    match_type: GameType = Field(default="0101", alias="matchType")
     replay: ReplayUpload | None = None
     # 아래 3개는 리플레이 파싱으로만 채워진다 (수동 등록/수정 시 비워두면 그대로 None).
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
     # 리플레이에서 규칙으로 뽑은 경기 요약 — 문장이 아니라 "무슨 일이 있었나"의 목록이다
-    # (models.MatchResult.summary_data 주석 참고). 사람이 쓴 글이 아니라 파생 데이터다.
+    # (models.GameOutcome.summary_data 주석 참고). 사람이 쓴 글이 아니라 파생 데이터다.
     summary_data: dict | None = Field(default=None, alias="summaryData")
 
     @model_validator(mode="after")
-    def _normalize(self) -> "MatchWrite":
+    def _normalize(self) -> "GameResultWrite":
         if any(slot.race == "랜덤" for slot in self.team1 + self.team2):
             raise ValueError("경기 참가자의 종족은 실제로 플레이한 종족(테란/프로토스/저그)만 저장할 수 있습니다.")
         return self
 
 
-class MatchOut(BaseModel):
+class GameResultOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
     # 사람이 보고 지목하는 고유번호 — 등록 순서(id)가 아니라 실제 경기 시각 기준이라
-    # id와 순서가 다를 수 있다. models.py의 Match.match_no 참고.
+    # id와 순서가 다를 수 있다. models.py의 GameResult.match_no 참고.
     match_no: str = Field(alias="matchNo")
     date: str
-    team1: list[MatchSlot]
-    team2: list[MatchSlot]
-    result: MatchResult
-    match_type: MatchType = Field(alias="matchType")
+    team1: list[GameResultSlot]
+    team2: list[GameResultSlot]
+    result: GameOutcome
+    match_type: GameType = Field(alias="matchType")
     replay: ReplayOut | None
-    created_by: MatchAuthor | None = Field(alias="createdBy")
+    created_by: GameResultAuthor | None = Field(alias="createdBy")
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
@@ -171,12 +171,12 @@ class MatchOut(BaseModel):
     # 검색창에서 댓글 내용으로도 필터할 수 있게 한다(요청). 오래된 순.
 
 
-class MatchPage(BaseModel):
+class GameResultPage(BaseModel):
     """경기결과 화면 무한스크롤용 커서 페이지."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    items: list[MatchOut]
+    items: list[GameResultOut]
     next_cursor: str | None = Field(alias="nextCursor")
     has_more: bool = Field(alias="hasMore")
     # 같은 필터 조건에 해당하는 전체 건수 — 무한스크롤로 일부만 로드된 상태에서도 화면에
@@ -241,7 +241,7 @@ class MemberStatsEntry(BaseModel):
     provisional: bool | None = Field(default=None)
 
 
-class MatchStatsResponse(BaseModel):
+class GameResultStatsResponse(BaseModel):
     members: list[MemberStatsEntry]
 
 
@@ -261,8 +261,8 @@ class RivalryResponse(BaseModel):
     pairs: list[RivalryPairOut]
 
 
-class RankingResponse(MatchStatsResponse):
-    """랭킹 조회 전용 응답 — 구조는 전적통계(MatchStatsResponse)와 같지만(회원별 전적 +
+class RankingResponse(GameResultStatsResponse):
+    """랭킹 조회 전용 응답 — 구조는 전적통계(GameResultStatsResponse)와 같지만(회원별 전적 +
     순위/레이팅), URL 의미(랭킹)에 맞게 별도 이름으로 노출한다(요청: "랭킹 엔드포인트
     분리"). 백엔드 산정 로직은 get_stats를 그대로 공유한다."""
 

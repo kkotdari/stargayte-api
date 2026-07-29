@@ -1,4 +1,4 @@
-"""GET /api/matches의 커서 페이지네이션 + 유저 검색(OR/AND) 스모크 테스트."""
+"""GET /api/game-results의 커서 페이지네이션 + 유저 검색(OR/AND) 스모크 테스트."""
 
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
@@ -18,7 +18,7 @@ async def _signup(client, member_id: str, battletag: str) -> dict:
 
 async def _create_match(client, headers, date: str, team1: list[str], team2: list[str]) -> dict:
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": date,
@@ -49,7 +49,7 @@ async def test_pagination_orders_and_pages_through_all_pages(client):
         params = {"limit": 2, "sort": "latest"}
         if cursor:
             params["cursor"] = cursor
-        res = await client.get("/api/matches", headers=headers, params=params)
+        res = await client.get("/api/game-results", headers=headers, params=params)
         assert res.status_code == 200, res.text
         body = res.json()
         seen_ids.extend(item["id"] for item in body["items"])
@@ -77,7 +77,7 @@ async def test_cursor_is_stable_when_newer_match_inserted_concurrently(client):
     for d in ["2026-07-01", "2026-07-02", "2026-07-03"]:
         await _create_match(client, headers, d, ["player01"], ["player02"])
 
-    page1 = (await client.get("/api/matches", headers=headers, params={"limit": 1, "sort": "latest"})).json()
+    page1 = (await client.get("/api/game-results", headers=headers, params={"limit": 1, "sort": "latest"})).json()
     assert len(page1["items"]) == 1
     assert page1["items"][0]["date"] == "2026-07-03"
     cursor = page1["nextCursor"]
@@ -86,7 +86,7 @@ async def test_cursor_is_stable_when_newer_match_inserted_concurrently(client):
     await _create_match(client, headers, "2026-07-04", ["player01"], ["player02"])
 
     page2_params = {"limit": 10, "sort": "latest", "cursor": cursor}
-    page2 = (await client.get("/api/matches", headers=headers, params=page2_params)).json()
+    page2 = (await client.get("/api/game-results", headers=headers, params=page2_params)).json()
     page2_dates = [m["date"] for m in page2["items"]]
     # 새로 끼어든 07-04는 커서보다 앞(더 최신)이라 이 페이지에 나오면 안 되고, 이미 본
     # 07-03도 다시 나오면 안 된다 — 커서 기준 그 뒤(07-02, 07-01)만 나와야 한다.
@@ -107,14 +107,14 @@ async def test_user_search_or_and_and(client):
 
     # OR(기본): player01 또는 player02가 낀 경기 전부.
     or_res = await client.get(
-        "/api/matches", headers=headers, params={"userQuery": "player01 player02"}
+        "/api/game-results", headers=headers, params={"userQuery": "player01 player02"}
     )
     or_ids = {m["id"] for m in or_res.json()["items"]}
     assert or_ids == {only_a["id"], only_b["id"], both_a_and_b["id"]}
 
     # AND(matchAllUsers=true): 두 명 다 낀 경기만.
     and_res = await client.get(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         params={"userQuery": "player01 player02", "matchAllUsers": "true"},
     )
@@ -127,14 +127,14 @@ async def test_earliest_date_reflects_only_completed_matches(client):
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
-    empty_res = await client.get("/api/matches/earliest-date", headers=headers)
+    empty_res = await client.get("/api/game-results/earliest-date", headers=headers)
     assert empty_res.json() == {"date": None}
 
     await _create_match(client, headers, "2026-07-05", ["player01"], ["player02"])
     await _create_match(client, headers, "2026-07-01", ["player01"], ["player02"])
     await _create_match(client, headers, "2026-07-10", ["player01"], ["player02"])
 
-    res = await client.get("/api/matches/earliest-date", headers=headers)
+    res = await client.get("/api/game-results/earliest-date", headers=headers)
     assert res.status_code == 200, res.text
     assert res.json() == {"date": "2026-07-01"}
 
@@ -147,6 +147,25 @@ async def test_user_search_matches_replay_alias(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
     match = await _create_match(client, headers, "2026-07-01", ["player01"], ["player02"])
 
-    res = await client.get("/api/matches", headers=headers, params={"userQuery": "player02"})
+    res = await client.get("/api/game-results", headers=headers, params={"userQuery": "player02"})
     ids = {m["id"] for m in res.json()["items"]}
     assert ids == {match["id"]}
+
+
+async def test_legacy_matches_path_still_answers(client):
+    """옛 경로(/api/matches)도 같은 핸들러로 그대로 응답한다.
+
+    이름 정리로 정식 경로가 /api/game-results가 됐지만, 프론트와 백엔드 배포 사이가
+    한 순간이라도 어긋나면 옛 경로로 오는 요청이 있다 — 그래서 별칭을 남겼다(요청).
+    이 테스트가 그 별칭이 살아 있는지를 지킨다. 나중에 별칭을 지울 때 함께 지우면 된다.
+    """
+    a = await _signup(client, "legacyA", "legacyA#1")
+    headers = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _signup(client, "legacyB", "legacyB#1")
+    await _create_match(client, headers, "2026-03-01", ["legacyA"], ["legacyB"])
+
+    new = await client.get("/api/game-results?limit=5", headers=headers)
+    old = await client.get("/api/matches?limit=5", headers=headers)
+    assert new.status_code == 200, new.text
+    assert old.status_code == 200, old.text
+    assert [m["id"] for m in old.json()["items"]] == [m["id"] for m in new.json()["items"]]

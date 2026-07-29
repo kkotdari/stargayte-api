@@ -26,7 +26,7 @@ async def test_unregistered_slot_resolves_retroactively_when_mapped_to_member(cl
 
     # 경기 등록 시 team2 자리를 "비회원"(player_name="GhostRawName")으로 채운다.
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": "2026-01-01",
@@ -44,14 +44,14 @@ async def test_unregistered_slot_resolves_retroactively_when_mapped_to_member(cl
 
     # 게임아이디 화면에서 "GhostRawName"을 실제 회원(ghost1)으로 연결한다.
     res = await client.post(
-        "/api/matches/replay-name-mappings",
+        "/api/game-results/replay-name-mappings",
         headers=headers,
         json={"rawName": "GhostRawName", "kind": "member", "memberId": "ghost1"},
     )
     assert res.status_code == 200, res.text
 
     # 같은 경기를 다시 조회 — team2 슬롯이 이제 ghost1 회원을 가리켜야 한다.
-    res = await client.get("/api/matches", headers=headers, params={"limit": 10})
+    res = await client.get("/api/game-results", headers=headers, params={"limit": 10})
     assert res.status_code == 200, res.text
     items = res.json()["items"]
     match = next(m for m in items if m["id"] == match_id)

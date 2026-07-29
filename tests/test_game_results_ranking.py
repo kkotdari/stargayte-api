@@ -1,4 +1,4 @@
-"""랭킹 정렬 검증 — 개인전(GET /api/matches/stats의 sortOrder/tieGroup)과 팀전(GET /api/matches/team-ranking).
+"""랭킹 정렬 검증 — 개인전(GET /api/game-results/stats의 sortOrder/tieGroup)과 팀전(GET /api/game-results/team-ranking).
 
 정렬 규칙이 "동률일 때만 다음 단계로 넘어간다"는 단계형이라, 각 단계가 실제로 순서를 가르는
 최소 픽스처를 단계별로 하나씩 만든다.
@@ -33,7 +33,7 @@ async def _match(client, headers, team1: list[str], team2: list[str], result: st
         return [{"memberId": i, "race": "테란"} for i in ids]
 
     res = await client.post(
-        "/api/matches",
+        "/api/game-results",
         headers=headers,
         json={
             "date": when, "team1": slots(team1), "team2": slots(team2),
@@ -46,7 +46,7 @@ async def _match(client, headers, team1: list[str], team2: list[str], result: st
 
 async def _stats(client, headers, match_type: str | None = None) -> dict:
     params = {"matchType": match_type} if match_type else None
-    res = await client.get("/api/matches/stats", headers=headers, params=params)
+    res = await client.get("/api/game-results/stats", headers=headers, params=params)
     assert res.status_code == 200, res.text
     return {m["memberId"]: m for m in res.json()["members"]}
 
@@ -199,7 +199,7 @@ async def test_team_ranking_aggregates_actual_team_lineups(client):
     # 1:1 경기는 팀(2인 이상)이 아니라 팀랭킹에 아예 안 잡힌다.
     await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
 
-    res = await client.get("/api/matches/team-ranking", headers=headers)
+    res = await client.get("/api/game-results/team-ranking", headers=headers)
     assert res.status_code == 200, res.text
     teams = res.json()["teams"]
     assert [t["memberIds"] for t in teams] == [
@@ -232,7 +232,7 @@ async def test_team_ranking_excludes_sides_with_a_placeholder_slot(client):
     # 잡히면 안 된다.
     for _ in range(2):
         res = await client.post(
-            "/api/matches",
+            "/api/game-results",
             headers=headers,
             json={
                 "date": TODAY,
@@ -250,7 +250,7 @@ async def test_team_ranking_excludes_sides_with_a_placeholder_slot(client):
         )
         assert res.status_code == 200, res.text
 
-    res = await client.get("/api/matches/team-ranking", headers=headers)
+    res = await client.get("/api/game-results/team-ranking", headers=headers)
     assert res.status_code == 200, res.text
     team_ids = [t["memberIds"] for t in res.json()["teams"]]
     assert ["player01", "player02"] not in team_ids
@@ -259,7 +259,7 @@ async def test_team_ranking_excludes_sides_with_a_placeholder_slot(client):
     # 진짜 2:2(비회원 없이)로 두 번 뛰면 그제서야 [player01, player02]도 팀으로 잡힌다.
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
-    res = await client.get("/api/matches/team-ranking", headers=headers)
+    res = await client.get("/api/game-results/team-ranking", headers=headers)
     team_ids = [t["memberIds"] for t in res.json()["teams"]]
     assert ["player01", "player02"] in team_ids
 
@@ -270,7 +270,7 @@ async def test_team_ranking_shows_teams_after_a_single_match(client):
     headers = await _signup_many(client, 4)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
 
-    res = await client.get("/api/matches/team-ranking", headers=headers)
+    res = await client.get("/api/game-results/team-ranking", headers=headers)
     assert [t["memberIds"] for t in res.json()["teams"]] == [
         ["player01", "player02"], ["player03", "player04"],
     ]
@@ -283,7 +283,7 @@ async def test_team_ranking_counts_every_match_regardless_of_age(client):
     for day in ("2020-01-01", "2020-01-02"):
         await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", day)
 
-    res = await client.get("/api/matches/team-ranking", headers=headers)
+    res = await client.get("/api/game-results/team-ranking", headers=headers)
     teams = res.json()["teams"]
     assert [t["memberIds"] for t in teams] == [["player01", "player02"], ["player03", "player04"]]
     assert teams[0]["points"] == 2
@@ -298,7 +298,7 @@ async def test_team_ranking_date_range_narrows_to_that_period(client):
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-02-05")
 
     res = await client.get(
-        "/api/matches/team-ranking",
+        "/api/game-results/team-ranking",
         headers=headers,
         params={"dateFrom": "2026-01-01", "dateTo": "2026-01-31"},
     )
@@ -308,7 +308,7 @@ async def test_team_ranking_date_range_narrows_to_that_period(client):
     assert teams[0]["plays"] == 2  # 2월 경기는 1월 범위 밖이라 빠진다.
 
     res_feb = await client.get(
-        "/api/matches/team-ranking",
+        "/api/game-results/team-ranking",
         headers=headers,
         params={"dateFrom": "2026-02-01", "dateTo": "2026-02-28"},
     )
@@ -327,7 +327,7 @@ async def test_stats_monthly_returns_one_entry_per_requested_month(client):
     await _match(client, headers, ["player01"], ["player02"], "team1", "2026-02-11")
 
     res = await client.get(
-        "/api/matches/stats/monthly", headers=headers, params={"months": "2026-01,2026-02"},
+        "/api/game-results/stats/monthly", headers=headers, params={"months": "2026-01,2026-02"},
     )
     assert res.status_code == 200, res.text
     months = res.json()["months"]
@@ -344,7 +344,7 @@ async def test_team_ranking_monthly_returns_one_entry_per_requested_month(client
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", "2026-01-06")
 
     res = await client.get(
-        "/api/matches/team-ranking/monthly", headers=headers, params={"months": "2026-01,2026-02"},
+        "/api/game-results/team-ranking/monthly", headers=headers, params={"months": "2026-01,2026-02"},
     )
     assert res.status_code == 200, res.text
     months = res.json()["months"]

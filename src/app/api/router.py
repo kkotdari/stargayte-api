@@ -8,13 +8,15 @@ from app.domain.env_vars.router import router as env_vars_router
 from app.domain.feed.router import router as feed_router
 from app.domain.leagues.router import router as leagues_router
 from app.domain.match_requests.router import router as match_requests_router
-from app.domain.matches.router import router as matches_router
+from app.domain.game_results.router import router as game_results_router
 from app.domain.members.router import router as members_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(members_router)
-api_router.include_router(matches_router)
+api_router.include_router(game_results_router, prefix="/game-results")
+# 옛 경로 — 프론트가 모두 새 경로를 쓰게 된 뒤 한참 지나면 지워도 된다.
+api_router.include_router(game_results_router, prefix="/matches", include_in_schema=False)
 api_router.include_router(app_version_router)
 api_router.include_router(app_versions_router)
 api_router.include_router(challenges_router)

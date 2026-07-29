@@ -54,7 +54,7 @@ class FeedCommentCreate(FeedCommentWrite):
     target_id: int = Field(alias="targetId")
 
 
-class RankShiftEntry(BaseModel):
+class RankingShiftEntry(BaseModel):
     """스냅샷 간 순위 변동 하나 — from=None 은 신규 진입."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -69,7 +69,7 @@ class RankShiftEntry(BaseModel):
     to_points: int | None = Field(default=None, alias="toPoints")
 
 
-class RankSnapshotOut(BaseModel):
+class RankingShiftOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
@@ -77,4 +77,4 @@ class RankSnapshotOut(BaseModel):
     reason: str
     created_at: datetime = Field(alias="createdAt")
     match_ids: list[int] = Field(alias="matchIds")
-    shifts: list[RankShiftEntry]
+    shifts: list[RankingShiftEntry]
