@@ -351,3 +351,50 @@ async def test_team_ranking_monthly_returns_one_entry_per_requested_month(client
     assert [m["month"] for m in months] == ["2026-01", "2026-02"]
     assert months[0]["teams"][0]["memberIds"] == ["player01", "player02"]
     assert months[1]["teams"] == []
+
+
+async def test_race_filter_scopes_rank_score(client):
+    """종족 필터를 걸면 포인트(rankScore)도 그 종족 경기만으로 매겨진다.
+
+    통계 화면의 승률/APM은 응답의 byRace에서 골라 쓰면 되지만, 포인트는 레이팅을 시간순으로
+    누적해 만든 값이라 클라이언트가 종족별로 갈라낼 수 없다 — 종족 필터가 서버까지 가야
+    한다(지적: 종족을 골라도 포인트만 전체 종족 기준으로 남는다).
+
+    p1은 저그로는 두 번 다 이기고 테란으로는 두 번 다 진다. 전체 종족으로 보면 2승 2패로
+    본전이지만, 저그만 보면 2승뿐이라 포인트가 더 높아야 한다.
+    """
+    headers = await _signup_many(client, 3)
+
+    async def game(p1_race: str, foe: str, result: str) -> None:
+        res = await client.post(
+            "/api/game-results",
+            headers=headers,
+            json={
+                "date": TODAY, "result": result, "note": "", "matchType": "0101",
+                "team1": [{"memberId": "player01", "race": p1_race}],
+                "team2": [{"memberId": foe, "race": "테란"}],
+            },
+        )
+        assert res.status_code == 200, res.text
+
+    await game("저그", "player02", "team1")
+    await game("저그", "player03", "team1")
+    await game("테란", "player02", "team2")
+    await game("테란", "player03", "team2")
+
+    async def score(race: str | None) -> float:
+        params = {"matchType": "0101"}
+        if race:
+            params["race"] = race
+        res = await client.get("/api/game-results/stats", headers=headers, params=params)
+        assert res.status_code == 200, res.text
+        entry = {m["memberId"]: m for m in res.json()["members"]}["player01"]
+        assert entry["rankScore"] is not None
+        return entry["rankScore"]
+
+    overall = await score(None)
+    zerg = await score("저그")
+    terran = await score("테란")
+
+    assert zerg > overall, f"저그 전승인데 포인트가 전체({overall})보다 높지 않다: {zerg}"
+    assert terran < overall, f"테란 전패인데 포인트가 전체({overall})보다 낮지 않다: {terran}"
