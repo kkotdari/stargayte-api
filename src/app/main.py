@@ -49,6 +49,7 @@ async def _ensure_schema() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
         await _add_match_result_summary(conn)
+        await _add_challenge_time_note(conn)
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
         await _drop_legacy_match_summary(conn)
@@ -72,6 +73,24 @@ async def _add_match_result_summary(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("match_results.summary_data 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_challenge_time_note(conn: object) -> None:
+    """challenges.scheduled_time_note 컬럼을 더한다(멱등).
+
+    위 _add_match_result_summary와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
+    넣어주지 않는다. 시간을 사람 말로 적어 두는 자리다(models.py 주석 참고).
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE challenges ADD COLUMN IF NOT EXISTS scheduled_time_note TEXT NOT NULL DEFAULT ''")
+        )
+    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("challenges.scheduled_time_note 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:

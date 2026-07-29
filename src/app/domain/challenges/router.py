@@ -47,6 +47,7 @@ async def respond_to_challenge(
     return await ChallengeService(db).respond(
         challenge_id, payload.response, actor=current,
         scheduled_date=payload.scheduled_date, scheduled_time=payload.scheduled_time,
+        scheduled_time_note=payload.scheduled_time_note,
         message=payload.message,
     )
 
@@ -57,7 +58,7 @@ async def reschedule_challenge(
 ) -> ChallengeOut:
     return await ChallengeService(db).reschedule(
         challenge_id, scheduled_date=payload.scheduled_date,
-        scheduled_time=payload.scheduled_time, actor=current,
+        scheduled_time=payload.scheduled_time, scheduled_time_note=payload.scheduled_time_note, actor=current,
     )
 
 
@@ -65,6 +66,8 @@ async def reschedule_challenge(
 async def enter_challenge_result(
     challenge_id: int, payload: ChallengeResultIn, db: DbSession, current: CurrentMember
 ) -> ChallengeOut:
+    # 결과 입력은 "실제로 언제 했나"를 정확히 남기는 자리라 여전히 날짜+시각을 받는다 —
+    # 약속 시간을 사람 말로 적는 자리(scheduled_time_note)와는 목적이 다르다.
     return await ChallengeService(db).enter_result(
         challenge_id, payload.winner_side, actor=current,
         scheduled_date=payload.scheduled_date, scheduled_time=payload.scheduled_time,
@@ -79,7 +82,8 @@ async def revenge_challenge(
 ) -> ChallengeOut:
     return await ChallengeService(db).revenge_challenge(
         challenge_id, actor=current, scheduled_date=payload.scheduled_date,
-        scheduled_time=payload.scheduled_time, message=payload.message,
+        scheduled_time=payload.scheduled_time, scheduled_time_note=payload.scheduled_time_note,
+        message=payload.message,
     )
 
 

@@ -797,3 +797,81 @@ async def test_from_match_request_flag_roundtrips(client):
     )
     assert res.status_code == 200, res.text
     assert res.json()["fromMatchRequest"] is True
+
+
+async def test_time_note_is_free_text_and_never_affects_schedule(client):
+    """약속 시간을 사람 말로 적어 두는 자리(요청: 시간 필드 대신 "언제"를 한마디처럼).
+
+    저장/조회만 되고 날짜(정렬·마감 기준)에는 아무 영향이 없어야 한다.
+    """
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={
+            "targetMemberIds": ["bob"],
+            "scheduledDate": "2026-08-01",
+            "scheduledTimeNote": "그날 봐서",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    challenge_id = body["id"]
+    assert body["scheduledDate"] == "2026-08-01"
+    # 시각은 여전히 비어 있다 — 메모는 시각이 아니다.
+    assert body["scheduledTime"] is None
+    assert body["scheduledTimeNote"] == "그날 봐서"
+    # 시간 미정과 같은 취급이라 파생 일시는 그날 0시(KST) = 전날 15:00Z 그대로다.
+    assert body["scheduledAt"] == "2026-07-31T15:00:00Z"
+
+    # 요청자가 이미 적어 뒀으면 응답자가 덮어쓸 수 없다.
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "scheduledTimeNote": "아무도 몰래"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["scheduledTimeNote"] == "그날 봐서"
+
+
+async def test_target_can_add_time_note_when_creator_left_it_blank(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01"},
+    )
+    challenge_id = res.json()["id"]
+    assert res.json()["scheduledTimeNote"] == ""
+
+    res = await client.post(
+        f"/api/challenges/{challenge_id}/respond", headers=headers_b,
+        json={"response": "accepted", "scheduledTimeNote": "퇴근하고"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["scheduledTimeNote"] == "퇴근하고"
+    # 날짜는 요청자가 정한 그대로.
+    assert res.json()["scheduledDate"] == "2026-08-01"
+
+
+async def test_time_note_dropped_when_no_date(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledTimeNote": "아무도 몰래"},
+    )
+    assert res.status_code == 200, res.text
+    # 날짜가 없으면 일정 자체가 미정이라 메모도 버린다.
+    assert res.json()["scheduledDate"] is None
+    assert res.json()["scheduledTimeNote"] == ""

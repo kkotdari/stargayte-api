@@ -55,6 +55,9 @@ class ChallengeHistoryEntry(BaseModel):
     # 실제 저장값 — 날짜/시간을 각각 독립적으로 내려준다(시간 미정이면 scheduledTime=null).
     scheduled_date: str | None = Field(default=None, alias="scheduledDate")
     scheduled_time: str | None = Field(default=None, alias="scheduledTime")
+    # 시간을 사람 말로 적어 둔 것(요청) — "저녁 9시쯤" 같은 자유 텍스트. 안 적었으면 빈 문자열.
+    # 정렬/마감 계산에는 안 쓴다(그건 계속 scheduledDate만 본다).
+    scheduled_time_note: str = Field(default="", alias="scheduledTimeNote")
     status: ChallengeStatus
     targets: list[ChallengeTargetOut]
     created_at: datetime = Field(alias="createdAt")
@@ -73,6 +76,9 @@ class ChallengeOut(BaseModel):
     # 실제 저장값 — 날짜/시간을 각각 독립적으로 내려준다(시간 미정이면 scheduledTime=null).
     scheduled_date: str | None = Field(default=None, alias="scheduledDate")
     scheduled_time: str | None = Field(default=None, alias="scheduledTime")
+    # 시간을 사람 말로 적어 둔 것(요청) — "저녁 9시쯤" 같은 자유 텍스트. 안 적었으면 빈 문자열.
+    # 정렬/마감 계산에는 안 쓴다(그건 계속 scheduledDate만 본다).
+    scheduled_time_note: str = Field(default="", alias="scheduledTimeNote")
     status: ChallengeStatus
     created_by: ChallengeAuthor = Field(alias="createdBy")
     targets: list[ChallengeTargetOut]
@@ -99,6 +105,8 @@ class ChallengeCreate(BaseModel):
     # 막혀 오지 않지만, 서버는 날짜가 없으면 시간도 무시한다(_normalize).
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
     scheduled_time: time | None = Field(default=None, alias="scheduledTime")
+    # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
+    scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
     # 호출 한마디(선택) — 한글 50자 제한(요청).
     message: str = Field(default="", max_length=50)
     target_member_ids: list[str] = Field(alias="targetMemberIds", min_length=1, max_length=4)
@@ -120,6 +128,7 @@ class ChallengeCreate(BaseModel):
         # 날짜 없이 시간만은 의미가 없다 — 날짜가 없으면 시간도 버린다.
         if self.scheduled_date is None:
             self.scheduled_time = None
+            self.scheduled_time_note = ""
         return self
 
 
@@ -136,6 +145,8 @@ class ChallengeRespondIn(BaseModel):
     # 레이어에서 무시한다(응답하는 쪽이 바꿀 수 없다).
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
     scheduled_time: time | None = Field(default=None, alias="scheduledTime")
+    # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
+    scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
 
 
 class ChallengeRevengeIn(BaseModel):
@@ -146,6 +157,8 @@ class ChallengeRevengeIn(BaseModel):
 
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
     scheduled_time: time | None = Field(default=None, alias="scheduledTime")
+    # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
+    scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
     message: str = Field(default="", max_length=50)
 
 
@@ -157,6 +170,8 @@ class ChallengeRescheduleIn(BaseModel):
 
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
     scheduled_time: time | None = Field(default=None, alias="scheduledTime")
+    # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
+    scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
 
 
 class ChallengeResultIn(BaseModel):

@@ -44,6 +44,13 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     #   - date O / time O               → 날짜+시간 확정
     scheduled_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     scheduled_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    # 시간을 "몇 시 몇 분"으로 못 박는 대신 사람 말로 적어 두는 자리(요청: 호출/응답에서
+    # 시간 필드를 없애고, "시간 추가하기"를 누르면 한마디처럼 자유롭게 적게). "저녁 9시쯤",
+    # "퇴근하고" 같은 값이 들어온다 — 정렬이나 마감 계산에는 절대 쓰지 않는다(그건 계속
+    # scheduled_date만 본다). 빈 문자열이면 안 적은 것.
+    # 위 scheduled_time은 새로 쓰지 않지만 남겨 둔다 — 이 컬럼이 생기기 전에 저장된
+    # 도전장들이 그 값을 갖고 있고, 화면에서는 그대로 보여주기로 했다(요청).
+    scheduled_time_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
     # 상대의 명시적 거절, 응답 마감(무응답 거절), 미실시(not_held) 결과 입력. 상태(_status_of)의
     # 유일한 폐기 판정 근거이자, 휴지통 7일 자동 비움(deleted_at 소프트삭제)의 기준 시각이다.

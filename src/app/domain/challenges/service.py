@@ -116,6 +116,7 @@ def _history_entry(challenge: Challenge) -> ChallengeHistoryEntry:
         scheduledAt=_scheduled_at_iso(challenge),
         scheduledDate=challenge.scheduled_date.isoformat() if challenge.scheduled_date else None,
         scheduledTime=challenge.scheduled_time.strftime("%H:%M") if challenge.scheduled_time else None,
+        scheduledTimeNote=challenge.scheduled_time_note or "",
         status=_status_of(challenge),
         resultWinnerSide=challenge.result_winner_side,
         targets=[
@@ -145,6 +146,7 @@ def to_challenge_out(challenge: Challenge, history: list[Challenge] | None = Non
         scheduledAt=_scheduled_at_iso(challenge),
         scheduledDate=challenge.scheduled_date.isoformat() if challenge.scheduled_date else None,
         scheduledTime=challenge.scheduled_time.strftime("%H:%M") if challenge.scheduled_time else None,
+        scheduledTimeNote=challenge.scheduled_time_note or "",
         status=_status_of(challenge),
         createdBy=ChallengeAuthor(
             id=challenge.creator.id, nickname=challenge.creator.nickname, avatar=challenge.creator.avatar_url,
@@ -312,6 +314,7 @@ class ChallengeService:
             message=payload.message.strip(),
             scheduled_date=payload.scheduled_date,
             scheduled_time=payload.scheduled_time,
+            scheduled_time_note=payload.scheduled_time_note.strip(),
             from_match_request=payload.from_match_request,
             created_by=actor.pk,
             updated_by=actor.pk,
@@ -379,6 +382,7 @@ class ChallengeService:
         actor: Member,
         scheduled_date: date | None = None,
         scheduled_time: time | None = None,
+        scheduled_time_note: str = "",
         message: str = "",
     ) -> ChallengeOut:
         challenge = await self._repo.get(challenge_id)
@@ -398,20 +402,27 @@ class ChallengeService:
         # 지정 가능"). 이미 요청자가 날짜를 정한 도전장은 응답하는 쪽이 바꿀 수 없으므로 무시한다.
         # 날짜 없이 시간만 온 경우는 의미가 없어 시간도 버린다.
         if response == "accepted":
+            note = scheduled_time_note.strip()
             if challenge.scheduled_date is None and scheduled_date is not None:
-                # 요청자가 날짜를 아예 안 정한 도전장 — 응답자가 날짜(+시간)를 정한다.
+                # 요청자가 날짜를 아예 안 정한 도전장 — 응답자가 날짜(+시간 메모)를 정한다.
                 challenge.scheduled_date = scheduled_date
                 challenge.scheduled_time = scheduled_time
+                challenge.scheduled_time_note = note
                 challenge.updated_by = actor.pk
             elif (
                 challenge.scheduled_date is not None
                 and challenge.scheduled_time is None
-                and scheduled_time is not None
+                and not challenge.scheduled_time_note
             ):
-                # 요청자가 날짜만 정하고 시간은 비운 도전장 — 응답자가 시간만 추가할 수 있다(요청:
-                # "날짜가 입력되었어도 시간은 별도로 입력 가능"). 날짜 자체는 못 바꾼다.
-                challenge.scheduled_time = scheduled_time
-                challenge.updated_by = actor.pk
+                # 요청자가 날짜만 정하고 시간은 안 적은 도전장 — 응답자가 시간만 덧붙일 수
+                # 있다(요청: "날짜가 입력되었어도 시간은 별도로 입력 가능"). 날짜는 못 바꾼다.
+                # 옛 도전장의 scheduled_time(시각)도 같은 자리라 함께 본다.
+                if note:
+                    challenge.scheduled_time_note = note
+                    challenge.updated_by = actor.pk
+                elif scheduled_time is not None:
+                    challenge.scheduled_time = scheduled_time
+                    challenge.updated_by = actor.pk
         target.response = response
         target.response_message = message.strip()
         target.responded_at = datetime.now(UTC)
@@ -424,7 +435,8 @@ class ChallengeService:
         return to_challenge_out(challenge, history=await self._history_chain(challenge))
 
     async def reschedule(
-        self, challenge_id: int, *, scheduled_date: date | None, scheduled_time: time | None, actor: Member,
+        self, challenge_id: int, *, scheduled_date: date | None, scheduled_time: time | None,
+        scheduled_time_note: str = "", actor: Member,
     ) -> ChallengeOut:
         """성사(진행중)된 대결의 예정 일시를 바꾼다(요청: "너나와 목록에서 진행중인건은
         날짜와 시간 수정이 가능하게"). 날짜/시간 모두 선택이라 미정으로 되돌릴 수도 있다(요청:
@@ -440,6 +452,7 @@ class ChallengeService:
             raise ForbiddenError("참가자 또는 운영자만 일정을 수정할 수 있습니다.")
         challenge.scheduled_date = scheduled_date
         challenge.scheduled_time = scheduled_time if scheduled_date is not None else None
+        challenge.scheduled_time_note = scheduled_time_note.strip() if scheduled_date is not None else ""
         challenge.updated_by = actor.pk
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
@@ -490,6 +503,7 @@ class ChallengeService:
         actor: Member,
         scheduled_date: date | None = None,
         scheduled_time: time | None = None,
+        scheduled_time_note: str = "",
         message: str = "",
     ) -> ChallengeOut:
         """결과가 입력된 확정 대결에서, 패배한 쪽 참가자가 같은 대진으로 설욕전을
@@ -516,6 +530,7 @@ class ChallengeService:
             match_type=challenge.match_type,
             scheduled_date=scheduled_date,
             scheduled_time=scheduled_time if scheduled_date is not None else None,
+            scheduled_time_note=scheduled_time_note.strip() if scheduled_date is not None else "",
             message=message.strip(),
             created_by=actor.pk,
             updated_by=actor.pk,
