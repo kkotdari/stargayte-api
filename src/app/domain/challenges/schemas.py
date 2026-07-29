@@ -1,4 +1,4 @@
-from datetime import date, datetime, time
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -52,9 +52,8 @@ class ChallengeHistoryEntry(BaseModel):
     id: int
     # 정렬/날짜 그룹핑/카운트다운용 파생 일시(UTC) — 시간이 미정이면 자정으로 채워 내려간다.
     scheduled_at: datetime | None = Field(alias="scheduledAt")
-    # 실제 저장값 — 날짜/시간을 각각 독립적으로 내려준다(시간 미정이면 scheduledTime=null).
+    # 실제 저장값 — 날짜 하나뿐이다(시각 필드는 없앴다).
     scheduled_date: str | None = Field(default=None, alias="scheduledDate")
-    scheduled_time: str | None = Field(default=None, alias="scheduledTime")
     # 시간을 사람 말로 적어 둔 것(요청) — "저녁 9시쯤" 같은 자유 텍스트. 안 적었으면 빈 문자열.
     # 정렬/마감 계산에는 안 쓴다(그건 계속 scheduledDate만 본다).
     scheduled_time_note: str = Field(default="", alias="scheduledTimeNote")
@@ -73,9 +72,8 @@ class ChallengeOut(BaseModel):
     message: str = ""
     # 정렬/날짜 그룹핑/카운트다운용 파생 일시(UTC) — 시간이 미정이면 자정으로 채워 내려간다.
     scheduled_at: datetime | None = Field(alias="scheduledAt")
-    # 실제 저장값 — 날짜/시간을 각각 독립적으로 내려준다(시간 미정이면 scheduledTime=null).
+    # 실제 저장값 — 날짜 하나뿐이다(시각 필드는 없앴다).
     scheduled_date: str | None = Field(default=None, alias="scheduledDate")
-    scheduled_time: str | None = Field(default=None, alias="scheduledTime")
     # 시간을 사람 말로 적어 둔 것(요청) — "저녁 9시쯤" 같은 자유 텍스트. 안 적었으면 빈 문자열.
     # 정렬/마감 계산에는 안 쓴다(그건 계속 scheduledDate만 본다).
     scheduled_time_note: str = Field(default="", alias="scheduledTimeNote")
@@ -104,7 +102,6 @@ class ChallengeCreate(BaseModel):
     # 날짜/시간 각각 선택(요청: 시간 null 가능, 날짜만 지정 가능). 날짜 없이 시간만은 UI에서
     # 막혀 오지 않지만, 서버는 날짜가 없으면 시간도 무시한다(_normalize).
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
-    scheduled_time: time | None = Field(default=None, alias="scheduledTime")
     # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
     scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
     # 호출 한마디(선택) — 한글 50자 제한(요청).
@@ -125,9 +122,8 @@ class ChallengeCreate(BaseModel):
             raise ValueError("같은 회원을 두 번 지목할 수 없습니다.")
         if set(self.target_member_ids) & set(self.own_team_member_ids):
             raise ValueError("상대 팀과 내 팀에 같은 회원을 동시에 넣을 수 없습니다.")
-        # 날짜 없이 시간만은 의미가 없다 — 날짜가 없으면 시간도 버린다.
+        # 날짜가 없으면 일정 자체가 미정이다 — "언제" 메모도 함께 버린다.
         if self.scheduled_date is None:
-            self.scheduled_time = None
             self.scheduled_time_note = ""
         return self
 
@@ -144,7 +140,6 @@ class ChallengeRespondIn(BaseModel):
     # "날짜만 지정하고 시간은 나중에도 가능"). 이미 요청자가 일정을 정한 도전장이면 서비스
     # 레이어에서 무시한다(응답하는 쪽이 바꿀 수 없다).
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
-    scheduled_time: time | None = Field(default=None, alias="scheduledTime")
     # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
     scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
 
@@ -156,7 +151,6 @@ class ChallengeRevengeIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
-    scheduled_time: time | None = Field(default=None, alias="scheduledTime")
     # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
     scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
     message: str = Field(default="", max_length=50)
@@ -169,7 +163,6 @@ class ChallengeRescheduleIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     scheduled_date: date | None = Field(default=None, alias="scheduledDate")
-    scheduled_time: time | None = Field(default=None, alias="scheduledTime")
     # 약속 시간을 사람 말로(요청: "시간 추가하기"를 누르면 한마디처럼) — 한글 30자 제한.
     scheduled_time_note: str = Field(default="", max_length=30, alias="scheduledTimeNote")
 
@@ -177,13 +170,12 @@ class ChallengeRescheduleIn(BaseModel):
 class ChallengeResultIn(BaseModel):
     """확정된 대결의 결과 입력 — 참가자 누구든(도전자편/상대편 상관없이) 먼저 입력하는
     쪽이 그대로 인정된다. 이미 결과가 입력된 대결에는 다시 입력할 수 없다. 결과 입력 시엔
-    실제 대결 날짜/시간을 무조건 함께 넣는다(요청: "결과 입력시에는 날짜 시간 무조건 입력")."""
+    실제 대결 날짜를 무조건 함께 넣는다(시각은 필드 자체가 없어졌다 — 너 나와는 날짜만 다룬다)."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     winner_side: ChallengeResult = Field(alias="winnerSide")
     scheduled_date: date = Field(alias="scheduledDate")
-    scheduled_time: time = Field(alias="scheduledTime")
 
 
 class ChallengeListOut(BaseModel):

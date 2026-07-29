@@ -50,6 +50,7 @@ async def _ensure_schema() -> None:
         await _migrate_match_notes(conn)
         await _add_match_result_summary(conn)
         await _add_challenge_time_note(conn)
+        await _drop_challenge_time(conn)
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
         await _drop_legacy_match_summary(conn)
@@ -91,6 +92,24 @@ async def _add_challenge_time_note(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("challenges.scheduled_time_note 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _drop_challenge_time(conn: object) -> None:
+    """challenges.scheduled_time(옛 시각 컬럼)을 지운다(멱등).
+
+    너 나와는 이제 날짜만 정하고 "언제"는 사람 말로 적는다(위 _add_challenge_time_note) —
+    시각 컬럼은 쓰지 않게 됐고, 필수값도 아니었으므로 남은 값과 함께 통째로 버린다(요청).
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE challenges DROP COLUMN IF EXISTS scheduled_time")
+        )
+    except Exception:  # noqa: BLE001 — 이미 없거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("challenges.scheduled_time 컬럼 삭제 건너뜀", exc_info=True)
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:

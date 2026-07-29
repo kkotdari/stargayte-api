@@ -1,4 +1,4 @@
-from datetime import date, datetime, time
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -9,7 +9,6 @@ from sqlalchemy import (
     ForeignKey,
     String,
     Text,
-    Time,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -35,21 +34,16 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 도전자가 호출 때 남기는 "한마디"(선택) — 카드에 함께 보여준다. 빈 문자열이면 없음.
     # (예전에 message/response_message '한마디' 개념을 지웠다가 호출 한마디만 다시 살렸다.)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # 예정 일정 — 날짜와 시간을 각각 독립적으로 NULL 가능하게 나눠 둔다(요청: "시간은 null
-    # 가능으로", "날짜만 정하고 시간은 나중에 결정하는 경우가 많다"). 둘 다 한국시간 벽시계값
-    # (naive)으로 저장한다 — 저장 시 tz 변환 없이 사용자가 고른 날짜/시간 그대로. 비교(마감/지남
-    # 판정)가 필요할 때만 service에서 KST→UTC로 환산한다.
-    #   - scheduled_date NULL           → 일정 전체 미정
-    #   - date O / scheduled_time NULL  → 날짜만 정함(시간 미정) — 그날이 지나면 무응답 취소
-    #   - date O / time O               → 날짜+시간 확정
+    # 예정 날짜 — 한국시간 벽시계값(naive)으로, 사용자가 고른 날짜 그대로 저장한다.
+    # 비교(마감/지남 판정)가 필요할 때만 service에서 KST→UTC로 환산한다.
+    #   - NULL  → 일정 미정
+    #   - 값 O  → 그날로 정함(그날이 지나면 무응답 취소)
     scheduled_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    scheduled_time: Mapped[time | None] = mapped_column(Time, nullable=True)
-    # 시간을 "몇 시 몇 분"으로 못 박는 대신 사람 말로 적어 두는 자리(요청: 호출/응답에서
-    # 시간 필드를 없애고, "시간 추가하기"를 누르면 한마디처럼 자유롭게 적게). "저녁 9시쯤",
-    # "퇴근하고" 같은 값이 들어온다 — 정렬이나 마감 계산에는 절대 쓰지 않는다(그건 계속
-    # scheduled_date만 본다). 빈 문자열이면 안 적은 것.
-    # 위 scheduled_time은 새로 쓰지 않지만 남겨 둔다 — 이 컬럼이 생기기 전에 저장된
-    # 도전장들이 그 값을 갖고 있고, 화면에서는 그대로 보여주기로 했다(요청).
+    # 시각(scheduled_time, Time)은 통째로 없앴다(요청) — 너 나와는 이제 날짜만 정하고,
+    # "언제"는 아래처럼 사람 말로 적는다. 옛 컬럼은 main.py의 _drop_challenge_time에서
+    # 지운다(값도 함께 사라진다 — 필수값이 아니었다).
+    # "그날 봐서", "퇴근하고" 같은 값이 들어온다 — 정렬이나 마감 계산에는 절대 쓰지 않는다
+    # (그건 계속 scheduled_date만 본다). 빈 문자열이면 안 적은 것.
     scheduled_time_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
     # 상대의 명시적 거절, 응답 마감(무응답 거절), 미실시(not_held) 결과 입력. 상태(_status_of)의
