@@ -6,7 +6,20 @@ from pydantic import BaseModel, ConfigDict, Field
 COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 피드 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
-FeedTargetType = Literal["match", "challenge", "rankshift"]
+FeedTargetType = Literal["gameResult", "challenge", "rankingShift"]
+
+# 이름 통일(요청) 전에 쓰던 값 → 지금 값. 이 값은 feed_comments.target_type에 그대로
+#저장되므로 부팅 때 한 번 일괄로 옮기지만(_migrate_feed_target_types), 배포가 어긋난
+# 순간의 옛 프론트가 옛 값을 보낼 수 있어 받는 쪽에서도 계속 받아 준다.
+LEGACY_FEED_TARGET_TYPES = {"match": "gameResult", "rankshift": "rankingShift"}
+
+# 요청으로 들어오는 값 — 위 이유로 옛 이름까지 허용하고, normalize_target_type으로 새
+# 이름 하나로 모아서 저장/조회한다.
+FeedTargetTypeInput = Literal["gameResult", "challenge", "rankingShift", "match", "rankshift"]
+
+
+def normalize_target_type(value: str) -> str:
+    return LEGACY_FEED_TARGET_TYPES.get(value, value)
 
 
 class FeedCommentAuthor(BaseModel):
@@ -50,7 +63,7 @@ class FeedCommentWrite(BaseModel):
 
 
 class FeedCommentCreate(FeedCommentWrite):
-    target_type: FeedTargetType = Field(alias="targetType")
+    target_type: FeedTargetTypeInput = Field(alias="targetType")
     target_id: int = Field(alias="targetId")
 
 

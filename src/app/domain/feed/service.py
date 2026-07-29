@@ -13,6 +13,7 @@ from app.domain.feed.schemas import (
     FeedCommentOut,
     RankingShiftEntry,
     RankingShiftOut,
+    normalize_target_type,
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
@@ -22,7 +23,7 @@ def to_comment_out(comment: FeedComment, *, actor_pk: int | None, is_admin: bool
     author = comment.creator
     return FeedCommentOut(
         id=comment.id,
-        targetType=comment.target_type,
+        targetType=normalize_target_type(comment.target_type),
         targetId=comment.target_id,
         text=comment.text,
         author=FeedCommentAuthor(
@@ -51,7 +52,7 @@ class FeedCommentService:
 
     async def list_for_target(self, target_type: str, target_id: int, *, actor: Member) -> list[FeedCommentOut]:
         is_admin = actor.has_any_role("0202")
-        comments = await self._repo.list_by_target(target_type, target_id)
+        comments = await self._repo.list_by_target(normalize_target_type(target_type), target_id)
         return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in comments]
 
     async def create(
@@ -63,7 +64,7 @@ class FeedCommentService:
             raise ValidationError("댓글 내용을 입력해주세요.")
         mentions = await self._resolve_mentions(target_member_ids)
         comment = FeedComment(
-            target_type=target_type, target_id=target_id, text=cleaned,
+            target_type=normalize_target_type(target_type), target_id=target_id, text=cleaned,
             created_by=actor.pk, updated_by=actor.pk,
         )
         comment.mentions = [FeedCommentMention(member_pk=m.pk, member=m) for m in mentions]

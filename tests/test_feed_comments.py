@@ -58,11 +58,11 @@ async def test_feed_comment_crud_on_match(client):
     res = await client.post(
         "/api/feed/comments",
         headers=_h(a),
-        json={"targetType": "match", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
+        json={"targetType": "gameResult", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
     )
     assert res.status_code == 201, res.text
     comment = res.json()
-    assert comment["targetType"] == "match"
+    assert comment["targetType"] == "gameResult"
     assert comment["targetId"] == mid
     assert comment["author"]["memberId"] == "alice"
     assert comment["mentions"][0]["memberId"] == "bob"
@@ -71,7 +71,7 @@ async def test_feed_comment_crud_on_match(client):
     res = await client.get(
         "/api/feed/comments",
         headers=_h(b),
-        params={"targetType": "match", "targetId": mid},
+        params={"targetType": "gameResult", "targetId": mid},
     )
     assert res.status_code == 200, res.text
     items = res.json()
@@ -100,7 +100,7 @@ async def test_feed_comment_crud_on_match(client):
     res = await client.get(
         "/api/feed/comments",
         headers=_h(a),
-        params={"targetType": "match", "targetId": mid},
+        params={"targetType": "gameResult", "targetId": mid},
     )
     assert res.json() == []
 
@@ -122,7 +122,7 @@ async def test_feed_comment_edit_keeps_same_mention(client):
     res = await client.post(
         "/api/feed/comments",
         headers=_h(a),
-        json={"targetType": "match", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
+        json={"targetType": "gameResult", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
     )
     assert res.status_code == 201, res.text
     cid = res.json()["id"]
@@ -373,21 +373,53 @@ async def test_feed_comment_on_rankshift_target(client):
         "/api/feed/comments",
         headers=_h(a),
         json={
-            "targetType": "rankshift", "targetId": snap_id,
+            "targetType": "rankingShift", "targetId": snap_id,
             "text": "@Bob#1002 축하!", "targetMemberIds": ["bob"],
         },
     )
     assert res.status_code == 201, res.text
     created = res.json()
-    assert created["targetType"] == "rankshift"
+    assert created["targetType"] == "rankingShift"
 
     res = await client.get(
-        f"/api/feed/comments?targetType=rankshift&targetId={snap_id}", headers=_h(a)
+        f"/api/feed/comments?targetType=rankingShift&targetId={snap_id}", headers=_h(a)
     )
     assert res.status_code == 200, res.text
     listed = res.json()
     assert [c["id"] for c in listed] == [created["id"]]
     assert listed[0]["mentions"][0]["memberId"] == "bob"
+
+    # 이름을 통일하기 전 값(rankshift)으로 물어봐도 같은 댓글이 나와야 한다 — 프론트와
+    # 백엔드 배포가 어긋나는 순간에 옛 프론트가 옛 값을 보낼 수 있다.
+    res = await client.get(
+        f"/api/feed/comments?targetType=rankshift&targetId={snap_id}", headers=_h(a)
+    )
+    assert res.status_code == 200, res.text
+    assert [c["id"] for c in res.json()] == [created["id"]]
+
+
+async def test_legacy_target_type_is_normalized(client):
+    """옛 이름(match)으로 달아도 새 이름(gameResult)으로 저장되고 그렇게 읽힌다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    match = await _register_match_today(client, _h(a))
+    mid = match["id"]
+
+    res = await client.post(
+        "/api/feed/comments",
+        headers=_h(a),
+        json={"targetType": "match", "targetId": mid, "text": "옛 이름으로 달린 댓글"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["targetType"] == "gameResult"
+
+    res = await client.get(
+        "/api/feed/comments", headers=_h(b),
+        params={"targetType": "gameResult", "targetId": mid},
+    )
+    assert res.status_code == 200, res.text
+    assert [c["text"] for c in res.json()] == ["옛 이름으로 달린 댓글"]
 
 
 async def test_challenge_delete_admin_only(client):

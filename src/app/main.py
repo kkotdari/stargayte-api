@@ -52,6 +52,7 @@ async def _ensure_schema() -> None:
         await _rename_legacy_tables(conn)
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
+        await _migrate_feed_target_types(conn)
         await _add_match_result_summary(conn)
         await _add_challenge_time_note(conn)
         await _drop_challenge_time(conn)
@@ -244,6 +245,34 @@ async def _ranking_shift_scheduler() -> None:
             log.exception("랭크 스냅샷 재집계 실패")
 
 
+async def _migrate_feed_target_types(conn) -> None:
+    """feed_comments.target_type에 저장된 옛 값을 지금 이름으로 옮긴다(멱등).
+
+    댓글이 가리키는 대상 종류는 문자열 그대로 컬럼에 들어가므로, 이름 정리(요청)로
+    match→gameResult·rankshift→rankingShift가 되면서 쌓여 있던 값도 함께 옮겨야 한다.
+    옛 값이 하나도 없으면 아무 일도 안 한다. 받는 쪽(schemas.normalize_target_type)이
+    옛 값도 계속 새 이름으로 바꿔 주므로, 배포가 어긋난 순간에 들어온 댓글도 안전하다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from app.domain.feed.schemas import LEGACY_FEED_TARGET_TYPES
+
+    try:
+        for old, new in LEGACY_FEED_TARGET_TYPES.items():
+            res = await conn.execute(
+                text("UPDATE feed_comments SET target_type = :new WHERE target_type = :old"),
+                {"new": new, "old": old},
+            )
+            if res.rowcount:
+                logging.getLogger(__name__).info(
+                    "댓글 대상 종류 이름 변경: %s -> %s (%s건)", old, new, res.rowcount,
+                )
+    except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(옛 값 그대로 남는다).
+        logging.getLogger(__name__).exception("댓글 대상 종류 이름 변경 실패")
+
+
 async def _migrate_match_notes(conn) -> None:
     """기존 경기 댓글(match_notes)을 일반화된 피드 댓글(feed_comments)로 1회 이관.
 
@@ -266,7 +295,7 @@ async def _migrate_match_notes(conn) -> None:
         return
     await conn.execute(text(
         "INSERT INTO feed_comments (id, target_type, target_id, text, created_at, updated_at, created_by, updated_by) "
-        "SELECT id, 'match', match_id, text, created_at, updated_at, created_by, updated_by FROM match_notes"
+        "SELECT id, 'gameResult', match_id, text, created_at, updated_at, created_by, updated_by FROM match_notes"
     ))
     await conn.execute(text(
         "INSERT INTO feed_comment_mentions (comment_id, member_pk) "
@@ -331,7 +360,7 @@ async def _drop_legacy_match_notes(conn) -> None:
     try:
         legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes")) or 0
         moved = await conn.scalar(
-            text("SELECT COUNT(*) FROM feed_comments WHERE target_type = 'match'")
+            text("SELECT COUNT(*) FROM feed_comments WHERE target_type = 'gameResult'")
         ) or 0
         if legacy > moved:
             logging.getLogger(__name__).warning(

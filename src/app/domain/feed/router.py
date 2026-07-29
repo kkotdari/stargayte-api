@@ -5,7 +5,7 @@ from app.domain.feed.schemas import (
     FeedCommentCreate,
     FeedCommentOut,
     FeedCommentWrite,
-    FeedTargetType,
+    FeedTargetTypeInput,
     RankingShiftOut,
 )
 from app.domain.feed.service import FeedCommentService, RankingShiftService
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/feed", tags=["feed"])
 @router.get("/comments", response_model=list[FeedCommentOut])
 async def list_feed_comments(
     db: DbSession, current: CurrentMember,
-    target_type: FeedTargetType = Query(alias="targetType"),
+    target_type: FeedTargetTypeInput = Query(alias="targetType"),
     target_id: int = Query(alias="targetId"),
 ) -> list[FeedCommentOut]:
     return await FeedCommentService(db).list_for_target(target_type, target_id, actor=current)
