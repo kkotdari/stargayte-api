@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     storage_url_path: str = "/uploads"
     public_base_url: str = "http://localhost:8000"
 
+    # 랭크 변동을 하루 한 번 집계할 시각(KST, 0~23). 자정에 돌리던 것을 아침으로 옮겼다
+    # (요청) — 자정엔 아무도 앱을 안 써서 컨테이너가 잠들거나 재시작돼 있을 때가 많고,
+    # 그러면 그 순간을 놓친 채로 하루가 지나간다. 환경변수(RANK_RECOMPUTE_HOUR)로 바꿀 수
+    # 있게 둔 이유는 이 값이 코드가 아니라 운영 리듬에 딸린 값이기 때문이다.
+    rank_recompute_hour: int = Field(default=8, ge=0, le=23)
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:

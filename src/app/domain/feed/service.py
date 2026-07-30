@@ -186,6 +186,14 @@ class RankingShiftService:
         )
         return await self._session.scalar(stmt)
 
+    async def latest_snapshot_at(self) -> datetime | None:
+        """가장 최근 스냅샷을 남긴 시각 — 유형 구분 없이 하나. 하루 한 번 집계를 '밀린 일
+        찾아 하기'로 돌리는 스케줄러가 "오늘 이미 남겼나"를 이 값으로 판단한다
+        (app/main.py의 _rank_recompute_due)."""
+        from sqlalchemy import func, select
+
+        return await self._session.scalar(select(func.max(RankingShift.created_at)))
+
     async def _compute_standings(self, match_type: str, compute_entries) -> list[dict]:
         """이번 달 기준 현재 순위표 — 활성 회원 중 그 유형 경기를 뛴 사람만.
 

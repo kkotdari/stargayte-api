@@ -82,6 +82,15 @@ class RankingShiftEntry(BaseModel):
     to_points: int | None = Field(default=None, alias="toPoints")
 
 
+class RankingRecomputeResult(BaseModel):
+    """손으로 돌린 하루치 집계의 결과 — 새 스냅샷이 남았는지만 알려 준다. 순위표가 그대로면
+    아무것도 안 남는 게 정상인데, 그걸 말해 주지 않으면 "안 돌았나?"로 읽힌다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    changed: bool
+
+
 class RankingShiftOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

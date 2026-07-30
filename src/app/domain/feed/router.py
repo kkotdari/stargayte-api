@@ -6,6 +6,7 @@ from app.domain.feed.schemas import (
     FeedCommentOut,
     FeedCommentWrite,
     FeedTargetTypeInput,
+    RankingRecomputeResult,
     RankingShiftOut,
 )
 from app.domain.feed.service import FeedCommentService, RankingShiftService
@@ -58,8 +59,25 @@ async def list_ranking_shifts(
     return await RankingShiftService(db).list_events(limit)
 
 
+# 지금 바로 하루치 집계를 돌린다(요청: 제어판에 "현재 랭킹 집계하기") — 스케줄러가 아침에
+# 하는 것과 똑같은 일이다. 아침을 기다리지 않고 확인하고 싶을 때, 그리고 스케줄러가 정말
+# 도는지 눈으로 보고 싶을 때 쓴다. recompute_daily는 순위표가 그대로면 아무것도 남기지
+# 않으므로 여러 번 눌러도 카드가 쌓이지 않는다.
+@router.post("/ranking-shifts/recompute")
+async def recompute_ranking_shifts(db: DbSession, current: CurrentAdmin) -> RankingRecomputeResult:
+    from app.main import _rank_entries_computer
+
+    service = RankingShiftService(db)
+    before = await service.latest_snapshot_at()
+    await service.recompute_daily(await _rank_entries_computer(db))
+    after = await service.latest_snapshot_at()
+    # 새 스냅샷이 남았나 — 안 남았다면 순위표가 그대로였다는 뜻이고, 그것도 알려 줘야
+    # 사람이 "안 돌았나?"로 오해하지 않는다.
+    return RankingRecomputeResult(changed=after is not None and after != before)
+
+
 # 순위 기준선 다시 깔기 — 제어판에서 손으로 누르는 1회용(요청). 변동 없이 저장되므로
-# 피드 목록에는 안 뜨고, 다음 자정 재집계가 이 기준선과 비교해 변동을 낸다.
+# 피드 목록에는 안 뜨고, 다음 아침 재집계가 이 기준선과 비교해 변동을 낸다.
 @router.post("/ranking-shifts/seed")
 @router.post("/rank-snapshots/seed", include_in_schema=False)
 async def reseed_ranking_shifts(db: DbSession, current: CurrentAdmin) -> dict[str, int]:
