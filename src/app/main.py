@@ -54,6 +54,7 @@ async def _ensure_schema() -> None:
         await _migrate_match_notes(conn)
         await _migrate_feed_target_types(conn)
         await _add_match_result_summary(conn)
+        await _add_match_result_map_hash(conn)
         await _add_challenge_time_note(conn)
         await _drop_challenge_time(conn)
         await _drop_challenge_revenge_chain(conn)
@@ -118,6 +119,25 @@ async def _add_match_result_summary(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("game_outcomes.summary_data 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_match_result_map_hash(conn: object) -> None:
+    """game_outcomes.map_hash 컬럼을 더한다(멱등).
+
+    위 _add_match_result_summary와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
+    넣어주지 않는다. 미니맵 격자(replay_maps)를 가리키는 내용 해시다. 새로 만들어지는
+    replay_maps 테이블 자체는 create_all이 알아서 만든다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE game_outcomes ADD COLUMN IF NOT EXISTS map_hash VARCHAR(64)")
+        )
+    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("game_outcomes.map_hash 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_challenge_time_note(conn: object) -> None:

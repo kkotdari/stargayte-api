@@ -15,6 +15,7 @@ from app.domain.game_results.models import (
     GameResultParticipant,
     GameOutcome,
     Replay,
+    ReplayMap,
 )
 from app.domain.game_results.rating import RatingEngine
 from app.domain.game_results.repository import GameResultRepository
@@ -30,6 +31,8 @@ from app.domain.game_results.schemas import (
     MemberStatsMonthEntry,
     RaceStatsEntry,
     RatingHistoryResponse,
+    ReplayMapData,
+    ReplayMapOut,
     ReplayOut,
     ReplayUpload,
     RivalryPairOut,
@@ -436,6 +439,7 @@ def to_game_result_out(
         game_started_at=result_row.game_started_at,
         duration_seconds=result_row.duration_seconds,
         summary_data=result_row.summary_data,
+        map_hash=result_row.map_hash,
     )
 
 
@@ -1132,6 +1136,38 @@ class GameResultService:
         aliases = await self._repo.list_all_replay_aliases()
         return {a.raw_name: a for a in aliases}
 
+    async def list_replay_maps(self, hashes: list[str]) -> list[ReplayMapOut]:
+        """미니맵 격자 조회 — 클라이언트가 아직 안 받아 둔 해시만 모아서 묻는다."""
+        # 한 번에 물을 수 있는 개수를 묶어 둔다: 해시가 통째로 IN 절에 들어가고 격자 하나가
+        # 22KB라, 상한이 없으면 한 요청으로 수 MB를 뽑아 갈 수 있다.
+        uniq = list(dict.fromkeys(h for h in hashes if h))[:32]
+        rows = await self._repo.list_replay_maps(uniq)
+        return [
+            ReplayMapOut(
+                hash=r.map_hash, name=r.name, width=r.width, height=r.height,
+                palette=list(r.palette or []), tiles=r.tiles,
+            )
+            for r in rows
+        ]
+
+    async def _store_replay_map(self, data: ReplayMapData | None) -> str | None:
+        """맵 격자를 저장하고 그 해시를 돌려준다 — 이미 있으면 저장하지 않는다(요청: 같은
+        맵이면 하나를 함께 쓰자). 격자를 안 보냈으면 None이고, 그때 호출부는 기존 연결을
+        그대로 둔다."""
+        if data is None:
+            return None
+        if not await self._repo.replay_map_exists(data.hash):
+            self._repo.add_replay_map(ReplayMap(
+                map_hash=data.hash, name=data.name,
+                width=data.width, height=data.height,
+                palette=data.palette, tiles=data.tiles,
+            ))
+            # 같은 배치에서 같은 맵이 여러 번 올라오면(무한맵 여러 판) 두 번째부터는 위
+            # exists가 아직 flush 안 된 첫 행을 못 봐 유니크 제약에 걸린다 — 바로 flush해
+            # 이어지는 조회가 그 행을 보게 한다.
+            await self._repo.flush()
+        return data.hash
+
     async def create_match(self, payload: GameResultWrite, *, actor: Member) -> GameResult:
         await self._ensure_no_duplicate_members(payload)
         members_by_id = await self._ensure_members_exist(payload.team1 + payload.team2)
@@ -1153,6 +1189,7 @@ class GameResultService:
                 game_started_at=payload.game_started_at,
                 duration_seconds=payload.duration_seconds,
                 summary_data=payload.summary_data,
+                map_hash=await self._store_replay_map(payload.map_data),
                 replay=None,
             ),
             created_by=actor.pk,
@@ -1184,6 +1221,7 @@ class GameResultService:
         match.match_type = payload.match_type
         match.updated_by = actor.pk
 
+        map_hash = await self._store_replay_map(payload.map_data)
         if match.result_row is None:
             match.result_row = GameOutcome(
                 result=payload.result,
@@ -1191,6 +1229,7 @@ class GameResultService:
                 game_started_at=payload.game_started_at,
                 duration_seconds=payload.duration_seconds,
                 summary_data=payload.summary_data,
+                map_hash=map_hash,
             )
         else:
             match.result_row.result = payload.result
@@ -1201,6 +1240,9 @@ class GameResultService:
             # 만들 재료(리플레이)를 다시 올리지 않는 경로에서 기존 값을 지우지 않도록.
             if payload.summary_data is not None:
                 match.result_row.summary_data = payload.summary_data
+            # 맵 연결도 같은 규칙 — 리플레이를 다시 읽은 경로에서만 갱신한다.
+            if map_hash is not None:
+                match.result_row.map_hash = map_hash
 
         match.participants.clear()
         await self._session.flush()
@@ -1249,6 +1291,10 @@ class GameResultService:
         # 그대로 덮어쓴다(요청: 배치 업로드에서 기존 경기도 갱신). 못 만들었으면 기존 값 유지.
         if payload.summary_data is not None:
             rr.summary_data = payload.summary_data
+        # 옛 경기에 미니맵을 채워 넣는 자리 — 리플레이를 다시 올리면 여기로 들어온다.
+        map_hash = await self._store_replay_map(payload.map_data)
+        if map_hash is not None:
+            rr.map_hash = map_hash
 
         by_name = {s.player_name: s for s in payload.players}
         for p in match.participants:

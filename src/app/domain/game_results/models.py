@@ -110,6 +110,40 @@ class Replay(AuditMixin, TimestampMixin, Base):
     map_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
 
+class ReplayMap(TimestampMixin, Base):
+    """미니맵을 그리는 데 필요한 맵의 지형 격자 — 리플레이 안에 들어 있는 타일 격자다.
+
+    경기가 아니라 '맵'에 매달아 둔다(지적: 같은 맵을 반복해서 쓰니 동일하면 하나를 함께
+    쓰면 된다). 클럽은 빠른무한 몇 종류를 계속 돌리므로, 경기마다 넣으면 같은 격자
+    수백 벌이 쌓인다. 그래서 격자 내용 자체의 해시(map_hash)를 키로 한 번만 저장하고
+    경기(GameOutcome.map_hash)가 그걸 가리킨다 — 맵 이름이 아니라 내용이 기준인 이유는,
+    같은 이름으로 조금씩 다른 판본이 돌아다니고(센포금지/빠른무한 …) 반대로 이름만 바꾼
+    같은 맵도 있어서다.
+
+    지형 그래픽(tileset의 cv5/vx4/vr4·팔레트)은 게임 설치본에 있는 저작물이라 여기 없다 —
+    그래서 이 격자로 그리는 건 게임과 같은 색의 미니맵이 아니라 '타일 종류를 색으로 구분한
+    개략도'다. 실제 확인: 타일 그룹 번호만으로도 본진·램프·중앙 광장이 또렷하게 나온다.
+    """
+
+    __tablename__ = "replay_maps"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    # 격자 내용의 해시(프론트가 계산해 보낸다) — 같은 맵을 두 번 저장하지 않게 하는 열쇠다.
+    map_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    # 그 맵을 처음 올린 리플레이에 적혀 있던 이름. 표시용이 아니라 사람이 DB를 볼 때의
+    # 단서다(화면에 쓰는 맵 이름은 경기마다 저장된 GameOutcome.map_name이다).
+    name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    # 타일 단위 맵 크기(보통 128×128).
+    width: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    height: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    # 이 맵에 나오는 타일 그룹 번호 목록 — tiles의 각 바이트가 이 배열의 첨자다. 원본
+    # 번호를 그대로 쓰지 않고 한 겹 접는 이유는 한 맵에 서른 몇 종류뿐이라 1바이트에 담기고,
+    # 그래야 격자가 크기의 4분의 1로 줄어든다(실측: JSON 63KB → base64 22KB).
+    palette: Mapped[list] = mapped_column(JSON, nullable=False)
+    # width*height개의 팔레트 첨자를 바이트로 늘어놓고 base64로 옮긴 것.
+    tiles: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GameOutcome(Base):
     """경기 결과 — status가 completed로 확정된 경기에만 이 행이 존재한다(예약/취소 상태는
     애초에 결과가 없으므로 행 자체가 없다). 리플레이 메타데이터(맵/시작시각/경기시간)도
@@ -133,6 +167,11 @@ class GameOutcome(Base):
     # 사람이 쓴 글이 아니라 파생 데이터라, 리플레이를 다시 올리면 그대로 덮어쓴다.
     # 재료가 모자라면 아예 만들지 않으므로 NULL이 정상이다(수동 등록 경기도 NULL).
     summary_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 이 경기가 치러진 맵의 지형 격자(replay_maps.map_hash) — 미니맵을 그리는 데 쓴다.
+    # 외래키를 걸지 않는 이유는 격자가 순전히 파생 데이터라서다: 맵 행이 없어도 경기는
+    # 온전하고(미니맵만 안 나온다), 반대로 어떤 경기도 안 가리키는 맵 행이 남아도 무해하다.
+    # 리플레이가 없는 수기 등록 경기와 옛 데이터는 NULL이다.
+    map_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

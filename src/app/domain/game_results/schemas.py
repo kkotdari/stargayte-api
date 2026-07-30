@@ -72,6 +72,51 @@ class GameResultReplayMergeSlot(BaseModel):
     build_count: int | None = Field(default=None, alias="buildCount")
 
 
+class ReplayMapData(BaseModel):
+    """리플레이에서 뽑은 맵의 지형 격자(models.ReplayMap 주석 참고).
+
+    등록/머지 payload에 실려 오고, 이미 같은 hash가 저장돼 있으면 그냥 버린다(같은 맵을
+    두 번 저장하지 않는다). 크기 상한을 두는 이유는 이 값이 통째로 DB에 들어가기 때문이다 —
+    브루드워 맵은 최대 256×256이고, 팔레트는 tiles의 한 바이트가 첨자라 256을 넘을 수 없다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    hash: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
+    name: str | None = Field(default=None, max_length=150)
+    width: int = Field(ge=1, le=256)
+    height: int = Field(ge=1, le=256)
+    palette: list[int] = Field(min_length=1, max_length=256)
+    tiles: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_size(self) -> "ReplayMapData":
+        # base64는 3바이트를 4글자로 옮긴다 — 격자 크기와 안 맞으면 잘렸거나 다른 맵이다.
+        expected = ((self.width * self.height + 2) // 3) * 4
+        if len(self.tiles) != expected:
+            raise ValueError("맵 격자 길이가 맵 크기와 맞지 않습니다.")
+        return self
+
+
+class ReplayMapOut(BaseModel):
+    """미니맵을 그리는 쪽으로 내려보내는 맵 격자 — 들어온 것과 같은 형태다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    hash: str
+    name: str | None
+    width: int
+    height: int
+    palette: list[int]
+    tiles: str
+
+
+class ReplayMapList(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    maps: list[ReplayMapOut]
+
+
 class GameResultReplayMerge(BaseModel):
     """이미 등록된 경기(game_started_at으로 식별)에 리플레이 내부 정보만 다시 덮어쓰는 머지
     payload(요청: "중복건이라도 머지 방식으로 새 컬럼 덮어쓰기"). 지표(APM/커맨드/생산)·맵·
@@ -86,6 +131,10 @@ class GameResultReplayMerge(BaseModel):
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
     # 리플레이를 다시 올리면 요약도 다시 계산된 값으로 덮어쓴다(요청: 배치 업로드에서 갱신).
     summary_data: dict | None = Field(default=None, alias="summaryData")
+    # 맵 격자 — 예전에 등록해 둔 경기에 미니맵을 채워 넣는 유일한 길이다(옛 경기는 이 값이
+    # 아예 없다). 같은 리플레이를 다시 올리면 여기로 들어와 맵 한 벌이 저장되고 경기가 그걸
+    # 가리키게 된다.
+    map_data: ReplayMapData | None = Field(default=None, alias="mapData")
     players: list[GameResultReplayMergeSlot]
 
 
@@ -141,6 +190,10 @@ class GameResultWrite(BaseModel):
     # 리플레이에서 규칙으로 뽑은 경기 요약 — 문장이 아니라 "무슨 일이 있었나"의 목록이다
     # (models.GameOutcome.summary_data 주석 참고). 사람이 쓴 글이 아니라 파생 데이터다.
     summary_data: dict | None = Field(default=None, alias="summaryData")
+    # 이 경기 맵의 지형 격자 — 이미 같은 맵이 저장돼 있으면 버리고 해시만 이어 붙인다.
+    # 수기 등록/수정 폼처럼 리플레이를 다시 읽지 않는 경로에서는 None이고, 그때 기존
+    # 연결을 지우지 않는다(요약과 같은 규칙).
+    map_data: ReplayMapData | None = Field(default=None, alias="mapData")
 
     @model_validator(mode="after")
     def _normalize(self) -> "GameResultWrite":
@@ -167,6 +220,9 @@ class GameResultOut(BaseModel):
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
     summary_data: dict | None = Field(default=None, alias="summaryData")
+    # 이 경기 맵의 지형 격자를 가리키는 해시 — 격자 자체는 따로(GET replay-maps) 받아 온다.
+    # 같은 맵을 쓰는 경기가 수십 건이라 목록 응답마다 22KB짜리 격자를 실어 보낼 수 없다.
+    map_hash: str | None = Field(default=None, alias="mapHash")
     # 이 경기에 달린 댓글(메모) — 목록 응답에 함께 실어 클라이언트가 펼침 시 바로 렌더하고
     # 검색창에서 댓글 내용으로도 필터할 수 있게 한다(요청). 오래된 순.
 

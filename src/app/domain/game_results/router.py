@@ -23,6 +23,7 @@ from app.domain.game_results.schemas import (
     MonthlyTeamRankingResponse,
     RankingResponse,
     RatingHistoryResponse,
+    ReplayMapList,
     ReplayNameClassificationEntry,
     ReplayNameClassificationLookupRequest,
     ReplayNameClassificationLookupResponse,
@@ -256,6 +257,21 @@ async def get_earliest_date(
 ) -> EarliestDateResponse:
     earliest = await GameResultService(db, storage).get_earliest_match_date()
     return EarliestDateResponse(date=earliest)
+
+
+@router.get("/replay-maps", response_model=ReplayMapList)
+async def list_replay_maps(
+    db: DbSession, storage: StorageDep, _current: CurrentMember,
+    hash: list[str] = Query(default_factory=list),
+) -> ReplayMapList:
+    """미니맵 격자를 해시로 받아 온다(?hash=..&hash=..).
+
+    경기 응답에는 해시만 실려 있다 — 격자 하나가 22KB인데 같은 맵을 쓰는 경기가 수십 건이라,
+    목록에 끼워 보내면 같은 값이 계속 되풀이된다. 그래서 클라이언트가 아직 안 받아 둔 해시만
+    모아 여기로 묻고 한 번 받은 것은 계속 들고 쓴다(내용 해시라 절대 바뀌지 않는다).
+    """
+    maps = await GameResultService(db, storage).list_replay_maps(hash)
+    return ReplayMapList(maps=maps)
 
 
 @router.post("/duplicate-check", response_model=DuplicateCheckResponse)

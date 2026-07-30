@@ -9,6 +9,7 @@ from app.domain.game_results.models import (
     GameResultParticipant,
     GameOutcome,
     Replay,
+    ReplayMap,
 )
 from app.domain.members.models import Member, ReplayAlias
 
@@ -582,6 +583,21 @@ class GameResultRepository:
     async def list_all_replay_aliases(self) -> list[ReplayAlias]:
         stmt = select(ReplayAlias).options(selectinload(ReplayAlias.member))
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_replay_maps(self, hashes: list[str]) -> list[ReplayMap]:
+        """미니맵 격자를 해시로 한꺼번에 가져온다 — 피드 한 화면에 여러 경기가 있고 그중
+        상당수가 같은 맵이라, 경기마다 한 번씩 묻는 대신 없는 것만 모아 한 번에 받는다."""
+        if not hashes:
+            return []
+        stmt = select(ReplayMap).where(ReplayMap.map_hash.in_(hashes))
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def replay_map_exists(self, map_hash: str) -> bool:
+        stmt = select(ReplayMap.id).where(ReplayMap.map_hash == map_hash)
+        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+
+    def add_replay_map(self, row: ReplayMap) -> None:
+        self._session.add(row)
 
     async def list_all_replays(self) -> list[Row]:
         # 리플레이 전체 다운로드(운영자) + 전체 삭제 시 파일 정리용 — 저장 파일명(display_name)과
