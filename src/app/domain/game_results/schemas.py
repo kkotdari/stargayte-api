@@ -88,6 +88,9 @@ class ReplayMapData(BaseModel):
     height: int = Field(ge=1, le=256)
     palette: list[int] = Field(min_length=1, max_length=256)
     tiles: str = Field(min_length=1)
+    # 자원 지대([타일x, 타일y, 가스여부]) — 앞마당·멀티 자리를 그리는 데 쓴다(요청). 옛
+    # 리플레이(이 필드 없이 저장된 맵)와는 호환을 위해 기본 빈 목록.
+    resources: list[list[float]] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def _check_size(self) -> "ReplayMapData":
@@ -109,6 +112,7 @@ class ReplayMapOut(BaseModel):
     height: int
     palette: list[int]
     tiles: str
+    resources: list[list[float]] = Field(default_factory=list)
 
 
 class ReplayMapList(BaseModel):

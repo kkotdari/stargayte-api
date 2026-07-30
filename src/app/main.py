@@ -55,6 +55,7 @@ async def _ensure_schema() -> None:
         await _migrate_feed_target_types(conn)
         await _add_match_result_summary(conn)
         await _add_match_result_map_hash(conn)
+        await _add_replay_map_resources(conn)
         await _add_challenge_time_note(conn)
         await _drop_challenge_time(conn)
         await _drop_challenge_revenge_chain(conn)
@@ -138,6 +139,21 @@ async def _add_match_result_map_hash(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("game_outcomes.map_hash 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_replay_map_resources(conn: object) -> None:
+    """replay_maps.resources 컬럼을 더한다(멱등) — 자원 지대 좌표. 옛 맵 행은 NULL로 남고,
+    같은 리플레이를 다시 올려 자원이 함께 저장되면 새 해시로 새 행이 생긴다."""
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE replay_maps ADD COLUMN IF NOT EXISTS resources JSONB")
+        )
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug("replay_maps.resources 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_challenge_time_note(conn: object) -> None:

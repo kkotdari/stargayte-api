@@ -13,7 +13,7 @@ _W, _H = 4, 4
 _TILES = base64.b64encode(bytes([(x + y) % 2 for y in range(_H) for x in range(_W)])).decode()
 _MAP = {
     "hash": "a" * 40, "name": "빠른무한", "width": _W, "height": _H,
-    "palette": [4, 17], "tiles": _TILES,
+    "palette": [4, 17], "tiles": _TILES, "resources": [[1, 1, 1]],
 }
 
 
@@ -57,7 +57,7 @@ async def test_same_map_stored_once_and_fetchable(client):
     assert len(maps) == 1
     assert maps[0] == {
         "hash": _MAP["hash"], "name": "빠른무한", "width": _W, "height": _H,
-        "palette": [4, 17], "tiles": _TILES,
+        "palette": [4, 17], "tiles": _TILES, "resources": [[1.0, 1.0, 1.0]],
     }
 
 

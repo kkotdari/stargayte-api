@@ -142,6 +142,8 @@ class ReplayMap(TimestampMixin, Base):
     palette: Mapped[list] = mapped_column(JSON, nullable=False)
     # width*height개의 팔레트 첨자를 바이트로 늘어놓고 base64로 옮긴 것.
     tiles: Mapped[str] = mapped_column(Text, nullable=False)
+    # 자원 지대([타일x, 타일y, 가스여부]) — 앞마당·멀티 자리. 옛 데이터엔 없어 nullable.
+    resources: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class GameOutcome(Base):

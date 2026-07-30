@@ -1146,6 +1146,7 @@ class GameResultService:
             ReplayMapOut(
                 hash=r.map_hash, name=r.name, width=r.width, height=r.height,
                 palette=list(r.palette or []), tiles=r.tiles,
+                resources=list(r.resources or []),
             )
             for r in rows
         ]
@@ -1161,6 +1162,7 @@ class GameResultService:
                 map_hash=data.hash, name=data.name,
                 width=data.width, height=data.height,
                 palette=data.palette, tiles=data.tiles,
+                resources=data.resources,
             ))
             # 같은 배치에서 같은 맵이 여러 번 올라오면(무한맵 여러 판) 두 번째부터는 위
             # exists가 아직 flush 안 된 첫 행을 못 봐 유니크 제약에 걸린다 — 바로 flush해
