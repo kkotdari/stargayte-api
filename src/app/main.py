@@ -169,12 +169,18 @@ async def _add_replay_map_image_id(conn: object) -> None:
 
     from sqlalchemy import text
 
-    try:
-        await conn.execute(  # type: ignore[attr-defined]
-            text("ALTER TABLE replay_maps ADD COLUMN IF NOT EXISTS image_id BIGINT")
-        )
-    except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
+    # IF NOT EXISTS는 PostgreSQL(운영)만 알아듣는다 — SQLite(개발/테스트)에서는 구문 오류가
+    # 나므로 그냥 ADD COLUMN으로 한 번 더 시도하고, 이미 있으면 그때 나는 오류를 삼킨다.
+    for sql in (
+        "ALTER TABLE replay_maps ADD COLUMN IF NOT EXISTS image_id BIGINT",
+        "ALTER TABLE replay_maps ADD COLUMN image_id BIGINT",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001
+            continue
+    logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_challenge_time_note(conn: object) -> None:
