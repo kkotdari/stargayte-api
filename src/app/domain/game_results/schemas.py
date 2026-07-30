@@ -113,12 +113,75 @@ class ReplayMapOut(BaseModel):
     palette: list[int]
     tiles: str
     resources: list[list[float]] = Field(default_factory=list)
+    # 사람이 올려 둔 실제 미니맵 그림(data URL) — 있으면 격자 대신 이걸 그린다(요청).
+    image: str | None = None
 
 
 class ReplayMapList(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     maps: list[ReplayMapOut]
+
+
+# 미니맵 그림 한 장의 상한 — data URL 문자열 길이다(base64라 실제 바이트의 약 4/3). 실제
+# 미니맵은 512px 한 장이면 충분하고, 프론트가 올릴 때 그 크기로 줄여 보낸다.
+_IMAGE_MAX_CHARS = 900_000
+
+
+class MinimapImageWrite(BaseModel):
+    """미니맵 그림을 새로 올리거나 기존 그림을 고친다. hashes를 함께 주면 그 맵들이 이
+    그림을 가리키게 된다(요청: 이름·판본만 다른 맵을 한데 묶기)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=150)
+    # 고칠 때 그림을 그대로 두려면 생략한다.
+    image: str | None = Field(default=None, max_length=_IMAGE_MAX_CHARS)
+    hashes: list[str] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def _check_image(self) -> "MinimapImageWrite":
+        if self.image is not None and not self.image.startswith("data:image/"):
+            raise ValueError("미니맵 그림은 data:image/... 형식이어야 합니다.")
+        return self
+
+
+class MinimapAssignWrite(BaseModel):
+    """맵 여러 개를 한 그림에 붙이거나(imageId) 떼어 낸다(null)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    image_id: int | None = Field(default=None, alias="imageId")
+    hashes: list[str] = Field(min_length=1, max_length=64)
+
+
+class MinimapImageOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    name: str
+    image: str
+
+
+class MapCatalogEntry(BaseModel):
+    """제어판 목록의 한 줄 — 격자는 빼고 어떤 맵이 있는지만 본다(격자는 22KB짜리다)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    hash: str
+    name: str | None
+    width: int
+    height: int
+    # 이 맵으로 치른 경기 수 — 어느 맵부터 그림을 올릴지 정하는 기준이다.
+    matches: int
+    image_id: int | None = Field(default=None, serialization_alias="imageId")
+
+
+class MapCatalog(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    maps: list[MapCatalogEntry]
+    images: list[MinimapImageOut]
 
 
 class GameResultReplayMerge(BaseModel):

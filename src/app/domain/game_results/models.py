@@ -144,6 +144,34 @@ class ReplayMap(TimestampMixin, Base):
     tiles: Mapped[str] = mapped_column(Text, nullable=False)
     # 자원 지대([타일x, 타일y, 가스여부]) — 앞마당·멀티 자리. 옛 데이터엔 없어 nullable.
     resources: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 사람이 올려 둔 실제 미니맵 그림(MinimapImage)을 가리킨다 — 있으면 격자 대신 그걸 그린다.
+    # 여러 맵 행이 같은 그림을 가리킬 수 있다(요청: 버전·이름만 다른 거의 같은 맵을 한데 묶기).
+    image_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("minimap_images.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+
+class MinimapImage(TimestampMixin, Base):
+    """사람이 올려 둔 실제 미니맵 그림 한 장.
+
+    리플레이의 타일 격자로는 게임과 같은 색의 미니맵을 만들 수 없다 — 타일 번호를 픽셀로
+    바꾸는 표와 그림이 게임 설치본에 있고 리플레이엔 없다(ReplayMap 주석). 번호만으로 물·풀·
+    땅·벽을 갈라 보려는 시도를 네 번 했고 다 실패했다(빈도·응집도·순위·그룹 덩어리). 그래서
+    운영자가 맵마다 실제 미니맵 그림을 한 번 올려 두고, 그 위에 아바타·화살표를 얹는다(요청).
+
+    그림을 replay_maps에 직접 넣지 않고 따로 두는 이유: 이름이나 판본만 다른 거의 같은 맵이
+    여러 벌 있어서(빠른무한 계열) 그것들이 한 그림을 함께 가리켜야 한다(요청: "거의 비슷한데
+    버전이나 이름이 다른 경우도 한데 묶을 수 있어야").
+    """
+
+    __tablename__ = "minimap_images"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    # 운영자가 붙이는 이름 — 제어판 목록에서 이 그림이 어느 맵인지 알아보는 이름이다.
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    # data URL 그대로("data:image/png;base64,..."). 파일 저장소를 쓰지 않는 이유는 장 수가
+    # 맵 종류 수(십여 장)뿐이고, 한 벌을 받아 두면 계속 쓰기 때문이다.
+    image: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class GameOutcome(Base):

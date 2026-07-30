@@ -15,6 +15,7 @@ from app.domain.game_results.models import (
     GameResultParticipant,
     GameOutcome,
     Replay,
+    MinimapImage,
     ReplayMap,
 )
 from app.domain.game_results.rating import RatingEngine
@@ -32,6 +33,11 @@ from app.domain.game_results.schemas import (
     RaceStatsEntry,
     RatingHistoryResponse,
     ReplayMapData,
+    MapCatalog,
+    MapCatalogEntry,
+    MinimapAssignWrite,
+    MinimapImageOut,
+    MinimapImageWrite,
     ReplayMapOut,
     ReplayOut,
     ReplayUpload,
@@ -1142,14 +1148,78 @@ class GameResultService:
         # 22KB라, 상한이 없으면 한 요청으로 수 MB를 뽑아 갈 수 있다.
         uniq = list(dict.fromkeys(h for h in hashes if h))[:32]
         rows = await self._repo.list_replay_maps(uniq)
+        # 사람이 올려 둔 실제 미니맵 그림 — 여러 맵이 한 장을 함께 가리킬 수 있으므로(요청:
+        # 이름·판본만 다른 맵 묶기) 한 번만 읽어 나눠 쓴다.
+        images = {img.id: img.image for img in await self._repo.list_minimap_images()} \
+            if any(r.image_id for r in rows) else {}
         return [
             ReplayMapOut(
                 hash=r.map_hash, name=r.name, width=r.width, height=r.height,
                 palette=list(r.palette or []), tiles=r.tiles,
                 resources=list(r.resources or []),
+                image=images.get(r.image_id) if r.image_id else None,
             )
             for r in rows
         ]
+
+    async def map_catalog(self) -> MapCatalog:
+        """제어판용 — 어떤 맵이 있고 몇 경기를 치렀는지, 그림은 어느 것을 가리키는지."""
+        rows = await self._repo.list_map_catalog()
+        images = await self._repo.list_minimap_images()
+        return MapCatalog(
+            maps=[
+                MapCatalogEntry(
+                    hash=r.map_hash, name=r.name, width=r.width, height=r.height,
+                    matches=int(r.matches or 0), image_id=r.image_id,
+                )
+                for r in rows
+            ],
+            images=[MinimapImageOut(id=i.id, name=i.name, image=i.image) for i in images],
+        )
+
+    async def create_minimap_image(self, payload: MinimapImageWrite) -> MinimapImageOut:
+        if not payload.image:
+            raise ValidationError("미니맵 그림을 함께 올려야 합니다.")
+        row = MinimapImage(name=payload.name, image=payload.image)
+        self._repo.add_minimap_image(row)
+        await self._repo.flush()
+        if payload.hashes:
+            await self._repo.assign_minimap_image(payload.hashes, row.id)
+        await self._session.commit()
+        return MinimapImageOut(id=row.id, name=row.name, image=row.image)
+
+    async def update_minimap_image(self, image_id: int, payload: MinimapImageWrite) -> MinimapImageOut:
+        row = await self._repo.get_minimap_image(image_id)
+        if row is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
+        row.name = payload.name
+        # 그림을 안 보냈으면 이름만 고치는 것이다 — 900KB짜리를 다시 올리게 하지 않는다.
+        if payload.image:
+            row.image = payload.image
+        if payload.hashes:
+            await self._repo.assign_minimap_image(payload.hashes, row.id)
+        await self._session.commit()
+        return MinimapImageOut(id=row.id, name=row.name, image=row.image)
+
+    async def delete_minimap_image(self, image_id: int) -> None:
+        row = await self._repo.get_minimap_image(image_id)
+        if row is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
+        # 가리키던 맵을 먼저 떼어 낸다 — SQLite는 기본 설정에서 FK ON DELETE를 안 지킨다.
+        await self._repo.assign_minimap_image(
+            [m.map_hash for m in await self._repo.list_map_catalog() if m.image_id == image_id],
+            None,
+        )
+        await self._repo.delete_minimap_image(image_id)
+        await self._session.commit()
+
+    async def assign_minimap_image(self, payload: MinimapAssignWrite) -> int:
+        """맵 여러 개를 한 그림에 붙이거나 떼어 낸다(요청: 거의 같은 맵을 한데 묶기)."""
+        if payload.image_id is not None and await self._repo.get_minimap_image(payload.image_id) is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
+        changed = await self._repo.assign_minimap_image(payload.hashes, payload.image_id)
+        await self._session.commit()
+        return changed
 
     async def _store_replay_map(self, data: ReplayMapData | None) -> str | None:
         """맵 격자를 저장하고 그 해시를 돌려준다 — 이미 있으면 저장하지 않는다(요청: 같은

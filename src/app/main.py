@@ -56,6 +56,7 @@ async def _ensure_schema() -> None:
         await _add_match_result_summary(conn)
         await _add_match_result_map_hash(conn)
         await _add_replay_map_resources(conn)
+        await _add_replay_map_image_id(conn)
         await _add_challenge_time_note(conn)
         await _drop_challenge_time(conn)
         await _drop_challenge_revenge_chain(conn)
@@ -154,6 +155,26 @@ async def _add_replay_map_resources(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).debug("replay_maps.resources 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_replay_map_image_id(conn: object) -> None:
+    """replay_maps.image_id 컬럼을 더한다(멱등) — 사람이 올려 둔 실제 미니맵 그림
+    (minimap_images)을 가리킨다. 여러 맵 행이 같은 그림을 가리킬 수 있다(요청: 이름·판본만
+    다른 거의 같은 맵을 한데 묶기). 새 테이블 자체는 create_all이 만든다.
+
+    FK는 여기서 걸지 않는다 — 이미 있는 테이블에 FK를 더하려면 PostgreSQL은 되지만 SQLite는
+    테이블을 다시 만들어야 한다. 모델에 선언된 FK는 새로 만드는 DB(create_all)에만 붙고,
+    운영 중인 DB에서는 컬럼만 더해도 동작에 차이가 없다(정리는 서비스 쪽에서 한다)."""
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE replay_maps ADD COLUMN IF NOT EXISTS image_id BIGINT")
+        )
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_challenge_time_note(conn: object) -> None:

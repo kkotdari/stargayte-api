@@ -58,6 +58,8 @@ async def test_same_map_stored_once_and_fetchable(client):
     assert maps[0] == {
         "hash": _MAP["hash"], "name": "빠른무한", "width": _W, "height": _H,
         "palette": [4, 17], "tiles": _TILES, "resources": [[1.0, 1.0, 1.0]],
+        # 사람이 올려 둔 실제 미니맵 그림은 아직 없다 — 그때는 격자로 그린다.
+        "image": None,
     }
 
 
@@ -108,5 +110,109 @@ async def test_grid_length_must_match_size(client):
         "team2": [{"memberId": "player02", "race": "저그", "playerName": "player02"}],
         "result": "team1", "gameStartedAt": "2026-07-04T03:00:00+00:00",
         "mapData": {**_MAP, "tiles": base64.b64encode(bytes([0])).decode()},
+    })
+    assert res.status_code == 422, res.text
+
+# 여기서부터: 사람이 올려 둔 실제 미니맵 그림(요청: "미네랄 가스 물/풀/땅 벽 최대한 비슷하게").
+# 타일 번호만으로 지형을 가려내는 것은 네 번 시도해 다 실패했으므로, 운영자가 맵마다 실제
+# 미니맵 그림을 올려 두고 그 위에 아바타·화살표를 얹는다. 이름·판본만 다른 거의 같은 맵들이
+# 한 그림을 함께 가리킬 수 있어야 한다(요청: "버전이나 이름이 다른 경우도 한데 묶을 수 있어야").
+#
+# 첫 가입자가 운영자가 되므로(test_smoke 참고) player01이 운영자, player02가 일반 회원이다.
+
+# 1×1 투명 PNG.
+_PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4z8AAAAMBAQAY3Y2w"
+    "AAAAAElFTkSuQmCC"
+)
+_MAP2 = {**_MAP, "hash": "c" * 40, "name": "빠른무한 센포금지"}
+
+
+async def test_minimap_image_shared_by_similar_maps(client):
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    # 이름만 다른 두 맵 — 격자가 한 바이트도 다르면 다른 해시라 두 행이 된다.
+    await _create(client, headers, date="2026-07-05", gsa="2026-07-05T03:00:00+00:00", map_data=_MAP)
+    await _create(client, headers, date="2026-07-05", gsa="2026-07-05T04:00:00+00:00", map_data=_MAP2)
+
+    cat = await client.get("/api/game-results/replay-maps/catalog", headers=headers)
+    assert cat.status_code == 200, cat.text
+    body = cat.json()
+    assert {m["hash"] for m in body["maps"]} == {_MAP["hash"], _MAP2["hash"]}
+    # 경기 수가 함께 온다 — 어느 맵부터 그림을 올릴지 정하는 기준이다.
+    assert all(m["matches"] == 1 for m in body["maps"])
+    assert body["images"] == []
+
+    made = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": _PNG, "hashes": [_MAP["hash"], _MAP2["hash"]],
+    })
+    assert made.status_code == 200, made.text
+    image_id = made.json()["id"]
+
+    got = await client.get(
+        "/api/game-results/replay-maps", headers=headers,
+        params={"hash": [_MAP["hash"], _MAP2["hash"]]},
+    )
+    # 두 맵 모두 같은 그림을 돌려받는다 — 이게 '묶기'의 뜻이다.
+    assert {m["image"] for m in got.json()["maps"]} == {_PNG}
+
+    # 한쪽만 떼어 내면 그 맵은 다시 격자로 그려진다.
+    off = await client.post("/api/game-results/replay-maps/assign", headers=headers, json={
+        "imageId": None, "hashes": [_MAP2["hash"]],
+    })
+    assert off.status_code == 200, off.text
+    assert off.json()["changed"] == 1
+    got2 = (await client.get(
+        "/api/game-results/replay-maps", headers=headers,
+        params={"hash": [_MAP["hash"], _MAP2["hash"]]},
+    )).json()["maps"]
+    by_hash = {m["hash"]: m["image"] for m in got2}
+    assert by_hash[_MAP["hash"]] == _PNG
+    assert by_hash[_MAP2["hash"]] is None
+
+    # 이름만 고칠 때는 그림을 다시 올리지 않아도 된다(900KB짜리를 또 보내지 않게).
+    renamed = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
+        json={"name": "빠른무한 계열", "hashes": []},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json() == {"id": image_id, "name": "빠른무한 계열", "image": _PNG}
+
+    # 그림을 지우면 가리키던 맵도 함께 떨어진다.
+    gone = await client.delete(f"/api/game-results/replay-maps/images/{image_id}", headers=headers)
+    assert gone.status_code == 204, gone.text
+    left = (await client.get(
+        "/api/game-results/replay-maps", headers=headers, params={"hash": _MAP["hash"]},
+    )).json()["maps"]
+    assert left[0]["image"] is None
+
+
+async def test_minimap_image_needs_admin(client):
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    p2 = await _signup(client, "player02", "Mist#1002")
+    # 두 번째 가입자는 승인 대기 상태라 아무 API도 못 쓴다 — 승인까지 해 둔 '일반 회원'으로
+    # 만들어야 "운영자만 가능"을 확인할 수 있다.
+    approve = await client.patch(
+        "/api/members/player02/status",
+        headers={"Authorization": f"Bearer {p1['accessToken']}"},
+        json={"status": "active"},
+    )
+    assert approve.status_code == 200, approve.text
+    headers = {"Authorization": f"Bearer {p2['accessToken']}"}
+    res = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": _PNG, "hashes": [],
+    })
+    assert res.status_code == 403, res.text
+
+
+async def test_minimap_image_rejects_non_image(client):
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    # data:image/ 로 시작하지 않는 값은 받지 않는다 — 이 문자열이 그대로 img src가 된다.
+    res = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": "javascript:alert(1)", "hashes": [],
     })
     assert res.status_code == 422, res.text

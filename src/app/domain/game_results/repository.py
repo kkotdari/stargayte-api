@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, or_, select
+from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -8,6 +8,7 @@ from app.domain.game_results.models import (
     GameResult,
     GameResultParticipant,
     GameOutcome,
+    MinimapImage,
     Replay,
     ReplayMap,
 )
@@ -598,6 +599,48 @@ class GameResultRepository:
 
     def add_replay_map(self, row: ReplayMap) -> None:
         self._session.add(row)
+
+    async def list_map_catalog(self) -> list[Row]:
+        """제어판용 맵 목록 — 격자(22KB)는 빼고 어떤 맵이 있고 몇 경기를 치렀는지만."""
+        used = (
+            select(GameOutcome.map_hash, func.count().label("n"))
+            .where(GameOutcome.map_hash.is_not(None))
+            .group_by(GameOutcome.map_hash)
+            .subquery()
+        )
+        stmt = (
+            select(
+                ReplayMap.map_hash, ReplayMap.name, ReplayMap.width, ReplayMap.height,
+                ReplayMap.image_id, func.coalesce(used.c.n, 0).label("matches"),
+            )
+            .outerjoin(used, used.c.map_hash == ReplayMap.map_hash)
+            .order_by(func.coalesce(used.c.n, 0).desc(), ReplayMap.id)
+        )
+        return list((await self._session.execute(stmt)).all())
+
+    async def list_minimap_images(self) -> list[MinimapImage]:
+        stmt = select(MinimapImage).order_by(MinimapImage.id)
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def get_minimap_image(self, image_id: int) -> MinimapImage | None:
+        stmt = select(MinimapImage).where(MinimapImage.id == image_id)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    def add_minimap_image(self, row: MinimapImage) -> None:
+        self._session.add(row)
+
+    async def delete_minimap_image(self, image_id: int) -> None:
+        # 가리키던 맵들은 image_id가 NULL이 되어(ondelete=SET NULL) 다시 격자로 그려진다.
+        await self._session.execute(delete(MinimapImage).where(MinimapImage.id == image_id))
+
+    async def assign_minimap_image(self, hashes: list[str], image_id: int | None) -> int:
+        """맵 여러 개가 한 그림을 가리키게 한다(요청: 이름·판본만 다른 맵 묶기). None이면 떼어 낸다."""
+        if not hashes:
+            return 0
+        res = await self._session.execute(
+            update(ReplayMap).where(ReplayMap.map_hash.in_(hashes)).values(image_id=image_id)
+        )
+        return res.rowcount or 0
 
     async def list_all_replays(self) -> list[Row]:
         # 리플레이 전체 다운로드(운영자) + 전체 삭제 시 파일 정리용 — 저장 파일명(display_name)과

@@ -18,6 +18,10 @@ from app.domain.game_results.schemas import (
     GameResultReplayMergeResult,
     GameResultStatsResponse,
     GameResultWrite,
+    MapCatalog,
+    MinimapAssignWrite,
+    MinimapImageOut,
+    MinimapImageWrite,
     MonthlyMatchStatsResponse,
     RivalryResponse,
     MonthlyTeamRankingResponse,
@@ -272,6 +276,44 @@ async def list_replay_maps(
     """
     maps = await GameResultService(db, storage).list_replay_maps(hash)
     return ReplayMapList(maps=maps)
+
+
+@router.get("/replay-maps/catalog", response_model=MapCatalog)
+async def map_catalog(db: DbSession, storage: StorageDep, _admin: CurrentAdmin) -> MapCatalog:
+    """제어판 — 등록된 맵과 올려 둔 미니맵 그림 목록(격자는 빼고)."""
+    return await GameResultService(db, storage).map_catalog()
+
+
+@router.post("/replay-maps/images", response_model=MinimapImageOut)
+async def create_minimap_image(
+    payload: MinimapImageWrite, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
+) -> MinimapImageOut:
+    """실제 미니맵 그림을 한 장 올린다. hashes를 함께 주면 그 맵들이 이 그림을 쓴다."""
+    return await GameResultService(db, storage).create_minimap_image(payload)
+
+
+@router.put("/replay-maps/images/{image_id}", response_model=MinimapImageOut)
+async def update_minimap_image(
+    image_id: int, payload: MinimapImageWrite, db: DbSession, storage: StorageDep,
+    _admin: CurrentAdmin,
+) -> MinimapImageOut:
+    return await GameResultService(db, storage).update_minimap_image(image_id, payload)
+
+
+@router.delete("/replay-maps/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_minimap_image(
+    image_id: int, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
+) -> None:
+    await GameResultService(db, storage).delete_minimap_image(image_id)
+
+
+@router.post("/replay-maps/assign")
+async def assign_minimap_image(
+    payload: MinimapAssignWrite, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
+) -> dict[str, int]:
+    """맵 여러 개를 한 그림에 묶거나 떼어 낸다(요청: 이름·판본만 다른 맵을 한데 묶기)."""
+    changed = await GameResultService(db, storage).assign_minimap_image(payload)
+    return {"changed": changed}
 
 
 @router.post("/duplicate-check", response_model=DuplicateCheckResponse)
