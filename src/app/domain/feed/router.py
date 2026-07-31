@@ -14,6 +14,13 @@ from app.domain.feed.service import FeedCommentService, RankingShiftService
 router = APIRouter(prefix="/feed", tags=["feed"])
 
 
+@router.get("/comments/all", response_model=list[FeedCommentOut])
+async def list_all_feed_comments(db: DbSession, current: CurrentMember) -> list[FeedCommentOut]:
+    """피드가 목록을 부를 때 댓글도 한 번에 같이 받아 간다(요청) — 카드마다 따로 부르면
+    답이 제각각 도착하며 카드 키가 뒤늦게 자라 스크롤 자리가 밀린다."""
+    return await FeedCommentService(db).list_all(actor=current)
+
+
 @router.get("/comments", response_model=list[FeedCommentOut])
 async def list_feed_comments(
     db: DbSession, current: CurrentMember,

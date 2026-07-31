@@ -50,6 +50,12 @@ class FeedCommentService:
         self._repo = FeedCommentRepository(session)
         self._member_repo = MemberRepository(session)
 
+    async def list_all(self, *, actor: Member) -> list[FeedCommentOut]:
+        """피드가 목록과 함께 한 번에 받아 가는 전체 댓글(위 repository.list_all 주석)."""
+        is_admin = actor.has_any_role("0202")
+        comments = await self._repo.list_all()
+        return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in comments]
+
     async def list_for_target(self, target_type: str, target_id: int, *, actor: Member) -> list[FeedCommentOut]:
         is_admin = actor.has_any_role("0202")
         comments = await self._repo.list_by_target(normalize_target_type(target_type), target_id)
