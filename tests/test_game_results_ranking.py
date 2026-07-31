@@ -398,3 +398,23 @@ async def test_race_filter_scopes_rank_score(client):
 
     assert zerg > overall, f"저그 전승인데 포인트가 전체({overall})보다 높지 않다: {zerg}"
     assert terran < overall, f"테란 전패인데 포인트가 전체({overall})보다 낮지 않다: {terran}"
+
+
+async def test_rank_score_is_null_without_games(client):
+    """이 기간·유형에 한 경기도 없는 회원은 점수를 내리지 않는다(요청: 경기 없는 0점은
+    null로 내려서 화면에서 "-"로 보이게).
+
+    0점은 '바닥까지 떨어진 점수'로 읽히는데, 실제로는 잰 적이 없다는 뜻이라 다른 말이다.
+    붙은 사람과 안 붙은 사람이 같은 칸에 0으로 나란히 놓이면 순위표가 거짓이 된다."""
+    headers = await _signup_many(client, 4)
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
+
+    by_id = await _stats(client, headers)
+    # 붙은 두 사람은 점수가 있고(승자 양수·패자 음수),
+    assert by_id["player01"]["rankScore"] > 0
+    assert by_id["player02"]["rankScore"] < 0
+    # 한 판도 안 한 사람은 아예 값이 없다.
+    assert by_id["player03"]["rankScore"] is None
+    assert by_id["player04"]["rankScore"] is None
+    # 그래도 순위표에는 남는다 — 0경기끼리 한 덩어리로 맨 아래에 놓인다.
+    assert by_id["player03"]["sortOrder"] > by_id["player01"]["sortOrder"]

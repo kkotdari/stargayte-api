@@ -759,7 +759,10 @@ class GameResultService:
             entry.equal_count = e
             entry.inferior_count = inf
             entry.person_score = s - inf  # 우열(우세-열세) — 상세 참고용
-            entry.rank_score = score[m.pk]  # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적)
+            # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적) — 이 기간·유형에 한 경기도 없으면
+            # 점수를 내리지 않는다(요청: 경기 없는 0점은 null로 내려 화면에서 "-"로). 0점은
+            # '바닥까지 떨어진 점수'로 읽히는데, 실제로는 잰 적이 없다는 뜻이라 다른 말이다.
+            entry.rank_score = score[m.pk] if played else None
             r = engine.get(_rk(m.pk))
             entry.mu = round(r.mu, 1)
             entry.sigma = round(r.sigma, 1)
