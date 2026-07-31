@@ -150,7 +150,9 @@ async def test_team_match_ranks_as_individual_cross_product(client):
     갈리고, 대칭이라 같은 편끼리 동점. 승패 기록은 경기 단위(2:2 한 판=1승/1패), 우열 인원은
     상대별(각 2명). matchType=0102에서만 잡힌다."""
     headers = await _signup_many(client, 4)
-    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    # 팀전은 다섯 판을 채워야 점수가 나온다(_MIN_PLAYS_FOR_RANK) — 같은 대진을 다섯 번.
+    for _ in range(5):
+        await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
 
     team = await _stats(client, headers, match_type="0102")
     # 이긴 편은 양수, 진 편은 음수. 같은 편끼리는 대칭이라 동점.
@@ -158,8 +160,8 @@ async def test_team_match_ranks_as_individual_cross_product(client):
     assert team["player03"]["rankScore"] == team["player04"]["rankScore"] < 0
     assert team["player01"]["sortOrder"] < team["player03"]["sortOrder"]
     # 승패 기록은 경기 단위(2:2 한 판이면 1승/1패), 우열 인원은 상대별.
-    assert team["player01"]["overall"]["plays"] == 1
-    assert team["player01"]["overall"]["wins"] == 1
+    assert team["player01"]["overall"]["plays"] == 5
+    assert team["player01"]["overall"]["wins"] == 5
     assert team["player01"]["superiorCount"] == 2
 
     # 개인전(0101)으로 조회하면 이 팀경기는 안 잡혀 아무도 뛰지 않은 것으로 나온다.
@@ -418,3 +420,35 @@ async def test_rank_score_is_null_without_games(client):
     assert by_id["player04"]["rankScore"] is None
     # 그래도 순위표에는 남는다 — 0경기끼리 한 덩어리로 맨 아래에 놓인다.
     assert by_id["player03"]["sortOrder"] > by_id["player01"]["sortOrder"]
+
+
+async def test_team_rank_needs_five_plays(client):
+    """팀전은 다섯 판을 채워야 점수·순위가 나온다(요청: 개인전은 1판 이상, 팀전은 5판).
+
+    한 판의 결과를 넷이 나눠 갖는 자리라, 몇 판 안 되는 팀전 점수는 그 사람을 말해 주지
+    못한다. 못 채운 사람은 0경기 회원과 같은 자리 — 점수는 없고(null) 순위표 맨 아래
+    한 덩어리다."""
+    headers = await _signup_many(client, 4)
+    for _ in range(4):
+        await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+
+    four = await _stats(client, headers, match_type="0102")
+    assert four["player01"]["overall"]["plays"] == 4
+    assert four["player01"]["rankScore"] is None  # 네 판까지는 아직 없음
+    assert four["player03"]["rankScore"] is None
+
+    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
+    five = await _stats(client, headers, match_type="0102")
+    assert five["player01"]["rankScore"] > 0  # 다섯 판째에 비로소 나온다
+    assert five["player03"]["rankScore"] < 0
+
+
+async def test_solo_rank_needs_one_play(client):
+    """개인전은 한 판만 뛰어도 점수가 나온다(요청) — 결과가 온전히 그 사람 몫이라서다."""
+    headers = await _signup_many(client, 3)
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
+
+    solo = await _stats(client, headers, match_type="0101")
+    assert solo["player01"]["rankScore"] > 0
+    assert solo["player02"]["rankScore"] < 0
+    assert solo["player03"]["rankScore"] is None  # 안 뛴 사람만 없다

@@ -299,6 +299,13 @@ HeadToHead = dict[int, dict[int, _Record]]
 # 팀으로 인정하는 최소 인원 — 2명 이상이면 (2:2든 3:3이든) 그 팀 구성 그대로 하나의 팀이다.
 TEAM_MIN_SIZE = 2
 
+# 순위·점수를 매기려면 이 유형에서 최소 이만큼은 뛰어야 한다(요청: 개인전은 1판 이상,
+# 팀전은 5판). 개인전은 결과가 온전히 그 사람 몫이라 한 판도 값이 있지만, 팀전은 한 판의
+# 결과가 넷이 나눠 갖는 것이라 그만큼 표본이 얕다 — 몇 판 안 되는 팀전 점수는 그 사람을
+# 말해 주지 못한다. 유형을 안 고른 조회(전체)는 예전처럼 '한 판이라도'가 기준이다.
+_MIN_PLAYS_FOR_RANK = {"0101": 1, "0102": 5}
+_MIN_PLAYS_FOR_RANK_DEFAULT = 1
+
 
 def _replay_order_key(game_started_at, match_date, match_no):
     """경기를 시간순으로 세울 정렬 키 — 리플레이 실제 시작시각(game_started_at)이 있으면 그걸,
@@ -728,26 +735,30 @@ class GameResultService:
         # 같은 곳에서 스케일돼 "Δ의 합 = 카드 점수"가 스케일 후에도 정확히 유지된다.
         score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
 
-        # 참가 우선 — 이 기간에 1경기라도 뛴 사람(plays>0)은 레이팅이 아무리 낮아도 0경기
-        # 회원보다 무조건 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
-        def _played(idx: int) -> bool:
-            return pairs[idx][0].overall.plays > 0
+        # 순위 대상이 되려면 이 유형에서 최소 판수는 채워야 한다(위 _MIN_PLAYS_FOR_RANK).
+        # 참가 우선 — 그 판수를 채운 사람은 레이팅이 아무리 낮아도 못 채운 회원보다 무조건
+        # 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
+        min_plays = _MIN_PLAYS_FOR_RANK.get(match_type or "", _MIN_PLAYS_FOR_RANK_DEFAULT)
+
+        def _ranked(idx: int) -> bool:
+            return pairs[idx][0].overall.plays >= min_plays
 
         order = sorted(
             range(len(pairs)),
             key=lambda i: (
-                0 if _played(i) else 1,
+                0 if _ranked(i) else 1,
                 -score[pairs[i][1].pk],
                 pairs[i][1].nickname,
                 pairs[i][1].id,
             ),
         )
-        # tie_group = (참가여부, 보수레이팅)이 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리.
+        # tie_group = (순위대상 여부, 보수레이팅)이 같으면 동률. 판수 미달 회원은 전원 맨
+        # 아래 한 덩어리다 — 점수를 안 내리므로 그 사이에 순위를 매길 근거도 없다.
         prev_key: tuple[bool, float | None] | None = None
         group = -1
         for pos, i in enumerate(order):
             entry, m = pairs[i]
-            played = entry.overall.plays > 0
+            played = entry.overall.plays >= min_plays
             key = (played, score[m.pk] if played else None)
             if key != prev_key:
                 group += 1
@@ -759,9 +770,10 @@ class GameResultService:
             entry.equal_count = e
             entry.inferior_count = inf
             entry.person_score = s - inf  # 우열(우세-열세) — 상세 참고용
-            # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적) — 이 기간·유형에 한 경기도 없으면
-            # 점수를 내리지 않는다(요청: 경기 없는 0점은 null로 내려 화면에서 "-"로). 0점은
-            # '바닥까지 떨어진 점수'로 읽히는데, 실제로는 잰 적이 없다는 뜻이라 다른 말이다.
+            # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적) — 최소 판수를 못 채웠으면
+            # 점수를 내리지 않는다(요청: 최소 판수 이상만 노출하고 나머진 null). 0점은
+            # '바닥까지 떨어진 점수'로 읽히는데, 실제로는 아직 잴 만큼 안 뛰었다는 뜻이라
+            # 다른 말이다 — 화면에서는 "-"로 그려진다.
             entry.rank_score = score[m.pk] if played else None
             r = engine.get(_rk(m.pk))
             entry.mu = round(r.mu, 1)
