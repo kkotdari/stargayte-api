@@ -99,6 +99,24 @@ def _outlier_keep_mask(values: list[float]) -> list[bool]:
     return mask if any(mask) else [True] * n
 
 
+def _trimmed_avg_apm(rows: list) -> int | None:
+    """APM 평균 — 유효APM과 같은 방식으로 튀는 경기를 뺀다(지적: APM이 700대로 나온다).
+
+    APM은 '분당' 값이라 한 판만 짧아도 통째로 튄다: 20초 만에 끝난 기록에 시작 직후의
+    핫키 연타가 그대로 들어가면 그 판 하나가 수천이 된다. 그런 판 하나가 단순 평균에
+    섞이면 열 판 넘게 정상으로 친 사람도 700대가 된다(실측한 화면에서 커맨드 평균
+    2314에 APM 732 — 역산하면 평균 경기 길이가 3.2분이라는 말이 안 되는 값이었다).
+
+    유효APM(eapm)은 처음부터 이 처리를 받고 있었는데 APM만 빠져 있었다 — 같은 성질의
+    값이라 같은 자를 쓴다."""
+    values = [float(r.apm) for r in rows if r.apm is not None]
+    if not values:
+        return None
+    mask = _outlier_keep_mask(values)
+    kept = [v for v, keep in zip(values, mask) if keep]
+    return round(sum(kept) / len(kept))
+
+
 def _trimmed_avg_eapm(rows: list) -> int | None:
     values = [float(r.eapm) for r in rows if r.eapm is not None]
     if not values:
@@ -588,6 +606,7 @@ class GameResultService:
                 entry = agg.to_entry()
                 raw_for_race = raw_race_rows.get(r, [])
                 by_race[r] = entry.model_copy(update={
+                    "avg_apm": _trimmed_avg_apm(raw_for_race),
                     "avg_eapm": _trimmed_avg_eapm(raw_for_race),
                     "avg_ecmd": _trimmed_avg_ecmd(raw_for_race),
                 })
@@ -613,6 +632,7 @@ class GameResultService:
                     most_played_race = r
 
             overall_entry = overall_agg.to_entry().model_copy(update={
+                "avg_apm": _trimmed_avg_apm(overall_raw),
                 "avg_eapm": _trimmed_avg_eapm(overall_raw),
                 "avg_ecmd": _trimmed_avg_ecmd(overall_raw),
             })

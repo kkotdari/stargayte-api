@@ -145,6 +145,40 @@ async def test_stats_excludes_extreme_outlier_game_from_eapm_ecmd_average(client
     assert by_race["avgEcmd"] == 400
 
 
+async def test_stats_excludes_extreme_outlier_game_from_apm_average(client):
+    """APM 평균도 튀는 경기 하나를 뺀다(지적: APM이 700대로 나온다).
+
+    APM은 '분당' 값이라 한 판만 짧아도 통째로 튄다 — 20초 만에 끝난 기록에 시작 직후의
+    핫키 연타가 그대로 들어가면 그 판 하나가 수천이 된다. 그런 판이 단순 평균에 섞이면
+    열 판 넘게 정상으로 친 사람도 700대가 된다. 유효APM은 처음부터 이 처리를 받고
+    있었는데 APM만 빠져 있었다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    for i, apm in enumerate([150, 148, 152, 149, 151]):
+        await _create_match(
+            client, headers, f"2026-07-{i + 1:02d}",
+            team1=[_slot("player01", "테란", apm, 120, 1500, 1200)],
+            team2=[_slot("player02", "저그", 60, 50, 300, 200)],
+            result="team1", duration_seconds=600,
+        )
+    # 6번째만 20초 만에 끝난 기록 — 커맨드는 얼마 안 되는데 분당으로 치면 7000이 된다.
+    await _create_match(
+        client, headers, "2026-07-06",
+        team1=[_slot("player01", "테란", 7000, 120, 230, 200)],
+        team2=[_slot("player02", "저그", 60, 50, 300, 200)],
+        result="team1", duration_seconds=20,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    assert overall["plays"] == 6  # 전적 자체는 그대로 6전
+    # 튄 판을 뺀 다섯 판의 평균 — 단순 평균이었다면 (750+7000)/6 = 1292가 됐다.
+    assert overall["avgApm"] == 150
+    assert res.json()["members"][0]["byRace"]["테란"]["avgApm"] == 150
+
+
 async def test_stats_race_filter_scopes_overall(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")

@@ -383,15 +383,17 @@ class GameResultRepository:
         date_to: date | None,
         match_type: str | None,
     ) -> list[Row]:
-        """member_pk/race 단위로 미리 합산하지 않은 경기별 원본 유효APM·유효커맨드값.
+        """member_pk/race 단위로 미리 합산하지 않은 경기별 원본 APM·유효APM·유효커맨드값.
         aggregate_stats는 SQL에서 이미 합계/개수로 뭉쳐서 내려주기 때문에, 평균을 내기
         전에 회원 한 명 안에서 유독 튀는(편차가 심한) 경기 하나만 골라 빼는 계산(서비스
-        레이어의 _trimmed_avg_eapm/_trimmed_avg_ecmd)에는 쓸 수 없어 원본 단위로 따로 받는다."""
+        레이어의 _trimmed_avg_apm/_trimmed_avg_eapm/_trimmed_avg_ecmd)에는 쓸 수 없어
+        원본 단위로 따로 받는다."""
         member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
                 member_alias.member_pk,
                 GameResultParticipant.race,
+                GameResultParticipant.apm,
                 GameResultParticipant.eapm,
                 GameResultParticipant.effective_cmd_count,
                 GameOutcome.duration_seconds,
