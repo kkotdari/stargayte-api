@@ -41,6 +41,7 @@ from app.domain.game_results.schemas import (
     ReplayMapOut,
     ReplayOut,
     ReplayUpload,
+    SummaryRewrite,
     RivalryPairOut,
     RivalryResponse,
     TeamRankEntry,
@@ -1220,6 +1221,24 @@ class GameResultService:
         changed = await self._repo.assign_minimap_image(payload.hashes, payload.image_id)
         await self._session.commit()
         return changed
+
+    async def rewrite_summary(self, match_id: int, payload: SummaryRewrite) -> None:
+        """등록된 경기의 요약만 다시 써 넣는다(요청: 요약 재분석) — 경기 내용은 안 건드린다.
+
+        요약은 파생 데이터라 규칙이 좋아지면 옛 경기도 함께 좋아져야 하는데, 지금까지는
+        리플레이를 다시 올리는 수밖에 없었다. 화면이 리플레이를 내려받아 다시 분석한 결과를
+        여기로 보내면 그 값만 갈아 끼운다.
+        """
+        match = await self._repo.get(match_id)
+        if match is None or match.result_row is None:
+            raise NotFoundError("경기결과를 찾을 수 없습니다.")
+        rr = match.result_row
+        if payload.summary_data is not None:
+            rr.summary_data = payload.summary_data
+        map_hash = await self._store_replay_map(payload.map_data)
+        if map_hash is not None:
+            rr.map_hash = map_hash
+        await self._session.commit()
 
     async def _store_replay_map(self, data: ReplayMapData | None) -> str | None:
         """맵 격자를 저장하고 그 해시를 돌려준다 — 이미 있으면 저장하지 않는다(요청: 같은

@@ -163,6 +163,22 @@ class MinimapImageOut(BaseModel):
     image: str
 
 
+class SummaryRewrite(BaseModel):
+    """이미 등록된 경기의 요약만 다시 계산해 덮어쓴다(요청: 요약 재분석).
+
+    요약은 리플레이에서 규칙으로 뽑아내는 파생 데이터라, 규칙이 좋아지면 옛 경기도 함께
+    좋아져야 한다. 그런데 요약을 만드는 파서는 브라우저 쪽에만 있어서(screp-js), 서버가
+    스스로 다시 만들 수는 없다 — 화면이 리플레이를 내려받아 다시 분석하고 그 결과만 여기로
+    올린다. 경기 내용(팀·승패·참가자)은 건드리지 않는다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    summary_data: dict | None = Field(default=None, alias="summaryData")
+    # 옛 경기에 미니맵 격자가 없을 수 있어 함께 받는다 — 같은 맵이면 서버가 하나만 남긴다.
+    map_data: ReplayMapData | None = Field(default=None, alias="mapData")
+
+
 class MapCatalogEntry(BaseModel):
     """제어판 목록의 한 줄 — 격자는 빼고 어떤 맵이 있는지만 본다(격자는 22KB짜리다)."""
 

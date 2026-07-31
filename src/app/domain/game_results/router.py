@@ -28,6 +28,7 @@ from app.domain.game_results.schemas import (
     RankingResponse,
     RatingHistoryResponse,
     ReplayMapList,
+    SummaryRewrite,
     ReplayNameClassificationEntry,
     ReplayNameClassificationLookupRequest,
     ReplayNameClassificationLookupResponse,
@@ -432,6 +433,19 @@ async def update_match(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),
     )
+
+
+@router.post("/{match_id}/summary", status_code=status.HTTP_204_NO_CONTENT)
+async def rewrite_summary(
+    match_id: int,
+    payload: SummaryRewrite,
+    db: DbSession,
+    storage: StorageDep,
+    _: CurrentAdmin,
+) -> None:
+    """등록된 경기의 요약만 다시 써 넣는다(요청: 요약 재분석) — 경기 내용은 안 건드린다.
+    요약을 만드는 파서가 브라우저 쪽에만 있어서, 화면이 리플레이를 다시 분석해 보내온다."""
+    await GameResultService(db, storage).rewrite_summary(match_id, payload)
 
 
 @router.get("/{match_id}", response_model=GameResultOut)
