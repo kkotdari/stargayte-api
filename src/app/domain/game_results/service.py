@@ -305,21 +305,45 @@ class _Record:
 HeadToHead = dict[int, dict[int, _Record]]
 
 
-# 순위·점수를 매기려면 이 유형에서 최소 이만큼은 뛰어야 한다(요청: 개인전 3판, 팀전 10판 —
-# 프론트가 이미 이 기준으로 바뀌었다. 이전 기준은 개인전 1판/팀전 5판이었다). 개인전은 결과가
-# 온전히 그 사람 몫이라 적은 판수로도 읽히는 편이지만, 팀전은 한 판의 결과를 넷이 나눠 갖는
-# 자리라 표본이 그만큼 얕다 — 그래서 팀전 쪽 문턱이 더 높다.
+# "이 사람을 말해줄 만큼 뛰었나"의 기준 판수(요청: 개인전 3판, 팀전 10판 — 프론트가 이미 이
+# 기준으로 바뀌었다. 이전 기준은 개인전 1판/팀전 5판이었다). 개인전은 결과가 온전히 그 사람
+# 몫이라 적은 판수로도 읽히는 편이지만, 팀전은 한 판의 결과를 넷이 나눠 갖는 자리라 표본이
+# 그만큼 얕다 — 그래서 팀전 쪽 문턱이 더 높다.
+#
+# 두 곳에서 같은 값을 쓴다.
+#  1) 순위·점수(_apply_rank_order) — 못 채우면 rank_score가 null이고 순위표 맨 아래 한 덩어리.
+#  2) 지표 평균(_gate_metrics_by_plays) — 못 채우면 APM·유효APM·커맨드·유효커맨드·생산이 전부
+#     null. 판수가 적으면 이상치 판정(_OUTLIER_MIN_SAMPLES)조차 못 돌아서, 두 판 중 한 판만
+#     튀어도 그 평균이 그대로 끌려간다 — 잴 만큼 안 뛴 걸 숫자로 내보내는 게 더 나쁘다.
+#
+# 전적(판수/승/무/승률)은 어느 쪽에도 안 걸린다(요청: "승률은 정확하니까 굳이 안 빼도 될듯").
+# 한 판을 뛰었으면 그 한 판의 승패는 있는 그대로의 사실이라, 표본이 적다고 가릴 값이 아니다.
 #
 # 종족 필터가 걸리면 세는 대상이 그 종족 판수로 바뀐다(기준값 자체는 유형 그대로다 — 개인전에
-# 종족을 걸면 그 종족으로 3판, 팀전이면 그 종족으로 10판). 별도 분기가 없는 이유는 아래
+# 종족을 걸면 그 종족으로 3판, 팀전이면 그 종족으로 10판). 순위 쪽은 별도 분기가 없는데,
 # _ranked/_played가 보는 entry.overall.plays를 get_stats가 종족 필터 시 이미 그 종족 기준으로
 # 좁혀서 만들어 두기 때문이다.
 #
 # 유형을 안 고른 조회(match_type=None)는 예전 기준('한 판이라도')을 그대로 둔다 — 화면에서는
 # 유형이 필수라 갈 수 없는 경로이고(프론트가 항상 matchType을 보낸다), 개인전과 팀전 경기가
 # 한 표본에 섞여서 어느 쪽 문턱을 대도 말이 안 되는 자리다. API 직접 호출·테스트 전용.
-_MIN_PLAYS_FOR_RANK = {"0101": 3, "0102": 10}
-_MIN_PLAYS_FOR_RANK_DEFAULT = 1
+_MIN_PLAYS = {"0101": 3, "0102": 10}
+_MIN_PLAYS_DEFAULT = 1
+
+
+def _min_plays_for(match_type: str | None) -> int:
+    return _MIN_PLAYS.get(match_type or "", _MIN_PLAYS_DEFAULT)
+
+
+def _gate_metrics_by_plays(entry: RaceStatsEntry, min_plays: int) -> RaceStatsEntry:
+    """판수가 기준 미만인 칸은 지표 평균만 전부 null로 내린다(전적·승률은 그대로).
+
+    entry.plays는 그 칸 자신의 판수다 — 종족별 칸이면 그 종족 판수, 전체 칸이면 전체(종족
+    필터가 걸렸으면 그 종족) 판수. 칸마다 자기 표본으로 판단해야, 종족을 걸어 본 숫자와
+    안 걸고 byRace에서 꺼내 본 같은 숫자가 서로 어긋나지 않는다."""
+    if entry.plays >= min_plays:
+        return entry
+    return entry.model_copy(update={field: None for field, _attr in _TRIMMED_METRICS})
 
 
 def _replay_order_key(game_started_at, match_date, match_no):
@@ -591,6 +615,9 @@ class GameResultService:
         for raw in raw_rows:
             raw_by_member_race.setdefault(raw.member_pk, {}).setdefault(raw.race, []).append(raw)
 
+        # 판수가 이만큼 안 되는 칸은 지표 평균을 내보내지 않는다(전적·승률은 그대로).
+        min_plays = _min_plays_for(match_type)
+
         entries: list[MemberStatsEntry] = []
         for member in members:
             race_rows = by_member.get(member.pk, {})
@@ -603,7 +630,9 @@ class GameResultService:
                     agg.add_row(race_rows[r])
                 entry = agg.to_entry()
                 raw_for_race = raw_race_rows.get(r, [])
-                by_race[r] = entry.model_copy(update=_trimmed_avgs(raw_for_race))
+                by_race[r] = _gate_metrics_by_plays(
+                    entry.model_copy(update=_trimmed_avgs(raw_for_race)), min_plays,
+                )
 
             overall_agg = _RaceAgg()
             if race and race != "all":
@@ -625,7 +654,9 @@ class GameResultService:
                     best_plays = plays
                     most_played_race = r
 
-            overall_entry = overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw))
+            overall_entry = _gate_metrics_by_plays(
+                overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw)), min_plays,
+            )
             entries.append(
                 MemberStatsEntry(
                     member_id=member.id,
@@ -745,10 +776,10 @@ class GameResultService:
         # 같은 곳에서 스케일돼 "Δ의 합 = 카드 점수"가 스케일 후에도 정확히 유지된다.
         score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
 
-        # 순위 대상이 되려면 이 유형에서 최소 판수는 채워야 한다(위 _MIN_PLAYS_FOR_RANK).
+        # 순위 대상이 되려면 이 유형에서 최소 판수는 채워야 한다(위 _MIN_PLAYS).
         # 참가 우선 — 그 판수를 채운 사람은 레이팅이 아무리 낮아도 못 채운 회원보다 무조건
         # 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
-        min_plays = _MIN_PLAYS_FOR_RANK.get(match_type or "", _MIN_PLAYS_FOR_RANK_DEFAULT)
+        min_plays = _min_plays_for(match_type)
 
         def _ranked(idx: int) -> bool:
             return pairs[idx][0].overall.plays >= min_plays
