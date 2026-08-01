@@ -1,6 +1,14 @@
-"""대결 요청 코너 — @태그 폐지, 언급(표시+알림)만 유지. 자유 텍스트 + 언급 인원 0명 이상,
-추천 토글, 추천순→먼저등록순 정렬/페이징(5개), 언급 알림 인박스(읽음 저장), 작성자/운영자
-성사됨 완료 처리 스모크 테스트."""
+"""대결 요청 코너 — 인박스(언급 알림)만 남았다.
+
+목록/등록/추천/완료 화면이 없어져 그 엔드포인트들을 지웠으므로, 남은 두 경로(인박스 조회와
+읽음 처리)만 검증한다. 등록 API가 없어서 알림을 API로 만들 수단이 없다 — 이미 쌓여 있는
+알림을 보여주는 게 이 기능의 남은 역할이라, 테스트도 그 상황 그대로 DB에 직접 심어서 만든다.
+"""
+
+from sqlalchemy import select
+
+from app.domain.match_requests.models import MatchRequest, MatchRequestTarget
+from app.domain.members.models import Member
 
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
@@ -31,103 +39,62 @@ async def _approve(client, admin_token: str, member_id: str) -> None:
     assert res.status_code == 200, res.text
 
 
-async def test_create_freetext_with_mentions_and_reject_empty(client):
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
-
-    # 자유 텍스트 + 언급(제한 없음). 자기 자신 언급은 무시된다.
-    ok = await client.post(
-        "/api/match-requests", headers=_h(a),
-        json={"text": "팍규 대 Rex 보고싶어요!", "targetMemberIds": ["bob", "alice"]},
-    )
-    assert ok.status_code == 200, ok.text
-    body = ok.json()
-    assert body["text"] == "팍규 대 Rex 보고싶어요!"
-    assert {t["memberId"] for t in body["targets"]} == {"bob"}
-    assert body["mine"] is True
-
-    # 언급 0명도 허용.
-    ok2 = await client.post(
-        "/api/match-requests", headers=_h(a), json={"text": "아무나 붙어요"}
-    )
-    assert ok2.status_code == 200, ok2.text
-    assert ok2.json()["targets"] == []
-
-    # 빈 텍스트는 거절.
-    bad = await client.post("/api/match-requests", headers=_h(a), json={"text": "   "})
-    assert bad.status_code in (400, 422), bad.text
+async def _seed_request(db_session, *, text: str, author_id: str, mentioned_ids: list[str]) -> int:
+    """언급 알림이 달린 대결 요청 하나를 DB에 직접 심는다(read_at=NULL = 안 읽음)."""
+    pk_by_id = {
+        m.id: m.pk
+        for m in (await db_session.execute(select(Member))).scalars().all()
+    }
+    request = MatchRequest(text=text, created_by=pk_by_id[author_id], updated_by=pk_by_id[author_id])
+    request.targets = [MatchRequestTarget(member_pk=pk_by_id[i]) for i in mentioned_ids]
+    request.recommends = []
+    db_session.add(request)
+    await db_session.commit()
+    return request.id
 
 
-async def test_inbox_notifies_mentioned_and_marks_read(client):
+async def test_inbox_shows_unread_mentions_and_marks_them_read(client, db_session):
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     c = await _signup(client, "carol", "Carol#1003")
     await _approve(client, a["accessToken"], "bob")
     await _approve(client, a["accessToken"], "carol")
 
-    await client.post(
-        "/api/match-requests", headers=_h(a),
-        json={"text": "bob 대 carol!", "targetMemberIds": ["bob", "carol"]},
+    await _seed_request(
+        db_session, text="bob 대 carol!", author_id="alice", mentioned_ids=["bob", "carol"],
     )
 
-    # 언급된 bob 인박스에 뜬다.
+    # 언급된 bob 인박스에 뜬다 — 함께 언급된 사람도 같이 실린다.
     inbox_b = (await client.get("/api/match-requests/inbox", headers=_h(b))).json()
     assert len(inbox_b["items"]) == 1
     assert inbox_b["items"][0]["text"] == "bob 대 carol!"
+    assert inbox_b["items"][0]["author"]["memberId"] == "alice"
     assert {m["memberId"] for m in inbox_b["items"][0]["mentioned"]} == {"bob", "carol"}
 
     # 언급 안 된 작성자 alice 인박스는 비어있다.
-    inbox_a = (await client.get("/api/match-requests/inbox", headers=_h(a))).json()
-    assert inbox_a["items"] == []
+    assert (await client.get("/api/match-requests/inbox", headers=_h(a))).json()["items"] == []
 
-    # bob이 읽음 처리하면 다시 안 뜬다. carol은 여전히 안 읽음.
+    # bob이 읽음 처리하면 다시 안 뜬다. carol은 여전히 안 읽음이라 그대로 뜬다.
     r = await client.post("/api/match-requests/inbox/read", headers=_h(b))
     assert r.status_code == 200, r.text
     assert (await client.get("/api/match-requests/inbox", headers=_h(b))).json()["items"] == []
     assert len((await client.get("/api/match-requests/inbox", headers=_h(c))).json()["items"]) == 1
 
 
-async def test_recommend_sort_and_complete(client):
+async def test_inbox_skips_fulfilled_requests(client, db_session):
+    from datetime import UTC, datetime
+
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
     await _approve(client, a["accessToken"], "bob")
 
-    r1 = await client.post("/api/match-requests", headers=_h(a), json={"text": "첫 요청"})
-    r2 = await client.post("/api/match-requests", headers=_h(a), json={"text": "둘째 요청"})
-    id1, id2 = r1.json()["id"], r2.json()["id"]
+    await _seed_request(db_session, text="살아있는 요청", author_id="alice", mentioned_ids=["bob"])
+    done_id = await _seed_request(
+        db_session, text="이미 성사된 요청", author_id="alice", mentioned_ids=["bob"],
+    )
+    done = await db_session.get(MatchRequest, done_id)
+    done.fulfilled_at = datetime.now(UTC)
+    await db_session.commit()
 
-    rec = await client.post(f"/api/match-requests/{id2}/recommend", headers=_h(b))
-    assert rec.json()["recommendCount"] == 1
-    items = (await client.get("/api/match-requests", headers=_h(b))).json()["items"]
-    assert [it["id"] for it in items] == [id2, id1], "추천순→먼저등록순"
-
-    # 작성자가 아니고 운영자도 아니면 완료 처리 불가.
-    bad = await client.delete(f"/api/match-requests/{id1}", headers=_h(b))
-    assert bad.status_code in (400, 403), bad.text
-
-    # 작성자(alice)는 성사됨 완료 처리 가능 → 목록에서 사라진다.
-    ok = await client.delete(f"/api/match-requests/{id1}", headers=_h(a))
-    assert ok.status_code == 200, ok.text
-    left = (await client.get("/api/match-requests", headers=_h(b))).json()
-    assert [it["id"] for it in left["items"]] == [id2]
-
-
-async def test_pagination_three_per_page(client):
-    # 요청 목록은 3개씩 페이징한다(요청: "너무 많은 공간을 차지하지 않게 3개씩").
-    a = await _signup(client, "alice", "Alice#1001")
-    for i in range(7):
-        res = await client.post(
-            "/api/match-requests", headers=_h(a), json={"text": f"요청 {i}"}
-        )
-        assert res.status_code == 200, res.text
-    p0 = (await client.get("/api/match-requests?page=0", headers=_h(a))).json()
-    assert len(p0["items"]) == 3
-    assert p0["total"] == 7
-    assert p0["hasMore"] is True
-    p1 = (await client.get("/api/match-requests?page=1", headers=_h(a))).json()
-    assert len(p1["items"]) == 3
-    assert p1["hasMore"] is True
-    p2 = (await client.get("/api/match-requests?page=2", headers=_h(a))).json()
-    assert len(p2["items"]) == 1
-    assert p2["hasMore"] is False
+    items = (await client.get("/api/match-requests/inbox", headers=_h(b))).json()["items"]
+    assert [it["text"] for it in items] == ["살아있는 요청"]

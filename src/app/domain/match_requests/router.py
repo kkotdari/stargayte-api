@@ -1,24 +1,13 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
 from app.api.deps import CurrentMember, DbSession
-from app.domain.match_requests.schemas import (
-    MatchRequestCreate,
-    MatchRequestInboxOut,
-    MatchRequestListOut,
-    MatchRequestOut,
-)
+from app.domain.match_requests.schemas import MatchRequestInboxOut
 from app.domain.match_requests.service import MatchRequestService
 
+# 대결 요청 기능은 인박스(언급 알림)만 남았다 — 목록/등록/추천/완료 화면이 없어져 그
+# 엔드포인트들을 지웠다. 등록 경로가 없으므로 새 알림은 더 이상 생기지 않고, 이 두 경로는
+# 이미 쌓여 있는 알림을 보여주고 읽음 처리하는 용도로만 남는다.
 router = APIRouter(prefix="/match-requests", tags=["match-requests"])
-
-
-@router.get("", response_model=MatchRequestListOut)
-async def list_match_requests(
-    db: DbSession,
-    current: CurrentMember,
-    page: int = Query(default=0, ge=0),
-) -> MatchRequestListOut:
-    return await MatchRequestService(db).list_requests(actor=current, page=page)
 
 
 # 내가 언급된 안 읽은 요청 알림(앱 열 때 인박스 팝업용).
@@ -34,26 +23,3 @@ async def read_match_request_inbox(db: DbSession, current: CurrentMember) -> dic
     return {"ok": True}
 
 
-@router.post("", response_model=MatchRequestOut)
-async def create_match_request(
-    payload: MatchRequestCreate, db: DbSession, current: CurrentMember
-) -> MatchRequestOut:
-    return await MatchRequestService(db).create_request(
-        payload.text, payload.target_member_ids, actor=current
-    )
-
-
-@router.post("/{request_id}/recommend", response_model=MatchRequestOut)
-async def toggle_recommend(
-    request_id: int, db: DbSession, current: CurrentMember
-) -> MatchRequestOut:
-    return await MatchRequestService(db).toggle_recommend(request_id, actor=current)
-
-
-# 대결이 성사되면 작성자 본인/운영자가 "성사됨"으로 완료 처리한다(목록에서 사라짐).
-@router.delete("/{request_id}")
-async def complete_match_request(
-    request_id: int, db: DbSession, current: CurrentMember
-) -> dict[str, bool]:
-    await MatchRequestService(db).complete_request(request_id, actor=current)
-    return {"ok": True}
