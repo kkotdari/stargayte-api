@@ -1,20 +1,24 @@
+import string
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
-from app.domain.leagues.models import League, LeagueMatch, LeagueMatchSubstitution, LeagueTeam, LeagueTeamMember
+from app.domain.leagues.models import (
+    League,
+    LeagueMatch,
+    LeagueMatchSubstitution,
+    LeagueTeam,
+    LeagueTeamMember,
+)
 from app.domain.leagues.repository import LeagueRepository
 from app.domain.leagues.schemas import (
     LeagueBracketGenerateIn,
+    LeagueBracketSeedIn,
     LeagueCreateIn,
     LeagueListItemOut,
     LeagueListOut,
     LeagueMatchOut,
-    LeagueMatchResultIn,
-    LeagueBracketSeedIn,
-    LeagueMatchScheduleIn,
-    LeagueMatchSlotIn,
     LeagueMatchSubstitutionOut,
     LeagueMatchTeamRefOut,
     LeagueOut,
@@ -22,12 +26,10 @@ from app.domain.leagues.schemas import (
     LeagueTeamCompositionEntry,
     LeagueTeamCompositionIn,
     LeagueTeamOut,
-    LeagueTeamRosterIn,
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
-import string
 
 # 팀/선수/대진표 규모는 상한 없이 무제한이다(요청: "팀수 무제한 개인전 선수 무제한
 # 대진표 슬롯 무제한"). 라벨은 A, B, ... Z, AA, AB, ...처럼 스프레드시트 열 이름
@@ -150,15 +152,9 @@ class LeagueService:
             raise NotFoundError("팀을 찾을 수 없습니다.")
         return team
 
-    def _get_match_or_404(self, league: League, match_id: int) -> LeagueMatch:
-        match = next((m for m in league.matches if m.id == match_id), None)
-        if match is None:
-            raise NotFoundError("경기를 찾을 수 없습니다.")
-        return match
-
     async def _refresh_match_relations(self, matches: list[LeagueMatch]) -> None:
         """team_a_id/team_b_id를 (관계 속성이 아니라) 원시 FK 컬럼으로 직접 바꾸는 곳들
-        (_propagate_winner/clear_match_result의 cascade)이 있어, 그 즉시 team_a/team_b
+        (_propagate_winner의 부전승 전파)이 있어, 그 즉시 team_a/team_b
         관계 속성이 자동으로 갱신되지 않는다 — SQLAlchemy는 컬럼→관계 방향 동기화를
         자동으로 해주지 않고, 관계 속성은 다음에 실제로 새로 로드될 때만 최신 값을
         반영한다. 응답 직렬화(to_match_out) 전에 항상 명시적으로 새로고침해 이 자리에서
@@ -202,92 +198,6 @@ class LeagueService:
         league = await self._get_or_404(league_id)
         await self._session.delete(league)
         await self._session.commit()
-
-    async def add_team(self, league_id: int, *, actor: Member) -> LeagueTeamOut:
-        league = await self._get_or_404(league_id)
-        # 팀/선수 수 자체는 상한이 없다(요청: "팀수 무제한 개인전 선수 무제한"). 다만
-        # 대진표가 이미 생성돼 있으면 그때 예약해둔 자리(planned_teams)만큼만 — 초과分은
-        # 애초에 대진판에 자리가 없다(요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수
-        # 미리 설정 가능" — 예약된 자리는 나중에 슬롯 배정으로 채운다).
-        if league.draw_size is not None and len(league.teams) >= (league.planned_teams or 0):
-            raise ValidationError("이 대진표에 예약된 자리가 다 찼습니다.")
-        team = LeagueTeam(
-            league_id=league.id, label=_team_label(len(league.teams)),
-            created_by=actor.pk, updated_by=actor.pk,
-        )
-        league.teams.append(team)
-        await self._repo.flush()
-        await self._session.commit()
-        await self._session.refresh(team, attribute_names=["roster"])
-        return to_team_out(team)
-
-    async def delete_team(self, league_id: int, team_id: int, *, actor: Member) -> LeagueOut:
-        league = await self._get_or_404(league_id)
-        team = self._get_team_or_404(league, team_id)
-        # 대진표 생성 자체는 더 이상 팀 삭제를 막지 않는다(요청 3 — 팀 없이도 대진표를
-        # 먼저 만들 수 있게 됐으니, 그 반대인 "팀 취소"도 자유로워야 앞뒤가 맞는다). 다만
-        # 이미 결과가 난 경기에 참가했던 팀은 이력이 깨지므로 막는다. 팀이 어떤 경기의
-        # 슬롯에 배정돼 있었다면 DB의 ON DELETE SET NULL이 그 슬롯을 자동으로 비운다.
-        if self._team_has_decided_match(league, team_id):
-            raise ValidationError("이미 결과가 나온 경기에 참가한 팀은 삭제할 수 없습니다.")
-        league.teams.remove(team)
-        await self._session.flush()
-        # 라벨 재정렬 — 한 팀씩 순서대로 flush해 UniqueConstraint(league_id, label)와
-        # 일시적으로 충돌하지 않게 한다(예: C→B로 옮길 때 기존 B가 먼저 비워져 있어야 함).
-        # 라벨이 26개(Z)를 넘어가면 여러 글자(AA, AB..)가 섞이는데, 문자열 그대로
-        # 정렬하면 "AA" < "B"가 돼버려(길이 다른 문자열의 사전식 비교) 순서가 깨진다 —
-        # (길이, 문자열) 튜플로 정렬해야 원래 부여 순서(A..Z, AA..)가 유지된다.
-        remaining = sorted(league.teams, key=lambda t: (len(t.label), t.label))
-        for i, t in enumerate(remaining):
-            new_label = _team_label(i)
-            if t.label != new_label:
-                t.label = new_label
-                t.updated_by = actor.pk
-                await self._session.flush()
-        await self._session.commit()
-        await self._session.refresh(league, attribute_names=["teams"])
-        return to_league_out(league)
-
-    async def set_roster(
-        self, league_id: int, team_id: int, payload: LeagueTeamRosterIn, *, actor: Member,
-    ) -> LeagueTeamOut:
-        league = await self._get_or_404(league_id)
-        team = self._get_team_or_404(league, team_id)
-        # delete_team과 같은 원칙 — 대진표 생성 여부가 아니라 "이미 결과가 난 경기에
-        # 참가했는지"로 막는다(요청 3의 연장: 대진표 생성 후에도 새로 추가한 팀엔
-        # 로스터를 넣을 수 있어야 한다).
-        if self._team_has_decided_match(league, team_id):
-            raise ValidationError("이미 결과가 나온 경기에 참가한 팀은 로스터를 바꿀 수 없습니다.")
-        if league.mode == "individual" and len(payload.member_ids) != 1:
-            raise ValidationError("개인리그는 로스터를 1명으로만 구성할 수 있습니다.")
-
-        members: list[Member] = []
-        for member_id in payload.member_ids:
-            m = await self._member_repo.get_by_login_id(member_id)
-            if m is None:
-                raise NotFoundError(f"존재하지 않는 회원입니다: {member_id}")
-            members.append(m)
-
-        other_team_pks = {
-            ltm.member_pk for t in league.teams if t.id != team_id for ltm in t.roster
-        }
-        dup = [m.nickname for m in members if m.pk in other_team_pks]
-        if dup:
-            raise ConflictError(f"이미 다른 팀에 속한 회원입니다: {', '.join(dup)}")
-
-        # 먼저 기존 로스터를 지우고 flush한 뒤에 새로 넣는다 — 그대로 컬렉션을 교체하면
-        # 안 바뀐 회원의 (league_id, member_pk) 유니크가 delete/insert 순서에 따라
-        # 일시적으로 충돌할 수 있다.
-        for ltm in list(team.roster):
-            await self._session.delete(ltm)
-        await self._session.flush()
-        team.roster = [
-            LeagueTeamMember(league_id=league.id, league_team_id=team.id, member_pk=m.pk, position=i)
-            for i, m in enumerate(members)
-        ]
-        await self._session.commit()
-        await self._session.refresh(team, attribute_names=["roster"])
-        return to_team_out(team)
 
     async def set_team_composition(
         self, league_id: int, payload: LeagueTeamCompositionIn, *, actor: Member,
@@ -614,68 +524,6 @@ class LeagueService:
             await self._session.refresh(league, attribute_names=["teams", "matches"])
         return to_league_out(league)
 
-    async def set_match_slot(
-        self, league_id: int, match_id: int, payload: LeagueMatchSlotIn, *, actor: Member,
-    ) -> LeagueOut:
-        league = await self._get_or_404(league_id)
-        match = self._get_match_or_404(league, match_id)
-        if league.bracket_locked_at is not None:
-            raise ConflictError("대진이 확정돼 더 이상 시드를 바꿀 수 없습니다.")
-        if match.sets_won_a is not None:
-            raise ConflictError("이미 결과가 입력된 경기는 슬롯을 바꿀 수 없습니다.")
-        if match.is_dead:
-            raise ValidationError("이 자리는 구조적으로 비어있어(부전) 팀을 배정할 수 없습니다.")
-
-        total_rounds = _total_rounds(league.draw_size) if league.draw_size else 0
-        by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
-
-        # 이 자리가 부전승으로 이미 결정돼 있었다면(위에서 실제 결과는 걸러졌으니 여기
-        # 남은 건 부전승뿐이다) 슬롯을 바꾸는 순간 그 결정 자체가 무효가 되므로, 전파된
-        # 결과까지 포함해 먼저 취소한다.
-        if match.winner_team_id is not None:
-            self._undo_decided(match, by_round_slot, total_rounds, actor)
-
-        team: LeagueTeam | None = None
-        if payload.team_id is not None:
-            team = self._get_team_or_404(league, payload.team_id)
-            # 이미 이 라운드 다른 자리에 배정된 팀을 고르면 거부하지 않고 그 자리를
-            # 비우고 옮긴다(요청: "이미 지정된 팀도 드롭다운에 나오고 새로 지정하면
-            # 기존 지정된 슬롯을 미지정으로 지우는 식"). 그 자리가 실제 결과로 결정돼
-            # 있었으면 거부하고, 부전승으로만 결정돼 있었으면 그 결정도 함께 취소한다.
-            for m in league.matches:
-                if m.id == match.id or m.round != match.round:
-                    continue
-                if m.team_a_id == team.id or m.team_b_id == team.id:
-                    if m.sets_won_a is not None:
-                        raise ConflictError(f"{team.label}팀은 이미 결과가 정해진 경기에 배정돼 있어 옮길 수 없습니다.")
-                    if m.winner_team_id is not None:
-                        self._undo_decided(m, by_round_slot, total_rounds, actor)
-                    if m.team_a_id == team.id:
-                        m.team_a_id = None
-                    else:
-                        m.team_b_id = None
-                    m.updated_by = actor.pk
-
-        if payload.side == "a":
-            match.team_a_id = team.id if team else None
-        else:
-            match.team_b_id = team.id if team else None
-        match.updated_by = actor.pk
-        await self._repo.flush()
-
-        # 팀을 배정한 경우에만 부전승 자동 처리를 확인한다(비우는 동작은 대상이 아니다).
-        # 1라운드/2라운드 이상 판정 기준이 서로 달라 헬퍼를 나눠 쓴다(각 헬퍼 문서 참고).
-        if team is not None:
-            if match.round == 1:
-                self._maybe_auto_resolve_round1(league, by_round_slot, total_rounds, match)
-            else:
-                self._maybe_auto_resolve(by_round_slot, total_rounds, match)
-
-        await self._session.commit()
-        await self._session.refresh(league, attribute_names=["teams", "matches"])
-        await self._refresh_match_relations(league.matches)
-        return to_league_out(league)
-
     async def set_bracket_seeding(
         self, league_id: int, payload: LeagueBracketSeedIn, *, actor: Member,
     ) -> LeagueOut:
@@ -746,87 +594,3 @@ class LeagueService:
         await self._refresh_match_relations(league.matches)
         return to_league_out(league)
 
-    async def set_match_schedule(
-        self, league_id: int, match_id: int, payload: LeagueMatchScheduleIn, *, actor: Member,
-    ) -> LeagueMatchOut:
-        league = await self._get_or_404(league_id)
-        match = self._get_match_or_404(league, match_id)
-        match.scheduled_at = payload.scheduled_at
-        match.updated_by = actor.pk
-        await self._session.commit()
-        return to_match_out(match)
-
-    async def enter_match_result(
-        self, league_id: int, match_id: int, payload: LeagueMatchResultIn, *, actor: Member,
-    ) -> LeagueOut:
-        league = await self._get_or_404(league_id)
-        match = self._get_match_or_404(league, match_id)
-        if match.is_dead:
-            raise ValidationError("성립하지 않는(부전) 경기입니다.")
-        if match.winner_team_id is not None:
-            raise ConflictError("이미 결과가 입력됐습니다.")
-        if match.team_a_id is None or match.team_b_id is None:
-            raise ValidationError("아직 양 팀이 모두 정해지지 않았습니다.")
-        if league.mode == "individual" and payload.substitutes:
-            raise ValidationError("개인리그는 대타를 지정할 수 없습니다.")
-
-        threshold = league.best_of // 2 + 1
-        a, b = payload.sets_won_a, payload.sets_won_b
-        if a > league.best_of or b > league.best_of or a == b or max(a, b) != threshold:
-            raise ValidationError("세트 스코어가 best_of와 맞지 않습니다.")
-
-        team_by_id = {t.id: t for t in league.teams}
-        subs_data: list[tuple[object, Member]] = []
-        for sub in payload.substitutes:
-            if sub.team_id not in (match.team_a_id, match.team_b_id):
-                raise ValidationError("이 경기에 참가하지 않는 팀에는 대타를 지정할 수 없습니다.")
-            team = team_by_id[sub.team_id]
-            if sub.roster_position >= len(team.roster):
-                raise ValidationError(f"{team.label}팀에 그 자리(로스터)가 없습니다.")
-            m = await self._member_repo.get_by_login_id(sub.substitute_member_id)
-            if m is None:
-                raise NotFoundError(f"존재하지 않는 회원입니다: {sub.substitute_member_id}")
-            subs_data.append((sub, m))
-
-        match.sets_won_a = a
-        match.sets_won_b = b
-        match.winner_team_id = match.team_a_id if a > b else match.team_b_id
-        match.result_entered_by = actor.pk
-        match.result_entered_at = datetime.now(UTC)
-        match.updated_by = actor.pk
-        match.substitutions = [
-            LeagueMatchSubstitution(
-                league_match_id=match.id, team_id=sub.team_id,
-                roster_position=sub.roster_position, substitute_member_pk=m.pk, note=sub.note,
-            )
-            for sub, m in subs_data
-        ]
-        await self._repo.flush()
-
-        # 다음 라운드로 승자를 전파한다 — generate_bracket의 부전승 자동 처리와 정확히 같은
-        # 로직을 재사용한다. 반대쪽 자리가 이미 영원히 안 채워지는 상태(형제 슬롯이
-        # is_dead)라면, 이 실제 경기 결과가 들어오는 즉시 다음 라운드도 자동으로 부전승
-        # 처리된다(요청 없이 admin이 "부전승 결과"를 따로 입력할 필요가 없다).
-        total_rounds = _total_rounds(league.draw_size)
-        by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
-        self._propagate_winner(by_round_slot, total_rounds, match.round, match.slot_in_round, match.winner_team_id)
-
-        await self._session.commit()
-        await self._session.refresh(league, attribute_names=["teams", "matches"])
-        await self._refresh_match_relations(league.matches)
-        return to_league_out(league)
-
-    async def clear_match_result(self, league_id: int, match_id: int, *, actor: Member) -> LeagueOut:
-        league = await self._get_or_404(league_id)
-        match = self._get_match_or_404(league, match_id)
-        if match.sets_won_a is None:
-            raise ValidationError("취소할 결과가 없습니다(부전승은 취소할 수 없습니다).")
-
-        total_rounds = _total_rounds(league.draw_size)
-        by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
-        self._undo_decided(match, by_round_slot, total_rounds, actor)
-
-        await self._session.commit()
-        await self._session.refresh(league, attribute_names=["teams", "matches"])
-        await self._refresh_match_relations(league.matches)
-        return to_league_out(league)

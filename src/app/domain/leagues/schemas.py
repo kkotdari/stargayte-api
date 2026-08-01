@@ -99,22 +99,6 @@ class LeagueCreateIn(BaseModel):
     best_of: int = Field(default=3, alias="bestOf", ge=1, le=99)
 
 
-class LeagueTeamRosterIn(BaseModel):
-    """1~4명(요청: "팀구성은 1~4명 가능")까지는 스키마가 받아주지만, 리그가
-    개인전(mode="individual")이면 서비스가 정확히 1명이 아닌 요청을 거부한다 —
-    개인전/팀전 여부는 리그 단위 설정이라 스키마만으로는 검증할 수 없다."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    member_ids: list[str] = Field(alias="memberIds", min_length=1, max_length=4)
-
-    @model_validator(mode="after")
-    def _no_dup(self) -> "LeagueTeamRosterIn":
-        if len(set(self.member_ids)) != len(self.member_ids):
-            raise ValueError("같은 회원을 두 번 넣을 수 없습니다.")
-        return self
-
-
 class LeagueTeamCompositionEntry(BaseModel):
     """팀구성 일괄 저장의 한 팀 — id가 있으면 기존 팀(로스터만 갱신), None이면 새 팀.
     roster는 회원 login id를 순서대로(=로스터 포지션). 새 팀이나 아직 안 채운 팀은 빈 배열."""
@@ -153,13 +137,6 @@ class LeagueBracketGenerateIn(BaseModel):
     team_count: int = Field(alias="teamCount", ge=2)
 
 
-class LeagueMatchSlotIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    side: LeagueMatchSide
-    team_id: int | None = Field(alias="teamId")
-
-
 class LeagueSeedSlotIn(BaseModel):
     """일괄 시드 저장의 한 자리 — 어느 경기(match_id)의 어느 쪽(side)에 어떤 팀(team_id,
     미지정은 None)이 들어갈지."""
@@ -183,27 +160,3 @@ class LeagueBracketSeedIn(BaseModel):
     assignments: list[LeagueSeedSlotIn]
 
 
-class LeagueMatchScheduleIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    scheduled_at: datetime | None = Field(alias="scheduledAt")
-
-
-class LeagueMatchSubstituteIn(BaseModel):
-    """개인전 리그에서는 서비스가 이 목록을 비어있지 않으면 거부한다(요청: "개인리그면
-    ... 대타 지정 불가") — 로스터가 1명뿐이라 대타 개념 자체가 성립하지 않는다."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    team_id: int = Field(alias="teamId")
-    roster_position: int = Field(alias="rosterPosition", ge=0, le=3)
-    substitute_member_id: str = Field(alias="substituteMemberId")
-    note: str = Field(default="", max_length=200)
-
-
-class LeagueMatchResultIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    sets_won_a: int = Field(alias="setsWonA", ge=0)
-    sets_won_b: int = Field(alias="setsWonB", ge=0)
-    substitutes: list[LeagueMatchSubstituteIn] = Field(default_factory=list)

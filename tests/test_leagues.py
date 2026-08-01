@@ -1,14 +1,17 @@
 """리그(League/Tournament) 도메인 테스트 — CRUD, 로스터 중복/개인리그 제약, 빈 대진표
-생성 후 슬롯 배정(부전승 정확성 — 특히 부전승 팀이 다음 라운드에서 실제 상대와 붙어야
-하는 경우와, 실제 경기 결과가 나중에 들어오면서 그 반대편이 구조적으로 영원히 비어있어
-자동 부전승이 연쇄되는 경우), 슬롯 오버라이드, 결과 입력+진출 전파, 대타 기록, 결과 취소,
-비운영자 403."""
+생성 후 시드 배정(부전승 정확성 — 특히 부전승 팀이 다음 라운드에서 실제 상대와 붙어야
+하는 경우), 시드 오버라이드, 결과가 난 경기의 보호 규칙, 비운영자 403.
+
+경기 결과를 입력·취소하는 엔드포인트는 쓰는 화면이 없어 지웠다. 그래서 "이미 결과가 난
+경기"를 API로 만들 수단이 없다 — 그 상태를 전제로 하는 보호 규칙(팀 삭제·로스터 변경·시드
+변경·대진표 규모 변경 차단)은 여전히 살아있는 코드라, 결과 행을 DB에 직접 심어 검증한다
+(_decide_match)."""
 
 import string
 
 from sqlalchemy import select
 
-from app.domain.leagues.models import League, LeagueTeam
+from app.domain.leagues.models import League, LeagueMatch, LeagueTeam
 
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
@@ -57,21 +60,68 @@ async def _create_league(client, headers, *, name="리그", mode="team", best_of
     return res.json()
 
 
-async def _add_team(client, headers, league_id: int) -> dict:
-    res = await client.post(f"/api/leagues/{league_id}/teams", headers=headers)
+# 팀 추가/로스터 변경/팀 삭제와 슬롯 배정은 개별 엔드포인트가 없어졌다 — 화면이 쓰는 일괄
+# 저장 두 개(PUT /teams, PUT /bracket/seeding)로만 한다. 아래 헬퍼들이 "지금 상태를 읽어
+# 한 군데만 바꿔 통째로 다시 보내는" 그 변환을 대신해, 각 테스트 본문은 예전 의미 그대로 둔다.
+
+
+async def _get_league(client, headers, league_id: int) -> dict:
+    res = await client.get(f"/api/leagues/{league_id}", headers=headers)
     assert res.status_code == 200, res.text
     return res.json()
 
 
+def _composition_of(league: dict) -> list[dict]:
+    """현재 팀 구성을 일괄 저장 payload 모양으로."""
+    return [
+        {"id": t["id"], "roster": [m["memberId"] for m in t["roster"]]}
+        for t in league["teams"]
+    ]
+
+
+async def _save_composition(client, headers, league_id: int, teams: list[dict]):
+    return await client.put(
+        f"/api/leagues/{league_id}/teams", headers=headers, json={"teams": teams},
+    )
+
+
 async def _add_teams(client, headers, league_id: int, n: int) -> list[dict]:
-    return [await _add_team(client, headers, league_id) for _ in range(n)]
+    """빈 팀 n개를 덧붙이고, 새로 생긴 팀들만 라벨 순서로 돌려준다.
+
+    응답의 teams는 라벨 문자열 순(A, AA, AB, B, ...)이라 그대로 쓰면 순서가 어긋난다 —
+    라벨은 스프레드시트 열 이름 방식이므로 (길이, 문자열)로 정렬해야 A..Z, AA, AB가 된다."""
+    league = await _get_league(client, headers, league_id)
+    before = {t["id"] for t in league["teams"]}
+    res = await _save_composition(
+        client, headers, league_id, _composition_of(league) + [{"id": None, "roster": []}] * n,
+    )
+    assert res.status_code == 200, res.text
+    fresh = [t for t in res.json()["teams"] if t["id"] not in before]
+    return sorted(fresh, key=lambda t: (len(t["label"]), t["label"]))
+
+
+async def _add_team(client, headers, league_id: int) -> dict:
+    return (await _add_teams(client, headers, league_id, 1))[0]
 
 
 async def _set_roster(client, headers, league_id: int, team_id: int, member_ids: list[str]):
-    return await client.put(
-        f"/api/leagues/{league_id}/teams/{team_id}/roster",
-        headers=headers, json={"memberIds": member_ids},
-    )
+    """한 팀의 로스터만 바꿔 통째로 다시 저장한다."""
+    league = await _get_league(client, headers, league_id)
+    teams = _composition_of(league)
+    for entry in teams:
+        if entry["id"] == team_id:
+            entry["roster"] = member_ids
+            break
+    else:
+        raise AssertionError(f"팀 {team_id}이(가) 리그에 없다")
+    return await _save_composition(client, headers, league_id, teams)
+
+
+async def _delete_team(client, headers, league_id: int, team_id: int):
+    """그 팀만 빼고 통째로 다시 저장한다(빠진 팀은 삭제된다)."""
+    league = await _get_league(client, headers, league_id)
+    teams = [e for e in _composition_of(league) if e["id"] != team_id]
+    return await _save_composition(client, headers, league_id, teams)
 
 
 async def _generate_bracket(client, headers, league_id: int, team_count: int):
@@ -80,11 +130,49 @@ async def _generate_bracket(client, headers, league_id: int, team_count: int):
     )
 
 
-async def _assign_slot(client, headers, league_id: int, match_id: int, side: str, team_id: int | None):
-    return await client.patch(
-        f"/api/leagues/{league_id}/matches/{match_id}/slot",
-        headers=headers, json={"side": side, "teamId": team_id},
+def _round1_assignments(league: dict) -> list[dict]:
+    """편집 가능한 1라운드 자리의 현재 배정 — 일괄 시드 저장 payload 모양으로.
+
+    서버가 보는 '편집 가능'과 같은 조건이다: 1라운드 & 부전 자리 아님 & 실제 결과 없음.
+    빠진 자리는 비우는 것으로 간주되므로 반드시 전체를 실어야 한다."""
+    out = []
+    for m in league["matches"]:
+        if m["round"] != 1 or m["isDead"] or m["setsWonA"] is not None:
+            continue
+        for side in ("a", "b"):
+            team = m["teamA"] if side == "a" else m["teamB"]
+            out.append({"matchId": m["id"], "side": side, "teamId": team["id"] if team else None})
+    return out
+
+
+async def _save_seeding(client, headers, league_id: int, assignments: list[dict]):
+    return await client.put(
+        f"/api/leagues/{league_id}/bracket/seeding",
+        headers=headers, json={"assignments": assignments},
     )
+
+
+async def _assign_slot(client, headers, league_id: int, match_id: int, side: str, team_id: int | None):
+    """한 자리만 바꿔 1라운드 시드를 통째로 다시 저장한다.
+
+    한 팀은 1라운드에 한 번만 올 수 있어서, 옮겨 갈 팀이 다른 자리에 이미 있으면 그 자리를
+    비운다 — 없어진 자리별 배정 API(set_match_slot)가 하던 동작 그대로다."""
+    league = await _get_league(client, headers, league_id)
+    assignments = _round1_assignments(league)
+    target = next(
+        (a for a in assignments if a["matchId"] == match_id and a["side"] == side), None
+    )
+    if target is None:
+        # 편집 불가 자리 — 서버가 거부해야 하는 경우라 그대로 한 건만 보내 확인한다.
+        return await _save_seeding(
+            client, headers, league_id, [{"matchId": match_id, "side": side, "teamId": team_id}],
+        )
+    if team_id is not None:
+        for a in assignments:
+            if a["teamId"] == team_id:
+                a["teamId"] = None
+    target["teamId"] = team_id
+    return await _save_seeding(client, headers, league_id, assignments)
 
 
 async def _confirm_bracket(client, headers, league_id: int):
@@ -96,11 +184,16 @@ def _match(league: dict, round_: int, slot: int) -> dict:
     return m
 
 
-async def _enter_result(client, headers, league_id: int, match_id: int, a: int, b: int, substitutes=None):
-    return await client.post(
-        f"/api/leagues/{league_id}/matches/{match_id}/result",
-        headers=headers, json={"setsWonA": a, "setsWonB": b, "substitutes": substitutes or []},
-    )
+async def _decide_match(db_session, match_id: int, *, sets_a: int, sets_b: int) -> None:
+    """경기 하나에 '실제 결과가 났음'을 DB에 직접 새긴다 — 결과 입력 엔드포인트가 없어서다.
+
+    보호 규칙들이 보는 건 sets_won_a가 채워졌는지와 승자가 정해졌는지뿐이라, 다음 라운드
+    전파까지는 흉내내지 않는다(전파는 부전승 경로로 따로 검증된다)."""
+    match = await db_session.get(LeagueMatch, match_id)
+    match.sets_won_a = sets_a
+    match.sets_won_b = sets_b
+    match.winner_team_id = match.team_a_id if sets_a > sets_b else match.team_b_id
+    await db_session.commit()
 
 
 async def test_non_admin_forbidden(client):
@@ -152,7 +245,7 @@ async def test_team_delete_relabels_remaining(client):
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers)
     teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
-    res = await client.delete(f"/api/leagues/{league['id']}/teams/{teams[0]['id']}", headers=admin_headers)
+    res = await _delete_team(client, admin_headers, league["id"], teams[0]["id"])
     assert res.status_code == 200, res.text
     body = res.json()
     assert [t["label"] for t in body["teams"]] == ["A", "B"]
@@ -175,7 +268,11 @@ async def test_roster_rejects_cross_team_duplicate_and_bad_count(client):
     assert res.status_code == 422, res.text
 
 
-async def test_individual_league_roster_locked_to_one_and_no_substitutes(client):
+async def test_individual_league_roster_locked_to_one(client):
+    """개인리그는 한 자리에 선수 1명뿐이다.
+
+    대타 불가 규칙도 같이 걸려 있었지만 대타는 결과 입력 payload로만 지정할 수 있어서,
+    그 엔드포인트를 지우면서 규칙 자체가 함께 사라졌다."""
     admin_headers, members = await _bootstrap(client, 2)
     league = await _create_league(client, admin_headers, mode="individual", best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 2)
@@ -187,19 +284,6 @@ async def test_individual_league_roster_locked_to_one_and_no_substitutes(client)
     assert res.status_code == 200, res.text
     res = await _set_roster(client, admin_headers, league["id"], teams[1]["id"], ["m1"])
     assert res.status_code == 200, res.text
-
-    res = await _generate_bracket(client, admin_headers, league["id"], 2)
-    assert res.status_code == 200, res.text
-    slot0 = _match(res.json(), 1, 0)
-    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
-    final = _match(res.json(), 1, 0)
-
-    res = await _enter_result(
-        client, admin_headers, league["id"], final["id"], 1, 0,
-        substitutes=[{"teamId": teams[0]["id"], "rosterPosition": 0, "substituteMemberId": "m1", "note": ""}],
-    )
-    assert res.status_code == 400, res.text  # 개인리그는 대타 불가
 
 
 async def test_bracket_generate_team_count_validation(client):
@@ -221,7 +305,7 @@ async def test_bracket_generate_team_count_validation(client):
     assert res.status_code == 200, res.text
 
 
-async def test_generate_bracket_can_be_resized_before_results_but_not_after(client):
+async def test_generate_bracket_can_be_resized_before_results_but_not_after(client, db_session):
     """팀수/대진표 슬롯 수는 대진표 생성 후에도 다시 잡을 수 있다(요청: "팀수, 대진표
     슬롯 수 다 수정가능해야돼") — 단, 실제 경기 결과가 하나라도 들어갔으면 재생성이
     그 진행 상황을 지워버리므로 막는다."""
@@ -243,8 +327,7 @@ async def test_generate_bracket_can_be_resized_before_results_but_not_after(clie
     await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
     res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
     assert res.status_code == 200, res.text
-    res = await _enter_result(client, admin_headers, league["id"], slot0["id"], 1, 0)
-    assert res.status_code == 200, res.text
+    await _decide_match(db_session, slot0["id"], sets_a=1, sets_b=0)
 
     res = await _generate_bracket(client, admin_headers, league["id"], 8)
     assert res.status_code == 400, res.text
@@ -315,10 +398,17 @@ async def test_add_team_capped_at_planned_teams_after_generate(client):
     res = await _generate_bracket(client, admin_headers, league["id"], 3)
     assert res.status_code == 200, res.text
 
-    res = await client.post(f"/api/leagues/{league['id']}/teams", headers=admin_headers)
+    league_now = await _get_league(client, admin_headers, league["id"])
+    base = _composition_of(league_now)
+
+    res = await _save_composition(
+        client, admin_headers, league["id"], base + [{"id": None, "roster": []}],
+    )
     assert res.status_code == 200, res.text  # 3번째 팀 — 예약된 자리라 허용
 
-    res = await client.post(f"/api/leagues/{league['id']}/teams", headers=admin_headers)
+    res = await _save_composition(
+        client, admin_headers, league["id"], base + [{"id": None, "roster": []}] * 2,
+    )
     assert res.status_code == 400, res.text  # 4번째 — 예약(3) 초과라 거부
 
 
@@ -358,17 +448,6 @@ async def test_three_team_bracket_bye_must_still_play_next_round(client):
     slot1 = _match(res.json(), 1, 1)
     assert slot1["teamA"]["label"] == "A" and slot1["teamB"]["label"] == "B"
     assert slot1["winnerTeamId"] is None  # 실제 경기라 자동 처리 안 됨
-
-    res = await _enter_result(client, admin_headers, league["id"], slot1["id"], 1, 0)  # A 승
-    assert res.status_code == 200, res.text
-    body = res.json()
-    final = _match(body, 2, 0)
-    assert final["teamA"]["label"] == "C" and final["teamB"]["label"] == "A"
-    assert final["winnerTeamId"] is None  # 둘 다 실제 팀이라 진짜 경기가 필요하다
-
-    res = await _enter_result(client, admin_headers, league["id"], final["id"], 1, 0)  # C 우승
-    assert res.status_code == 200, res.text
-    assert res.json()["status"] == "completed"
 
 
 async def test_six_team_bracket_byes_spread_and_round2_is_real_match(client):
@@ -417,31 +496,8 @@ async def test_six_team_bracket_byes_spread_and_round2_is_real_match(client):
     assert r2_0["teamA"]["label"] == "A" and r2_0["teamB"]["label"] == "B"
     assert r2_0["winnerTeamId"] is None  # 둘 다 부전승으로 왔어도 라운드2는 진짜 경기가 필요
 
-    res = await _enter_result(client, admin_headers, league["id"], r2_0["id"], 1, 0)  # A 승
-    assert res.status_code == 200, res.text
 
-    res = await _enter_result(client, admin_headers, league["id"], cd["id"], 1, 0)  # C 승
-    assert res.status_code == 200
-    res = await _enter_result(client, admin_headers, league["id"], ef["id"], 1, 0)  # E 승
-    assert res.status_code == 200
-    body = res.json()
-    r2_1 = _match(body, 2, 1)
-    assert r2_1["teamA"]["label"] == "C" and r2_1["teamB"]["label"] == "E"
-    assert r2_1["winnerTeamId"] is None  # 실제 경기 필요
-
-    res = await _enter_result(client, admin_headers, league["id"], r2_1["id"], 1, 0)  # C 승
-    assert res.status_code == 200, res.text
-    body = res.json()
-    final = _match(body, 3, 0)
-    assert final["teamA"]["label"] == "A" and final["teamB"]["label"] == "C"
-    assert body["status"] == "active"
-
-    res = await _enter_result(client, admin_headers, league["id"], final["id"], 1, 0)
-    assert res.status_code == 200, res.text
-    assert res.json()["status"] == "completed"
-
-
-async def test_slot_reassign_moves_team_and_blocks_after_decided(client):
+async def test_slot_reassign_moves_team_and_blocks_after_decided(client, db_session):
     admin_headers, members = await _bootstrap(client, 4)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 4)
@@ -468,15 +524,14 @@ async def test_slot_reassign_moves_team_and_blocks_after_decided(client):
     assert res.status_code == 200, res.text
     assert _match(res.json(), 1, 1)["teamA"] is None
 
-    # 이미 결과가 정해진 경기에 배정된 팀은 다른 자리로 옮길 수 없다.
+    # 이미 결과가 난 자리는 시드 변경 대상에서 아예 빠진다 — 그 자리로 배정을 보내면 거부된다.
     await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
     res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
     assert res.status_code == 200, res.text
-    res = await _enter_result(client, admin_headers, league["id"], slot0["id"], 1, 0)
-    assert res.status_code == 200, res.text
+    await _decide_match(db_session, slot0["id"], sets_a=1, sets_b=0)
 
-    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[0]["id"])
-    assert res.status_code == 409, res.text
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[2]["id"])
+    assert res.status_code == 400, res.text
 
 
 async def test_bye_seed_reassignable_before_confirm_and_cascade_clears_propagation(client):
@@ -529,90 +584,6 @@ async def test_confirm_bracket_locks_seed_changes(client):
 
     res = await _generate_bracket(client, admin_headers, league["id"], 4)
     assert res.status_code == 409, res.text  # 규모 변경도 확정 후엔 막힌다
-
-
-async def test_result_set_score_validation_against_best_of(client):
-    admin_headers, members = await _bootstrap(client, 2)
-    league = await _create_league(client, admin_headers, best_of=3)  # 2세트 선취
-    teams = await _add_teams(client, admin_headers, league["id"], 2)
-    for t, mid in zip(teams, ["m0", "m1"]):
-        assert (await _set_roster(client, admin_headers, league["id"], t["id"], [mid])).status_code == 200
-    res = await _generate_bracket(client, admin_headers, league["id"], 2)
-    slot0 = _match(res.json(), 1, 0)
-    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
-    match = _match(res.json(), 1, 0)
-
-    res = await _enter_result(client, admin_headers, league["id"], match["id"], 1, 1)  # 동점
-    assert res.status_code == 400, res.text
-    res = await _enter_result(client, admin_headers, league["id"], match["id"], 2, 0)  # 정상(3전2승)
-    assert res.status_code == 200, res.text
-    res = await _enter_result(client, admin_headers, league["id"], match["id"], 2, 1)  # 이미 결과 있음
-    assert res.status_code == 409, res.text
-
-
-async def test_substitute_is_recorded_for_team_league(client):
-    admin_headers, members = await _bootstrap(client, 4)
-    league = await _create_league(client, admin_headers, best_of=1)
-    teams = await _add_teams(client, admin_headers, league["id"], 2)
-    res = await _set_roster(client, admin_headers, league["id"], teams[0]["id"], ["m0", "m1"])
-    assert res.status_code == 200
-    res = await _set_roster(client, admin_headers, league["id"], teams[1]["id"], ["m2", "m3"])
-    assert res.status_code == 200
-    res = await _generate_bracket(client, admin_headers, league["id"], 2)
-    slot0 = _match(res.json(), 1, 0)
-    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
-    match = _match(res.json(), 1, 0)
-
-    res = await _enter_result(
-        client, admin_headers, league["id"], match["id"], 1, 0,
-        substitutes=[{"teamId": teams[0]["id"], "rosterPosition": 1, "substituteMemberId": "m2", "note": "부상"}],
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()
-    m = _match(body, 1, 0)
-    assert len(m["substitutions"]) == 1
-    assert m["substitutions"][0]["substituteMemberId"] == "m2"
-    assert m["substitutions"][0]["note"] == "부상"
-
-
-async def test_clear_result_cascades_downstream(client):
-    admin_headers, members = await _bootstrap(client, 4)
-    league = await _create_league(client, admin_headers, best_of=1)
-    teams = await _add_teams(client, admin_headers, league["id"], 4)
-    for t, mid in zip(teams, [f"m{i}" for i in range(4)]):
-        assert (await _set_roster(client, admin_headers, league["id"], t["id"], [mid])).status_code == 200
-    res = await _generate_bracket(client, admin_headers, league["id"], 4)
-    body = res.json()
-    slot0, slot1 = _match(body, 1, 0), _match(body, 1, 1)
-    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
-    await _assign_slot(client, admin_headers, league["id"], slot0["id"], "b", teams[1]["id"])
-    await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[2]["id"])
-    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "b", teams[3]["id"])
-    body = res.json()
-    ab, cd = _match(body, 1, 0), _match(body, 1, 1)
-
-    res = await _enter_result(client, admin_headers, league["id"], ab["id"], 1, 0)
-    res = await _enter_result(client, admin_headers, league["id"], cd["id"], 1, 0)
-    body = res.json()
-    final = _match(body, 2, 0)
-    res = await _enter_result(client, admin_headers, league["id"], final["id"], 1, 0)
-    assert res.status_code == 200
-    assert res.json()["status"] == "completed"
-
-    res = await client.delete(
-        f"/api/leagues/{league['id']}/matches/{ab['id']}/result", headers=admin_headers
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()
-    # ab 결과가 취소되면 결승의 teamA도 다시 비고, 결승 자체의 결과도 같이 취소돼야 한다.
-    final = _match(body, 2, 0)
-    ab_after = _match(body, 1, 0)
-    assert ab_after["winnerTeamId"] is None
-    assert final["teamA"] is None
-    assert final["winnerTeamId"] is None
-    assert body["status"] == "active"
 
 
 async def test_delete_league_cascades(client, db_session):
@@ -805,7 +776,7 @@ async def test_team_composition_individual_rejects_multi(client):
     assert res.status_code == 400, res.text
 
 
-async def test_team_composition_protects_decided_team(client):
+async def test_team_composition_protects_decided_team(client, db_session):
     admin_headers, _ = await _bootstrap(client, 3)
     league = await _create_league(client, admin_headers, mode="team", best_of=1)
     res = await _set_composition(client, admin_headers, league["id"], [
@@ -820,8 +791,7 @@ async def test_team_composition_protects_decided_team(client):
         {"matchId": m0["id"], "side": "a", "teamId": a["id"]},
         {"matchId": m0["id"], "side": "b", "teamId": b["id"]},
     ])
-    res = await _enter_result(client, admin_headers, league["id"], m0["id"], 1, 0)
-    assert res.status_code == 200, res.text
+    await _decide_match(db_session, m0["id"], sets_a=1, sets_b=0)
 
     # A는 결과가 난 팀 — 삭제 시도 거부.
     res = await _set_composition(client, admin_headers, league["id"], [

@@ -6,14 +6,8 @@ from app.domain.leagues.schemas import (
     LeagueBracketSeedIn,
     LeagueCreateIn,
     LeagueListOut,
-    LeagueMatchOut,
-    LeagueMatchResultIn,
-    LeagueMatchScheduleIn,
-    LeagueMatchSlotIn,
     LeagueOut,
     LeagueTeamCompositionIn,
-    LeagueTeamOut,
-    LeagueTeamRosterIn,
 )
 from app.domain.leagues.service import LeagueService
 
@@ -42,30 +36,11 @@ async def delete_league(league_id: int, db: DbSession, current: CurrentAdmin) ->
     await LeagueService(db).delete_league(league_id)
 
 
-@router.post("/{league_id}/teams", response_model=LeagueTeamOut)
-async def add_team(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueTeamOut:
-    return await LeagueService(db).add_team(league_id, actor=current)
-
-
 @router.put("/{league_id}/teams", response_model=LeagueOut)
 async def set_team_composition(
     league_id: int, payload: LeagueTeamCompositionIn, db: DbSession, current: CurrentAdmin,
 ) -> LeagueOut:
     return await LeagueService(db).set_team_composition(league_id, payload, actor=current)
-
-
-@router.put("/{league_id}/teams/{team_id}/roster", response_model=LeagueTeamOut)
-async def set_roster(
-    league_id: int, team_id: int, payload: LeagueTeamRosterIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueTeamOut:
-    return await LeagueService(db).set_roster(league_id, team_id, payload, actor=current)
-
-
-@router.delete("/{league_id}/teams/{team_id}", response_model=LeagueOut)
-async def delete_team(
-    league_id: int, team_id: int, db: DbSession, current: CurrentAdmin,
-) -> LeagueOut:
-    return await LeagueService(db).delete_team(league_id, team_id, actor=current)
 
 
 @router.post("/{league_id}/bracket/generate", response_model=LeagueOut)
@@ -80,36 +55,8 @@ async def confirm_bracket(league_id: int, db: DbSession, current: CurrentAdmin) 
     return await LeagueService(db).confirm_bracket(league_id, actor=current)
 
 
-@router.patch("/{league_id}/matches/{match_id}/slot", response_model=LeagueOut)
-async def set_match_slot(
-    league_id: int, match_id: int, payload: LeagueMatchSlotIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueOut:
-    return await LeagueService(db).set_match_slot(league_id, match_id, payload, actor=current)
-
-
 @router.put("/{league_id}/bracket/seeding", response_model=LeagueOut)
 async def set_bracket_seeding(
     league_id: int, payload: LeagueBracketSeedIn, db: DbSession, current: CurrentAdmin,
 ) -> LeagueOut:
     return await LeagueService(db).set_bracket_seeding(league_id, payload, actor=current)
-
-
-@router.patch("/{league_id}/matches/{match_id}/schedule", response_model=LeagueMatchOut)
-async def set_match_schedule(
-    league_id: int, match_id: int, payload: LeagueMatchScheduleIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueMatchOut:
-    return await LeagueService(db).set_match_schedule(league_id, match_id, payload, actor=current)
-
-
-@router.post("/{league_id}/matches/{match_id}/result", response_model=LeagueOut)
-async def enter_match_result(
-    league_id: int, match_id: int, payload: LeagueMatchResultIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueOut:
-    return await LeagueService(db).enter_match_result(league_id, match_id, payload, actor=current)
-
-
-@router.delete("/{league_id}/matches/{match_id}/result", response_model=LeagueOut)
-async def clear_match_result(
-    league_id: int, match_id: int, db: DbSession, current: CurrentAdmin,
-) -> LeagueOut:
-    return await LeagueService(db).clear_match_result(league_id, match_id, actor=current)
