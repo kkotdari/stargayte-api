@@ -99,17 +99,35 @@ def _outlier_keep_mask(values: list[float]) -> list[bool]:
     return mask if any(mask) else [True] * n
 
 
-def _trimmed_avg_apm(rows: list) -> int | None:
-    """APM 평균 — 유효APM과 같은 방식으로 튀는 경기를 뺀다(지적: APM이 700대로 나온다).
+# 이상치 제거를 적용하는 지표 — 화면에 평균으로 나가는 다섯 가지 전부다. (응답 필드 이름,
+# 경기별 원본 행의 컬럼 이름).
+#
+# 한때 APM·유효APM·유효커맨드 셋만 이 처리를 받고 커맨드·생산 둘은 SQL 단순 평균이 그대로
+# 나갔는데, 다섯 값 모두 같은 리플레이 파싱에서 같이 나오는 값이라 한 경기가 튀면 대개 같이
+# 튄다 — 유효커맨드만 걷어내고 총커맨드·생산은 그대로 두면 같은 경기가 한쪽 평균에서만
+# 빠져서, 화면에 나란히 놓인 숫자끼리 앞뒤가 안 맞았다(예: 유효커맨드는 정상인데 총커맨드만
+# 혼자 부풀어 유효/전체 비율이 말이 안 되는 값이 된다).
+#
+# APM이 특히 잘 튀는 건 '분당' 값이기 때문이다: 20초 만에 끝난 기록에 시작 직후의 핫키 연타가
+# 그대로 들어가면 그 판 하나가 수천이 된다. 그런 판 하나가 단순 평균에 섞이면 열 판 넘게
+# 정상으로 친 사람도 700대가 된다(실측한 화면에서 커맨드 평균 2314에 APM 732 — 역산하면 평균
+# 경기 길이가 3.2분이라는 말이 안 되는 값이었다). 커맨드·생산은 경기당 총합이라 방향이 반대다
+# — 아주 짧은 판은 낮은 쪽으로, 아주 긴 판은 높은 쪽으로 끌어당긴다. 어느 쪽이든 그 회원의
+# 다른 경기들과 편차가 심한 판이라는 점은 같아서 같은 자를 쓴다.
+_TRIMMED_METRICS = (
+    ("avg_apm", "apm"),
+    ("avg_eapm", "eapm"),
+    ("avg_cmd", "cmd_count"),
+    # 한때 "분당" 값이었지만 경기당 평균 유효커맨드로 되돌렸다(요청).
+    ("avg_ecmd", "effective_cmd_count"),
+    ("avg_build", "build_count"),
+)
 
-    APM은 '분당' 값이라 한 판만 짧아도 통째로 튄다: 20초 만에 끝난 기록에 시작 직후의
-    핫키 연타가 그대로 들어가면 그 판 하나가 수천이 된다. 그런 판 하나가 단순 평균에
-    섞이면 열 판 넘게 정상으로 친 사람도 700대가 된다(실측한 화면에서 커맨드 평균
-    2314에 APM 732 — 역산하면 평균 경기 길이가 3.2분이라는 말이 안 되는 값이었다).
 
-    유효APM(eapm)은 처음부터 이 처리를 받고 있었는데 APM만 빠져 있었다 — 같은 성질의
-    값이라 같은 자를 쓴다."""
-    values = [float(r.apm) for r in rows if r.apm is not None]
+def _trimmed_avg(rows: list, attr: str) -> int | None:
+    """경기별 원본 행에서 attr 값을 모아 이상치를 뺀 뒤 낸 단순 평균. 값이 있는 경기가
+    하나도 없으면 None(0이 아니다 — 잰 적이 없다는 뜻이라 다른 말이다)."""
+    values = [float(v) for v in (getattr(r, attr) for r in rows) if v is not None]
     if not values:
         return None
     mask = _outlier_keep_mask(values)
@@ -117,24 +135,10 @@ def _trimmed_avg_apm(rows: list) -> int | None:
     return round(sum(kept) / len(kept))
 
 
-def _trimmed_avg_eapm(rows: list) -> int | None:
-    values = [float(r.eapm) for r in rows if r.eapm is not None]
-    if not values:
-        return None
-    mask = _outlier_keep_mask(values)
-    kept = [v for v, keep in zip(values, mask) if keep]
-    return round(sum(kept) / len(kept))
-
-
-def _trimmed_avg_ecmd(rows: list) -> int | None:
-    # 한때 "분당" 값이었지만 경기당 평균 유효커맨드로 되돌렸다(요청) — eapm과 같은 방식:
-    # 경기별 총 유효커맨드에서 이상치를 걷어낸 뒤 단순 평균.
-    values = [float(r.effective_cmd_count) for r in rows if r.effective_cmd_count is not None]
-    if not values:
-        return None
-    mask = _outlier_keep_mask(values)
-    kept = [v for v, keep in zip(values, mask) if keep]
-    return round(sum(kept) / len(kept))
+def _trimmed_avgs(rows: list) -> dict[str, int | None]:
+    """_TRIMMED_METRICS 다섯 항목을 RaceStatsEntry.model_copy(update=...)에 바로 넣을
+    모양으로 낸다 — 종족별/전체 두 곳에서 같은 목록을 쓰게 해서 한쪽만 빠지는 일을 막는다."""
+    return {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_METRICS}
 
 
 def _split_terms(query: str | None) -> list[str]:
@@ -237,60 +241,36 @@ def _to_utc_naive(dt: datetime) -> datetime:
 
 class _RaceAgg:
     """aggregate_stats가 돌려주는 (member_pk, race) 단위 원본 행 하나 또는 여러 개를
-    합산해서 RaceStatsEntry로 만드는 중간 누산기."""
+    합산해서 RaceStatsEntry로 만드는 중간 누산기 — 전적(판수/승/무)만 센다.
 
-    __slots__ = (
-        "plays", "wins", "draws",
-        "apm_sum", "apm_cnt", "eapm_sum", "eapm_cnt",
-        "cmd_sum", "cmd_cnt", "build_sum", "build_cnt", "ecmd_sum", "ecmd_cnt",
-    )
+    지표 평균(APM·유효APM·커맨드·유효커맨드·생산)은 여기서 내지 않는다. 이상치를 뺀
+    평균이라 경기 단위 원본이 있어야 하고(_trimmed_avgs), 호출부가 to_entry() 결과에
+    그 값들을 덮어 넣는다. 한때 SQL 합계로도 같은 평균을 내서 두 벌이 공존했는데,
+    덮어쓰는 쪽만 화면에 나가는데도 안 쓰이는 계산이 남아 있어 "어느 게 진짜 나가는
+    값인지" 읽는 사람이 헷갈렸다 — 한 벌만 남긴다."""
+
+    __slots__ = ("plays", "wins", "draws")
 
     def __init__(self) -> None:
         self.plays = 0
         self.wins = 0
         self.draws = 0
-        self.apm_sum = 0
-        self.apm_cnt = 0
-        self.eapm_sum = 0
-        self.eapm_cnt = 0
-        self.cmd_sum = 0
-        self.cmd_cnt = 0
-        self.build_sum = 0
-        self.build_cnt = 0
-        self.ecmd_sum = 0
-        self.ecmd_cnt = 0
 
     def add_row(self, row) -> None:
         self.plays += row.plays
         self.wins += row.wins
         self.draws += row.draws
-        self.apm_sum += row.apm_sum
-        self.apm_cnt += row.apm_cnt
-        self.eapm_sum += row.eapm_sum
-        self.eapm_cnt += row.eapm_cnt
-        self.cmd_sum += row.cmd_sum
-        self.cmd_cnt += row.cmd_cnt
-        self.build_sum += row.build_sum
-        self.build_cnt += row.build_cnt
-        self.ecmd_sum += row.ecmd_sum
-        self.ecmd_cnt += row.ecmd_cnt
 
     def to_entry(self) -> RaceStatsEntry:
         losses = self.plays - self.wins - self.draws
         win_rate = round((self.wins / self.plays) * 1000) / 10 if self.plays else 0.0
-        # 한때 "분당" 값이었지만 경기당 평균으로 되돌렸다(요청: "그냥 유효커맨드로").
-        avg_ecmd = round(self.ecmd_sum / self.ecmd_cnt) if self.ecmd_cnt else None
+        # 지표 평균은 전부 기본값(None)으로 두고 호출부가 _trimmed_avgs로 채운다.
         return RaceStatsEntry(
             plays=self.plays,
             wins=self.wins,
             losses=losses,
             draws=self.draws,
             win_rate=win_rate,
-            avg_apm=round(self.apm_sum / self.apm_cnt) if self.apm_cnt else None,
-            avg_eapm=round(self.eapm_sum / self.eapm_cnt) if self.eapm_cnt else None,
-            avg_cmd=round(self.cmd_sum / self.cmd_cnt) if self.cmd_cnt else None,
-            avg_ecmd=avg_ecmd,
-            avg_build=round(self.build_sum / self.build_cnt) if self.build_cnt else None,
         )
 
 
@@ -590,9 +570,10 @@ class GameResultService:
         for row in rows:
             by_member.setdefault(row.member_pk, {})[row.race] = row
 
-        # 유효APM/유효커맨드는 합계만으로는 이상치(그 회원의 다른 경기들과 편차가 너무 심한
-        # 경기 하나)를 가려낼 수 없어, 경기 단위 원본을 따로 받아 회원+종족별로 묶어둔다.
-        raw_rows = await self._repo.raw_eapm_ecmd_rows(
+        # 평균으로 나가는 지표(_TRIMMED_METRICS)는 합계만으로는 이상치(그 회원의 다른 경기들과
+        # 편차가 너무 심한 경기 하나)를 가려낼 수 없어, 경기 단위 원본을 따로 받아 회원+종족별로
+        # 묶어둔다.
+        raw_rows = await self._repo.raw_metric_rows(
             member_pks=[m.pk for m in members],
             date_from=parsed_date_from,
             date_to=parsed_date_to,
@@ -614,11 +595,7 @@ class GameResultService:
                     agg.add_row(race_rows[r])
                 entry = agg.to_entry()
                 raw_for_race = raw_race_rows.get(r, [])
-                by_race[r] = entry.model_copy(update={
-                    "avg_apm": _trimmed_avg_apm(raw_for_race),
-                    "avg_eapm": _trimmed_avg_eapm(raw_for_race),
-                    "avg_ecmd": _trimmed_avg_ecmd(raw_for_race),
-                })
+                by_race[r] = entry.model_copy(update=_trimmed_avgs(raw_for_race))
 
             overall_agg = _RaceAgg()
             if race and race != "all":
@@ -640,11 +617,7 @@ class GameResultService:
                     best_plays = plays
                     most_played_race = r
 
-            overall_entry = overall_agg.to_entry().model_copy(update={
-                "avg_apm": _trimmed_avg_apm(overall_raw),
-                "avg_eapm": _trimmed_avg_eapm(overall_raw),
-                "avg_ecmd": _trimmed_avg_ecmd(overall_raw),
-            })
+            overall_entry = overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw))
             entries.append(
                 MemberStatsEntry(
                     member_id=member.id,

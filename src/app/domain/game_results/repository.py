@@ -272,7 +272,7 @@ class GameResultRepository:
         date_to: date | None,
         match_type: str | None,
     ) -> Select:
-        """aggregate_stats/raw_eapm_ecmd_rows가 공통으로 쓰는 기간/유형 필터."""
+        """aggregate_stats/raw_metric_rows가 공통으로 쓰는 기간/유형 필터."""
         if date_from is not None:
             stmt = stmt.where(GameResult.match_date >= date_from)
         if date_to is not None:
@@ -289,23 +289,13 @@ class GameResultRepository:
         date_to: date | None,
         match_type: str | None,
     ) -> list[Row]:
-        """member_pk, race 단위로 묶은 전적/평균 APM·EAPM·커맨드수 원본 집계 행. 종족별로 나눠서
-        받아오고, "전체" 기준이 필요한 쪽(overall)은 호출부에서 이 행들을 합산해서 만든다.
-        member_pk는 컬럼이 아니라 player_name → replay_aliases(kind='member') 조인으로 구한다."""
+        """member_pk, race 단위로 묶은 전적(판수/승/무) 집계 행. 종족별로 나눠서 받아오고,
+        "전체" 기준이 필요한 쪽(overall)은 호출부에서 이 행들을 합산해서 만든다.
+        member_pk는 컬럼이 아니라 player_name → replay_aliases(kind='member') 조인으로 구한다.
 
-        def _avg_pair(col):
-            total = func.sum(case((col.is_not(None), col), else_=0))
-            count = func.sum(case((col.is_not(None), 1), else_=0))
-            return total, count
-
-        apm_sum, apm_cnt = _avg_pair(GameResultParticipant.apm)
-        eapm_sum, eapm_cnt = _avg_pair(GameResultParticipant.eapm)
-        cmd_sum, cmd_cnt = _avg_pair(GameResultParticipant.cmd_count)
-        build_sum, build_cnt = _avg_pair(GameResultParticipant.build_count)
-        # 한때 "분당" 값(경기시간 합으로 나눔)이었지만 그냥 경기당 평균 유효커맨드로 되돌린다
-        # (요청: "분당 유효커맨드를 그냥 유효커맨드로") — 다른 항목들과 같은 합계/개수 쌍.
-        ecmd_sum, ecmd_cnt = _avg_pair(GameResultParticipant.effective_cmd_count)
-
+        지표 평균(APM·유효APM·커맨드·유효커맨드·생산)은 여기서 내지 않는다 — 이상치를 뺀
+        평균이라 경기 단위 원본이 있어야 해서 raw_metric_rows가 따로 담당한다. 예전엔 여기서도
+        합계/개수 쌍을 같이 내려줬지만 서비스가 전부 덮어써서 쓰이지 않았다."""
         member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
@@ -314,16 +304,6 @@ class GameResultRepository:
                 func.count().label("plays"),
                 func.sum(case((GameOutcome.result == "draw", 1), else_=0)).label("draws"),
                 func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
-                apm_sum.label("apm_sum"),
-                apm_cnt.label("apm_cnt"),
-                eapm_sum.label("eapm_sum"),
-                eapm_cnt.label("eapm_cnt"),
-                cmd_sum.label("cmd_sum"),
-                cmd_cnt.label("cmd_cnt"),
-                build_sum.label("build_sum"),
-                build_cnt.label("build_cnt"),
-                ecmd_sum.label("ecmd_sum"),
-                ecmd_cnt.label("ecmd_cnt"),
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
@@ -375,7 +355,7 @@ class GameResultRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
-    async def raw_eapm_ecmd_rows(
+    async def raw_metric_rows(
         self,
         *,
         member_pks: list[int],
@@ -383,11 +363,11 @@ class GameResultRepository:
         date_to: date | None,
         match_type: str | None,
     ) -> list[Row]:
-        """member_pk/race 단위로 미리 합산하지 않은 경기별 원본 APM·유효APM·유효커맨드값.
-        aggregate_stats는 SQL에서 이미 합계/개수로 뭉쳐서 내려주기 때문에, 평균을 내기
-        전에 회원 한 명 안에서 유독 튀는(편차가 심한) 경기 하나만 골라 빼는 계산(서비스
-        레이어의 _trimmed_avg_apm/_trimmed_avg_eapm/_trimmed_avg_ecmd)에는 쓸 수 없어
-        원본 단위로 따로 받는다."""
+        """member_pk/race 단위로 미리 합산하지 않은 경기별 원본 지표값 — APM·유효APM·커맨드·
+        유효커맨드·생산 다섯 가지 전부. aggregate_stats는 SQL에서 이미 합계/개수로 뭉쳐서
+        내려주기 때문에, 평균을 내기 전에 회원 한 명 안에서 유독 튀는(편차가 심한) 경기
+        하나만 골라 빼는 계산(서비스 레이어의 _trimmed_avg)에는 쓸 수 없어 원본 단위로
+        따로 받는다."""
         member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
@@ -395,7 +375,9 @@ class GameResultRepository:
                 GameResultParticipant.race,
                 GameResultParticipant.apm,
                 GameResultParticipant.eapm,
+                GameResultParticipant.cmd_count,
                 GameResultParticipant.effective_cmd_count,
+                GameResultParticipant.build_count,
                 GameOutcome.duration_seconds,
             )
             .select_from(GameResultParticipant)

@@ -179,6 +179,45 @@ async def test_stats_excludes_extreme_outlier_game_from_apm_average(client):
     assert res.json()["members"][0]["byRace"]["테란"]["avgApm"] == 150
 
 
+async def test_stats_excludes_extreme_outlier_game_from_cmd_and_build_average(client):
+    """커맨드(avgCmd)·생산(avgBuild) 평균에서도 튀는 경기를 뺀다.
+
+    다섯 지표(APM/유효APM/커맨드/유효커맨드/생산)는 같은 리플레이 파싱에서 같이 나오는
+    값이라 한 경기가 튀면 대개 같이 튄다. 한때 커맨드·생산만 SQL 단순 평균이 그대로 나가서,
+    같은 경기가 유효커맨드 평균에서는 빠지고 총커맨드 평균에는 남아 화면에 나란히 놓인
+    숫자끼리 앞뒤가 안 맞았다(유효커맨드보다 총커맨드가 비정상적으로 부풀어 보였다)."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    normal_cmd = [500, 510, 490, 505, 495]   # 평균 500
+    normal_build = [300, 310, 290, 305, 295]  # 평균 300
+    for i, (cmd, build) in enumerate(zip(normal_cmd, normal_build)):
+        await _create_match(
+            client, headers, f"2026-07-{i + 1:02d}",
+            team1=[_slot("player01", "테란", 100, 80, cmd, 400, build=build)],
+            team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
+            result="team1", duration_seconds=600,
+        )
+    # 6번째 경기만 커맨드·생산이 나머지와 편차가 극심하게 튄다(파싱 오류로 자릿수가 어긋난 값).
+    await _create_match(
+        client, headers, "2026-07-06",
+        team1=[_slot("player01", "테란", 100, 80, 9000, 400, build=7000)],
+        team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
+        result="team1", duration_seconds=600,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    assert overall["plays"] == 6  # 전적 자체는 이상치 경기도 포함해서 그대로 6전
+    # 튄 판을 뺀 다섯 판의 평균 — 단순 평균이었다면 커맨드 1917, 생산 1450이 됐다.
+    assert overall["avgCmd"] == 500
+    assert overall["avgBuild"] == 300
+    by_race = res.json()["members"][0]["byRace"]["테란"]
+    assert by_race["avgCmd"] == 500
+    assert by_race["avgBuild"] == 300
+
+
 async def test_stats_race_filter_scopes_overall(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
