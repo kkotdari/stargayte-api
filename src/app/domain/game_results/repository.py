@@ -481,37 +481,6 @@ class GameResultRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
-    async def team_participant_rows(
-        self, *, date_from: date | None = None, date_to: date | None = None,
-    ) -> list[Row]:
-        """팀랭킹 집계용 원본 — (기본은 전체 기간이지만, 월별 집계를 위해 date_from/date_to로
-        좁힐 수 있다) 모든 경기 참가행(컴퓨터/비회원 포함)과 그 경기 결과. "어떤 회원들이 한
-        팀이었나"는 (match_id, team)으로 묶어봐야 알 수 있어서 SQL에서 미리 뭉치지 않고 행
-        단위로 그대로 넘긴다. 회원이 아닌 행(컴퓨터/비회원, member_pk가 NULL)도 일부러
-        포함한다 — 서비스 쪽에서 "이 편에 컴퓨터/비회원이 한 명이라도 섞여 있는지"를 판단해야
-        하기 때문이다(섞여 있으면 남은 실제 회원끼리를 별개의 팀으로 잘못 집계하게 된다 —
-        예: 3:3에 컴퓨터 1명이 끼면 실제 회원 2명만 남아 2인 팀처럼 보이는데, 실제로는 그
-        둘이 2:2를 뛴 적이 없다)."""
-        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
-        stmt = (
-            select(
-                GameResultParticipant.match_id,
-                GameResultParticipant.team,
-                member_alias.member_pk,
-                GameOutcome.result,
-            )
-            .select_from(GameResultParticipant)
-            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
-            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
-            .outerjoin(member_alias, member_condition)
-            .where(GameOutcome.result != "not_held")
-        )
-        if date_from is not None:
-            stmt = stmt.where(GameResult.match_date >= date_from)
-        if date_to is not None:
-            stmt = stmt.where(GameResult.match_date <= date_to)
-        return list((await self._session.execute(stmt)).all())
-
     async def earliest_match_date(self) -> date | None:
         # 랭킹 화면의 "이전" 버튼 비활성화 판단용 — 실제 결과가 있는 가장 이른 날짜.
         stmt = select(func.min(GameResult.match_date)).where(
@@ -650,16 +619,6 @@ class GameResultRepository:
             # 실행해 raw_name UNIQUE 제약을 위반할 수 있다(비회원도 자동 별칭 등록되면서
             # 실제로 드러난 문제).
             await self._session.flush()
-
-    async def raw_name_has_any_participants(self, raw_name: str) -> bool:
-        # 유저 매핑 관리 화면의 "삭제"(매핑 데이터 자체를 지우기)를 허용해도 되는지
-        # 판단하는 기준 — 회원 연결 여부와 무관하게(이미 회원으로 소급 연결된 경기까지
-        # 포함) 이 player_name이 걸린 경기 참가 기록이 하나라도 있으면, 그 별칭 행만 지워도
-        # 실제 경기 기록은 그대로 남아 있어(player_name은 영구 보존) list_placeholder_
-        # raw_names_with_last_seen을 통해 곧바로 "미지정"으로 되돌아와 버린다 — 삭제한
-        # 게 아니라 그냥 되돌리기와 같아져 사용자 의도(목록에서 완전히 사라짐)와 어긋난다.
-        stmt = select(exists().where(GameResultParticipant.player_name == raw_name))
-        return bool((await self._session.execute(stmt)).scalar())
 
     async def all_participant_player_names(self) -> set[str]:
         # 유저 매핑 목록에 "이 이름으로 등록된 경기가 있는지"(has_matches)를 한 번에 채우기

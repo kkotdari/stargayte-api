@@ -1,5 +1,4 @@
 import base64
-import calendar
 import io
 import logging
 import re
@@ -29,7 +28,6 @@ from app.domain.game_results.schemas import (
     GameResultSlot,
     GameResultWrite,
     MemberStatsEntry,
-    MemberStatsMonthEntry,
     RaceStatsEntry,
     RatingHistoryResponse,
     ReplayMapData,
@@ -44,9 +42,6 @@ from app.domain.game_results.schemas import (
     SummaryRewrite,
     RivalryPairOut,
     RivalryResponse,
-    TeamRankEntry,
-    TeamRankingResponse,
-    TeamRankMonthEntry,
     is_computer_slot,
     is_placeholder_slot,
     is_unregistered_slot,
@@ -186,14 +181,6 @@ def _parse_date(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
 
 
-def _month_range(month: str) -> tuple[date, date]:
-    """"YYYY-MM"을 그 달의 첫날/마지막날로 바꾼다 — 랭킹 화면의 월 기준 기본 집계와
-    월별 순위변동 비교(최근 5개월)가 함께 쓴다."""
-    y, m = (int(p) for p in month.split("-"))
-    last_day = calendar.monthrange(y, m)[1]
-    return date(y, m, 1), date(y, m, last_day)
-
-
 logger = logging.getLogger(__name__)
 
 _KST = timezone(timedelta(hours=9))
@@ -317,9 +304,6 @@ class _Record:
 # member_pk -> 상대 member_pk -> 그 상대에게의 전적
 HeadToHead = dict[int, dict[int, _Record]]
 
-
-# 팀으로 인정하는 최소 인원 — 2명 이상이면 (2:2든 3:3이든) 그 팀 구성 그대로 하나의 팀이다.
-TEAM_MIN_SIZE = 2
 
 # 순위·점수를 매기려면 이 유형에서 최소 이만큼은 뛰어야 한다(요청: 개인전 3판, 팀전 10판 —
 # 프론트가 이미 이 기준으로 바뀌었다. 이전 기준은 개인전 1판/팀전 5판이었다). 개인전은 결과가
@@ -808,23 +792,6 @@ class GameResultService:
             # 잠정 = 이 경기유형(종족 필터 시 그 종족) 누적 경기 수가 기준 미만 — 덜 여문 상태.
             entry.provisional = engine.is_provisional(_rk(m.pk)) if played else None
 
-    async def get_main_race(
-        self,
-        *,
-        member_id: str,
-        date_from: str | None,
-        date_to: str | None,
-        match_type: str | None,
-    ) -> str | None:
-        entries = await self.get_stats(
-            member_ids=[member_id],
-            date_from=date_from,
-            date_to=date_to,
-            match_type=match_type,
-            race=None,
-        )
-        return entries[0].most_played_race if entries else None
-
     async def get_rating_history(
         self, *, member_id: str, match_type: str | None,
         date_from: str | None = None, date_to: str | None = None, race: str | None = None,
@@ -906,119 +873,6 @@ class GameResultService:
             if lo in login_by_pk and hi in login_by_pk
         ]
         return RivalryResponse(pairs=pairs)
-
-    async def get_stats_monthly(
-        self,
-        *,
-        months: list[str],
-        member_ids: list[str] | None,
-        match_type: str | None,
-        race: str | None,
-    ) -> list[MemberStatsMonthEntry]:
-        """개인 랭킹의 월별 순위변동(최근 5개월) 모달과, 목록의 전월 대비 화살표가 함께
-        쓴다 — 달마다 왕복하는 대신 한 번에 여러 달을 모아 받는다(요청: "api로 랭킹 목록
-        가져올때 배열형태로 파라미터 추가"). 달마다 완전히 독립된 get_stats 호출이라(그
-        달만의 기간으로 순위를 다시 매김) 여기서 합칠 계산은 없다."""
-        results: list[MemberStatsMonthEntry] = []
-        for month in months:
-            date_from, date_to = _month_range(month)
-            entries = await self.get_stats(
-                member_ids=member_ids,
-                date_from=date_from.isoformat(),
-                date_to=date_to.isoformat(),
-                match_type=match_type,
-                race=race,
-            )
-            results.append(MemberStatsMonthEntry(month=month, members=entries))
-        return results
-
-    async def get_team_ranking(
-        self, *, date_from: date | None = None, date_to: date | None = None,
-    ) -> TeamRankingResponse:
-        """실제로 함께 뛴 팀 구성(2인 이상)마다의 승점 랭킹 — date_from/date_to를 안 넘기면
-        전체 기간이 대상이고(예전 동작 그대로), 랭킹 화면이 기본으로 쓰는 "이번 달" 집계나
-        월별 순위변동 비교(get_team_ranking_monthly)는 이 값을 채워 특정 달로 좁힌다.
-
-        팀의 정체성은 "그 경기에서 같은 편이었던 회원들의 집합" 하나뿐이다 — 순서도, 어느
-        경기였는지도 상관없어서 [A,B]는 늘 같은 팀으로 누적된다. 실제 팀 구성만 잡고 부분
-        조합([A,B,C]에서 [A,B])은 따로 세지 않는다 — 3:3에서 뽑아낸 2인 조합은 그 둘이 실제로
-        2:2를 뛴 적이 없는데도 2인 팀 랭킹에 섞여 들어가기 때문이다.
-
-        정렬은 승점(승 +1, 무 0, 패 -1) → 승수 → 경기수 순. 승점은 음수가 될 수 있고, 개인전
-        랭킹과 달리 승자승(맞대결)은 보지 않는다. 인원수(2인/3인/4인)별로 따로 줄세우는 건
-        화면(프론트)의 몫이다 — member_ids 길이만 봐도 인원수를 알 수 있어 서버가 다시 나눠
-        줄 필요가 없다."""
-        rows = await self._repo.team_participant_rows(date_from=date_from, date_to=date_to)
-
-        # (경기, 팀) 한 칸에 그 편으로 뛴 슬롯을 전부 모은다(컴퓨터/비회원은 member_pk가
-        # None) — 같은 경기의 team1/team2가 각각 한 칸이고, 그 칸의 승패는 경기 결과
-        # 하나로 결정된다.
-        sides: dict[tuple[int, str], list[int | None]] = {}
-        result_of: dict[int, str] = {}
-        for row in rows:
-            sides.setdefault((row.match_id, row.team), []).append(row.member_pk)
-            result_of[row.match_id] = row.result
-
-        # 화면의 2×2 격자를 채울 구성원 순서 기준 — 같은 승점 규칙으로 매긴 개인 승점
-        # (1:1 경기까지 전부 포함한 그 사람의 전체 성적이다).
-        member_points: dict[int, int] = {}
-        teams: dict[tuple[int, ...], dict[str, int]] = {}
-        for (match_id, team), slot_pks in sides.items():
-            result = result_of[match_id]
-            point = 0 if result == "draw" else (1 if result == team else -1)
-            member_pks = [pk for pk in slot_pks if pk is not None]
-            for pk in member_pks:
-                member_points[pk] = member_points.get(pk, 0) + point
-            # 이 편에 컴퓨터/비회원이 한 명이라도 섞여 있으면(slot 수와 실제 회원 수가
-            # 다르면) 남은 실제 회원끼리를 별개의(더 작은) 팀으로 잘못 집계하지 않도록
-            # 통째로 건너뛴다 — 예: 3:3에 컴퓨터 1명이 끼면 실제 회원은 2명뿐이라 2인
-            # 팀처럼 보이지만, 그 둘이 실제로 2:2를 뛴 적은 없다(실제로 지적받은 문제).
-            has_placeholder = len(member_pks) != len(slot_pks)
-            if has_placeholder or len(member_pks) < TEAM_MIN_SIZE:
-                continue
-            agg = teams.setdefault(tuple(sorted(member_pks)), {"plays": 0, "wins": 0, "draws": 0, "points": 0})
-            agg["plays"] += 1
-            agg["points"] += point
-            if point > 0:
-                agg["wins"] += 1
-            elif point == 0:
-                agg["draws"] += 1
-
-        if not teams:
-            return TeamRankingResponse(teams=[])
-
-        member_by_pk = {m.pk: m for m in await self._member_repo.list_all()}
-
-        entries: list[TeamRankEntry] = []
-        for pks, agg in teams.items():
-            # 승점 높은 순 → (같으면) 닉네임 순. 순서만 정하는 값이라 완전 동률이어도 매 요청
-            # 같은 결과가 나오도록 닉네임까지 본다.
-            ordered_pks = sorted(pks, key=lambda pk: (-member_points.get(pk, 0), member_by_pk[pk].nickname))
-            entries.append(
-                TeamRankEntry(
-                    member_ids=[member_by_pk[pk].id for pk in ordered_pks],
-                    plays=agg["plays"],
-                    wins=agg["wins"],
-                    losses=agg["plays"] - agg["wins"] - agg["draws"],
-                    draws=agg["draws"],
-                    points=agg["points"],
-                )
-            )
-        entries.sort(key=lambda e: (-e.points, -e.wins, -e.plays, e.member_ids))
-
-        return TeamRankingResponse(teams=entries)
-
-    async def get_team_ranking_monthly(self, *, months: list[str]) -> list[TeamRankMonthEntry]:
-        """팀 랭킹의 월별 순위변동(최근 5개월) 모달과, 목록의 전월 대비 화살표가 함께
-        쓴다 — get_stats_monthly와 같은 이유로 한 번에 여러 달을 모아 받는다. 인원수
-        (2인/3인/4인)별로 다시 줄세우는 건 화면(프론트)의 몫이라 여기서는 달마다 그 달
-        전체 팀(모든 인원수 섞여서)을 그대로 돌려준다."""
-        results: list[TeamRankMonthEntry] = []
-        for month in months:
-            date_from, date_to = _month_range(month)
-            resp = await self.get_team_ranking(date_from=date_from, date_to=date_to)
-            results.append(TeamRankMonthEntry(month=month, teams=resp.teams))
-        return results
 
     async def get_earliest_match_date(self) -> str | None:
         d = await self._repo.earliest_match_date()
@@ -1130,17 +984,6 @@ class GameResultService:
         await self._session.commit()
         return {"raw_name": raw_name, "kind": kind, "member": member_out}
 
-    async def delete_replay_name_mapping(self, raw_name: str) -> None:
-        """유저 매핑 관리 화면의 "삭제" — 매핑 데이터(replay_aliases 행) 자체를 지워
-        목록에서 완전히 사라지게 한다. "미지정으로 되돌리기"(set_replay_name_mapping의
-        kind="unresolved")와는 다르다 — 그쪽은 경기 기록이 남아있는 한 계속 목록에
-        (미지정으로) 다시 나타나야 정상이고, 이쪽(삭제)은 그 경기 기록 자체가 없을 때만
-        허용해 진짜로 없앨 수 있다."""
-        if await self._repo.raw_name_has_any_participants(raw_name):
-            raise ValidationError("이 게임 아이디로 등록된 경기가 있어 삭제할 수 없어요 — 대신 미지정으로 되돌려 주세요.")
-        await self._repo.delete_replay_alias(raw_name)
-        await self._session.commit()
-
     async def get_match(self, match_id: int) -> GameResult:
         match = await self._repo.get(match_id)
         if match is None:
@@ -1225,19 +1068,6 @@ class GameResultService:
         row = MinimapImage(name=payload.name, image=payload.image)
         self._repo.add_minimap_image(row)
         await self._repo.flush()
-        if payload.hashes:
-            await self._repo.assign_minimap_image(payload.hashes, row.id)
-        await self._session.commit()
-        return MinimapImageOut(id=row.id, name=row.name, image=row.image)
-
-    async def update_minimap_image(self, image_id: int, payload: MinimapImageWrite) -> MinimapImageOut:
-        row = await self._repo.get_minimap_image(image_id)
-        if row is None:
-            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
-        row.name = payload.name
-        # 그림을 안 보냈으면 이름만 고치는 것이다 — 900KB짜리를 다시 올리게 하지 않는다.
-        if payload.image:
-            row.image = payload.image
         if payload.hashes:
             await self._repo.assign_minimap_image(payload.hashes, row.id)
         await self._session.commit()

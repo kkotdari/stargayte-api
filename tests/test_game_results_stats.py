@@ -317,17 +317,6 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     assert entry["mostPlayedRace"] is None
 
 
-async def test_main_race_picks_most_played(client):
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-    await _seed_matches(client, headers)
-
-    res = await client.get("/api/game-results/main-race", headers=headers, params={"memberId": "player01"})
-    assert res.status_code == 200, res.text
-    assert res.json() == {"race": "테란"}
-
-
 async def test_duplicate_check_matches_regardless_of_timestamp_format(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")

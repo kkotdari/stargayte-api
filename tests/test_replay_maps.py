@@ -173,14 +173,6 @@ async def test_minimap_image_shared_by_similar_maps(client):
     assert by_hash[_MAP["hash"]] == _PNG
     assert by_hash[_MAP2["hash"]] is None
 
-    # 이름만 고칠 때는 그림을 다시 올리지 않아도 된다(900KB짜리를 또 보내지 않게).
-    renamed = await client.put(
-        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
-        json={"name": "빠른무한 계열", "hashes": []},
-    )
-    assert renamed.status_code == 200, renamed.text
-    assert renamed.json() == {"id": image_id, "name": "빠른무한 계열", "image": _PNG}
-
     # 그림을 지우면 가리키던 맵도 함께 떨어진다.
     gone = await client.delete(f"/api/game-results/replay-maps/images/{image_id}", headers=headers)
     assert gone.status_code == 204, gone.text

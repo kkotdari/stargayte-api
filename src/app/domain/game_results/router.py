@@ -1,4 +1,3 @@
-from datetime import date
 from typing import Literal
 from urllib.parse import quote
 
@@ -11,7 +10,6 @@ from app.domain.game_results.schemas import (
     DuplicateCheckRequest,
     DuplicateCheckResponse,
     EarliestDateResponse,
-    MainRaceResponse,
     GameResultOut,
     GameResultPage,
     GameResultReplayMerge,
@@ -22,10 +20,7 @@ from app.domain.game_results.schemas import (
     MinimapAssignWrite,
     MinimapImageOut,
     MinimapImageWrite,
-    MonthlyMatchStatsResponse,
     RivalryResponse,
-    MonthlyTeamRankingResponse,
-    RankingResponse,
     RatingHistoryResponse,
     ReplayMapList,
     SummaryRewrite,
@@ -37,13 +32,9 @@ from app.domain.game_results.schemas import (
     ReplayNameMappingListResponse,
     ReplayNameMappingMember,
     ReplayNameMappingWrite,
-    TeamRankingResponse,
 )
 from app.domain.game_results.service import GameResultService, to_game_result_out
 
-
-def _split_months(months: str) -> list[str]:
-    return [m.strip() for m in months.split(",") if m.strip()]
 
 # prefix는 여기서 안 붙인다 — 상위(api/router.py)가 이 라우터를 두 번 끼운다: 정식 경로
 # (/api/game-results)와, 배포가 어긋나는 순간을 위한 옛 경로(/api/matches). 한 벌의 핸들러가
@@ -134,28 +125,6 @@ async def get_stats(
     return GameResultStatsResponse(members=members)
 
 
-@router.get("/ranking", response_model=RankingResponse)
-async def get_ranking(
-    db: DbSession,
-    storage: StorageDep,
-    _current: CurrentMember,
-    date_from: str | None = Query(default=None, alias="dateFrom"),
-    date_to: str | None = Query(default=None, alias="dateTo"),
-    match_type: str | None = Query(default=None, alias="matchType"),
-    race: str | None = None,
-) -> RankingResponse:
-    # 랭킹 조회 — 순위/레이팅(+전적)을 회원별로 내려준다. 산정 로직은 전적통계(/stats)와
-    # 공유하지만 URL은 의미(랭킹)에 맞춘다(요청). member_ids는 랭킹에선 안 쓰므로 뺐다.
-    members = await GameResultService(db, storage).get_stats(
-        member_ids=None,
-        date_from=date_from,
-        date_to=date_to,
-        match_type=match_type,
-        race=race,
-    )
-    return RankingResponse(members=members)
-
-
 @router.get("/rating-history", response_model=RatingHistoryResponse)
 async def get_rating_history(
     db: DbSession,
@@ -175,21 +144,6 @@ async def get_rating_history(
     )
 
 
-@router.get("/team-ranking", response_model=TeamRankingResponse)
-async def get_team_ranking(
-    db: DbSession,
-    storage: StorageDep,
-    _current: CurrentMember,
-    # 랭킹 화면의 월 기준 기본 집계용 — 안 넘기면 예전처럼 전체 기간이 대상이다.
-    date_from: str | None = Query(default=None, alias="dateFrom"),
-    date_to: str | None = Query(default=None, alias="dateTo"),
-) -> TeamRankingResponse:
-    return await GameResultService(db, storage).get_team_ranking(
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
-    )
-
-
 @router.get("/stats/rivalries", response_model=RivalryResponse)
 async def get_rivalries(
     db: DbSession,
@@ -204,56 +158,6 @@ async def get_rivalries(
     return await GameResultService(db, storage).get_rivalries(
         date_from=date_from, date_to=date_to, team=(mode == "team"),
     )
-
-
-@router.get("/stats/monthly", response_model=MonthlyMatchStatsResponse)
-async def get_stats_monthly(
-    db: DbSession,
-    storage: StorageDep,
-    _current: CurrentMember,
-    # "YYYY-MM" 쉼표 목록 — 목록의 전월 대비 화살표(2개월)나 카드 클릭 시 최근 5개월
-    # 순위변동 모달이 한 번에 여러 달을 요청한다(요청: "api로 랭킹 목록 가져올때
-    # 배열형태로 파라미터 추가").
-    months: str = Query(alias="months"),
-    member_ids: str | None = Query(default=None, alias="memberIds"),
-    match_type: str | None = Query(default=None, alias="matchType"),
-    race: str | None = None,
-) -> MonthlyMatchStatsResponse:
-    ids = [i.strip() for i in member_ids.split(",") if i.strip()] if member_ids else None
-    result = await GameResultService(db, storage).get_stats_monthly(
-        months=_split_months(months), member_ids=ids, match_type=match_type, race=race,
-    )
-    return MonthlyMatchStatsResponse(months=result)
-
-
-@router.get("/team-ranking/monthly", response_model=MonthlyTeamRankingResponse)
-async def get_team_ranking_monthly(
-    db: DbSession,
-    storage: StorageDep,
-    _current: CurrentMember,
-    months: str = Query(alias="months"),
-) -> MonthlyTeamRankingResponse:
-    result = await GameResultService(db, storage).get_team_ranking_monthly(months=_split_months(months))
-    return MonthlyTeamRankingResponse(months=result)
-
-
-@router.get("/main-race", response_model=MainRaceResponse)
-async def get_main_race(
-    db: DbSession,
-    storage: StorageDep,
-    _current: CurrentMember,
-    member_id: str = Query(alias="memberId"),
-    date_from: str | None = Query(default=None, alias="dateFrom"),
-    date_to: str | None = Query(default=None, alias="dateTo"),
-    match_type: str | None = Query(default=None, alias="matchType"),
-) -> MainRaceResponse:
-    race = await GameResultService(db, storage).get_main_race(
-        member_id=member_id,
-        date_from=date_from,
-        date_to=date_to,
-        match_type=match_type,
-    )
-    return MainRaceResponse(race=race)
 
 
 @router.get("/earliest-date", response_model=EarliestDateResponse)
@@ -291,14 +195,6 @@ async def create_minimap_image(
 ) -> MinimapImageOut:
     """실제 미니맵 그림을 한 장 올린다. hashes를 함께 주면 그 맵들이 이 그림을 쓴다."""
     return await GameResultService(db, storage).create_minimap_image(payload)
-
-
-@router.put("/replay-maps/images/{image_id}", response_model=MinimapImageOut)
-async def update_minimap_image(
-    image_id: int, payload: MinimapImageWrite, db: DbSession, storage: StorageDep,
-    _admin: CurrentAdmin,
-) -> MinimapImageOut:
-    return await GameResultService(db, storage).update_minimap_image(image_id, payload)
 
 
 @router.delete("/replay-maps/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -379,13 +275,6 @@ async def set_replay_name_mapping(
         payload.raw_name, payload.kind, payload.member_id, actor_pk=admin.pk,
     )
     return _to_mapping_entry(row)
-
-
-@router.delete("/replay-name-mappings/{raw_name}", status_code=204)
-async def delete_replay_name_mapping(
-    raw_name: str, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
-) -> None:
-    await GameResultService(db, storage).delete_replay_name_mapping(raw_name)
 
 
 @router.get("/replays/archive")

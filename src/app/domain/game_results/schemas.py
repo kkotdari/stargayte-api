@@ -400,12 +400,6 @@ class RivalryResponse(BaseModel):
     pairs: list[RivalryPairOut]
 
 
-class RankingResponse(GameResultStatsResponse):
-    """랭킹 조회 전용 응답 — 구조는 전적통계(GameResultStatsResponse)와 같지만(회원별 전적 +
-    순위/레이팅), URL 의미(랭킹)에 맞게 별도 이름으로 노출한다(요청: "랭킹 엔드포인트
-    분리"). 백엔드 산정 로직은 get_stats를 그대로 공유한다."""
-
-
 class RatingHistoryResponse(BaseModel):
     """랭킹 상세의 '경기당 레이팅 변화(Δ)' — 이 회원이 뛴 각 경기의 μ 증감(match_no로 키잉).
 
@@ -422,57 +416,6 @@ class RatingHistoryResponse(BaseModel):
     conservative: float | None = Field(default=None)
     games: int = 0
     provisional: bool = False
-
-
-class MemberStatsMonthEntry(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    # "YYYY-MM" — 요청한 순서 그대로 돌려준다.
-    month: str
-    members: list[MemberStatsEntry]
-
-
-class MonthlyMatchStatsResponse(BaseModel):
-    """랭킹 화면의 월별 순위변동(최근 5개월) 비교와, 목록의 전월 대비 순위 화살표가 함께
-    쓴다 — 달마다 따로 요청을 보내는 대신 한 번에 여러 달을 받아 왕복을 줄인다."""
-
-    months: list[MemberStatsMonthEntry]
-
-
-class TeamRankEntry(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    # 그 팀을 이룬 회원들의 로그인 아이디 — 개인 승점이 높은 순으로 이미 정렬돼 있다
-    # (화면이 이 순서 그대로 2×2 격자에 왼→오, 위→아래로 채운다).
-    member_ids: list[str] = Field(alias="memberIds")
-    plays: int
-    wins: int
-    losses: int
-    draws: int
-    # 승 +1, 무 0, 패 -1 — 음수가 될 수 있다.
-    points: int
-
-
-class TeamRankingResponse(BaseModel):
-    # dateFrom/dateTo를 안 넘기면 전체 경기 집계, 넘기면(랭킹 화면의 월 기준 기본 집계) 그
-    # 기간만 대상 — 어느 쪽이든 응답 자체에는 기간 정보를 다시 싣지 않는다(요청한 쪽이 이미
-    # 알고 있다).
-    teams: list[TeamRankEntry]
-
-
-class TeamRankMonthEntry(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    month: str
-    teams: list[TeamRankEntry]
-
-
-class MonthlyTeamRankingResponse(BaseModel):
-    months: list[TeamRankMonthEntry]
-
-
-class MainRaceResponse(BaseModel):
-    race: str | None
 
 
 class DuplicateCheckRequest(BaseModel):
