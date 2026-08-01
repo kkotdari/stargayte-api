@@ -14,7 +14,6 @@ from app.domain.leagues.schemas import (
     LeagueTeamCompositionIn,
     LeagueTeamOut,
     LeagueTeamRosterIn,
-    LeagueUpdateIn,
 )
 from app.domain.leagues.service import LeagueService
 
@@ -36,13 +35,6 @@ async def create_league(payload: LeagueCreateIn, db: DbSession, current: Current
 @router.get("/{league_id}", response_model=LeagueOut)
 async def get_league(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
     return await LeagueService(db).get_league(league_id)
-
-
-@router.patch("/{league_id}", response_model=LeagueOut)
-async def update_league(
-    league_id: int, payload: LeagueUpdateIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueOut:
-    return await LeagueService(db).update_league(league_id, payload, actor=current)
 
 
 @router.delete("/{league_id}", status_code=204)

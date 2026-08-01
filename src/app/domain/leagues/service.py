@@ -23,7 +23,6 @@ from app.domain.leagues.schemas import (
     LeagueTeamCompositionIn,
     LeagueTeamOut,
     LeagueTeamRosterIn,
-    LeagueUpdateIn,
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
@@ -197,20 +196,6 @@ class LeagueService:
         await self._repo.flush()
         await self._session.commit()
         await self._session.refresh(league, attribute_names=["teams", "matches"])
-        return to_league_out(league)
-
-    async def update_league(
-        self, league_id: int, payload: LeagueUpdateIn, *, actor: Member,
-    ) -> LeagueOut:
-        league = await self._get_or_404(league_id)
-        if league.draw_size is not None:
-            raise ValidationError("대진표 생성 후에는 리그 설정을 바꿀 수 없습니다.")
-        if payload.name is not None:
-            league.name = payload.name
-        if payload.best_of is not None:
-            league.best_of = payload.best_of
-        league.updated_by = actor.pk
-        await self._session.commit()
         return to_league_out(league)
 
     async def delete_league(self, league_id: int) -> None:

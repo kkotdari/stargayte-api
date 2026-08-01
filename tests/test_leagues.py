@@ -111,7 +111,7 @@ async def test_non_admin_forbidden(client):
     assert res.status_code == 403, res.text
 
 
-async def test_create_get_update_delete_league(client):
+async def test_create_get_delete_league(client):
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, name="가을리그", best_of=3)
     assert league["status"] == "setup"
@@ -121,12 +121,6 @@ async def test_create_get_update_delete_league(client):
     res = await client.get(f"/api/leagues/{league['id']}", headers=admin_headers)
     assert res.status_code == 200
     assert res.json()["name"] == "가을리그"
-
-    res = await client.patch(
-        f"/api/leagues/{league['id']}", headers=admin_headers, json={"name": "겨울리그"}
-    )
-    assert res.status_code == 200, res.text
-    assert res.json()["name"] == "겨울리그"
 
     res = await client.delete(f"/api/leagues/{league['id']}", headers=admin_headers)
     assert res.status_code == 204

@@ -93,17 +93,10 @@ class LeagueCreateIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(min_length=1, max_length=100)
-    # 생성 시 확정, 이후 변경 불가(팀 로스터/대타 제약이 여기 달려있어 중간에 바꾸면
-    # 이미 만들어진 팀 구성과 모순될 수 있다) — LeagueUpdateIn에는 없음.
+    # 생성 시 확정, 이후 변경 불가 — 팀 로스터/대타 제약이 여기 달려있어 중간에 바꾸면 이미
+    # 만들어진 팀 구성과 모순될 수 있다(리그 설정을 고치는 경로 자체가 없어졌다).
     mode: LeagueMode = Field(default="team")
     best_of: int = Field(default=3, alias="bestOf", ge=1, le=99)
-
-
-class LeagueUpdateIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    name: str | None = Field(default=None, min_length=1, max_length=100)
-    best_of: int | None = Field(default=None, alias="bestOf", ge=1, le=99)
 
 
 class LeagueTeamRosterIn(BaseModel):
