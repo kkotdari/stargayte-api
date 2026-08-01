@@ -148,10 +148,11 @@ async def test_stats_excludes_extreme_outlier_game_from_eapm_ecmd_average(client
 async def test_stats_excludes_extreme_outlier_game_from_apm_average(client):
     """APM 평균도 튀는 경기 하나를 뺀다(지적: APM이 700대로 나온다).
 
-    APM은 '분당' 값이라 한 판만 짧아도 통째로 튄다 — 20초 만에 끝난 기록에 시작 직후의
-    핫키 연타가 그대로 들어가면 그 판 하나가 수천이 된다. 그런 판이 단순 평균에 섞이면
-    열 판 넘게 정상으로 친 사람도 700대가 된다. 유효APM은 처음부터 이 처리를 받고
-    있었는데 APM만 빠져 있었다."""
+    APM은 '분당' 값이라 한 판만 튀어도 평균이 통째로 끌려간다 — 열 판 넘게 정상으로 친
+    사람도 700대가 된다. 유효APM은 처음부터 이 처리를 받고 있었는데 APM만 빠져 있었다.
+
+    여기서 튀는 판은 길이가 정상(10분)이다 — 짧은 판은 경기 길이 기준(_MIN_DURATION_SECONDS)
+    에 먼저 걸려서, 그걸 썼다간 중앙값/MAD 판정이 실제로 도는지를 검증하지 못한다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
@@ -163,12 +164,13 @@ async def test_stats_excludes_extreme_outlier_game_from_apm_average(client):
             team2=[_slot("player02", "저그", 60, 50, 300, 200)],
             result="team1", duration_seconds=600,
         )
-    # 6번째만 20초 만에 끝난 기록 — 커맨드는 얼마 안 되는데 분당으로 치면 7000이 된다.
+    # 6번째만 APM이 극단적으로 튄다(파싱 오류) — 길이는 나머지와 같은 10분이라 길이 기준에는
+    # 안 걸리고 오직 중앙값/MAD 판정으로만 걸러져야 한다.
     await _create_match(
         client, headers, "2026-07-06",
-        team1=[_slot("player01", "테란", 7000, 120, 230, 200)],
+        team1=[_slot("player01", "테란", 7000, 120, 1500, 1200)],
         team2=[_slot("player02", "저그", 60, 50, 300, 200)],
-        result="team1", duration_seconds=20,
+        result="team1", duration_seconds=600,
     )
 
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
@@ -177,6 +179,72 @@ async def test_stats_excludes_extreme_outlier_game_from_apm_average(client):
     # 튄 판을 뺀 다섯 판의 평균 — 단순 평균이었다면 (750+7000)/6 = 1292가 됐다.
     assert overall["avgApm"] == 150
     assert res.json()["members"][0]["byRace"]["테란"]["avgApm"] == 150
+
+
+async def test_stats_excludes_too_short_game_even_below_outlier_sample_floor(client):
+    """2분 미만 경기는 표본이 몇 판이든 지표 평균에서 뺀다(_MIN_DURATION_SECONDS).
+
+    중앙값/MAD 판정은 표본이 5판(_OUTLIER_MIN_SAMPLES) 미만이면 아예 안 돈다. 순위 최소
+    판수가 개인전 3판으로 내려오면서 서너 판만 뛴 회원이 순위표에 오르는데, 그 구간은
+    정확히 MAD의 사각지대였다 — 20초짜리 기록 하나가 그대로 평균에 들어갔다. 경기 길이
+    기준은 표본이 한 판이어도 판단할 수 있어 그 구멍을 메운다.
+
+    여기서는 정상 경기를 일부러 두 판만 둔다 — MAD가 돌았다면 검증이 성립하지 않는다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    for i, apm in enumerate([150, 150]):
+        await _create_match(
+            client, headers, f"2026-07-{i + 1:02d}",
+            team1=[_slot("player01", "테란", apm, 120, 1500, 1200, build=900)],
+            team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
+            result="team1", duration_seconds=600,
+        )
+    # 20초 만에 끝난 기록 — 나간 판이라 APM은 분당으로 치솟고, 커맨드·생산은 반대로 바닥이다.
+    await _create_match(
+        client, headers, "2026-07-03",
+        team1=[_slot("player01", "테란", 7000, 4000, 230, 200, build=30)],
+        team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
+        result="team1", duration_seconds=20,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    assert overall["plays"] == 3  # 전적은 그대로 3전 — 나간 판도 뛴 건 뛴 거다
+    # 다섯 지표 모두 정상 두 판만으로 계산된다(단순 평균이었다면 APM 2433, 생산 610).
+    assert overall["avgApm"] == 150
+    assert overall["avgEapm"] == 120
+    assert overall["avgCmd"] == 1500
+    assert overall["avgEcmd"] == 1200
+    assert overall["avgBuild"] == 900
+
+
+async def test_stats_keeps_game_at_the_duration_floor(client):
+    """경계값 자체(정확히 120초)는 남긴다 — 기준은 '미만'이라 2분짜리는 치른 판이다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    await _create_match(
+        client, headers, "2026-07-01",
+        team1=[_slot("player01", "테란", 100, 80, 500, 400, build=300)],
+        team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
+        result="team1", duration_seconds=120,
+    )
+    # 1초만 모자란 판은 빠진다.
+    await _create_match(
+        client, headers, "2026-07-02",
+        team1=[_slot("player01", "테란", 900, 800, 50, 40, build=10)],
+        team2=[_slot("player02", "저그", 60, 50, 300, 200, build=150)],
+        result="team1", duration_seconds=119,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    assert overall["plays"] == 2
+    assert overall["avgApm"] == 100  # 120초짜리 한 판만 반영 — 둘 다면 500이었다
+    assert overall["avgBuild"] == 300
 
 
 async def test_stats_excludes_extreme_outlier_game_from_cmd_and_build_average(client):

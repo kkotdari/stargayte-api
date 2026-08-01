@@ -135,9 +135,33 @@ def _trimmed_avg(rows: list, attr: str) -> int | None:
     return round(sum(kept) / len(kept))
 
 
+# 지표 평균에서 아예 빼는 경기 길이 — 2분 미만은 '치른 판'으로 보지 않는다.
+#
+# 브루드워 1:1에서 가장 빠른 올인(4드론·BBS)도 2분에는 아직 안 붙는다. 그 전에 결과가 찍힌
+# 기록은 오등록이거나 즉시 나간(드랍) 판이지 경기가 아니다. 그런 판은 다섯 지표를 전부 망가
+# 뜨린다 — APM은 '분당' 값이라 시작 직후 핫키 연타만 들어가고 나눠지는 시간이 없어 수천으로
+# 치솟고(실측 20~30초대), 커맨드·생산은 경기당 총합이라 반대로 바닥을 끌어내린다.
+#
+# 아래 _outlier_keep_mask(중앙값/MAD)와 겹치는 게 아니라 서로 다른 구멍을 막는다: MAD 쪽은
+# 표본이 _OUTLIER_MIN_SAMPLES(5판) 미만이면 아예 동작하지 않아서, 서너 판만 뛴 회원의 20초
+# 짜리 기록은 지금껏 그대로 평균에 들어갔다. 순위 최소 판수가 개인전 3판으로 내려오면서
+# (_MIN_PLAYS_FOR_RANK) 정확히 그 사각지대에 있는 회원이 순위표에 오르게 됐다. 경기 길이
+# 기준은 표본이 한 판이어도 판단할 수 있어 그 구간을 메운다.
+_MIN_DURATION_SECONDS = 120
+
+
 def _trimmed_avgs(rows: list) -> dict[str, int | None]:
     """_TRIMMED_METRICS 다섯 항목을 RaceStatsEntry.model_copy(update=...)에 바로 넣을
-    모양으로 낸다 — 종족별/전체 두 곳에서 같은 목록을 쓰게 해서 한쪽만 빠지는 일을 막는다."""
+    모양으로 낸다 — 종족별/전체 두 곳에서 같은 목록을 쓰게 해서 한쪽만 빠지는 일을 막는다.
+
+    지표 평균에만 영향을 준다 — 전적(판수/승/무/승률)은 짧은 판도 그대로 센다. 나간 판도
+    진 건 진 거라 전적에서까지 빼면 다른 이야기가 된다."""
+    # duration_seconds가 NULL인 기록은 남긴다 — 짧다는 게 아니라 잰 적이 없다는 뜻이라
+    # 뺄 근거가 없다(실데이터에는 없지만 컬럼이 nullable이고 수동 등록 경로로 생길 수 있다).
+    rows = [
+        r for r in rows
+        if r.duration_seconds is None or r.duration_seconds >= _MIN_DURATION_SECONDS
+    ]
     return {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_METRICS}
 
 
