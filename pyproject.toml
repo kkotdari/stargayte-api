@@ -17,6 +17,13 @@ dependencies = [
     "pyjwt>=2.9.0",
     "bcrypt>=4.2.0",
     "pillow>=11.0.0",
+    # zoneinfo가 쓸 시간대 데이터. ZoneInfo("Asia/Seoul")을 모듈 임포트 시점에 평가하는
+    # 곳이 세 군데(main, challenges/service, feed/service)라 이게 없으면 앱이 기동조차
+    # 못 한다. 지금 배포가 뜨는 건 베이스 이미지(python:3.12-slim)가 시스템 시간대 DB를
+    # 갖고 있어서일 뿐이라, 이미지가 바뀌면 조용히 깨진다 — 명시해서 그 우연을 없앤다.
+    # 시스템 DB가 없을 때만 zoneinfo가 이 패키지로 넘어가므로 리눅스에서는 부담이 없고,
+    # 윈도우는 시스템 DB 자체가 없어서 이게 있어야 테스트가 돈다.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -44,3 +51,6 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# src 레이아웃이라 이게 없으면 conftest의 `from app...`이 곧바로 ModuleNotFoundError다.
+# 패키지를 굳이 설치(pip install -e .)하지 않고도 저장소를 받아 pytest만 치면 돌게 한다.
+pythonpath = ["src"]
