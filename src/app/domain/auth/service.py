@@ -12,7 +12,7 @@ from app.core.security import (
     verify_password,
 )
 from app.domain.auth.models import AccessHistory, RefreshToken
-from app.domain.auth.schemas import AccessHistoryEntry, SignupRequest
+from app.domain.auth.schemas import SignupRequest
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 from app.domain.members.service import MemberService, ensure_member_usable
@@ -125,25 +125,6 @@ class AuthService:
             )
         )
         await self._session.commit()
-
-    async def list_access_history(self, *, limit: int = 300) -> list[AccessHistoryEntry]:
-        stmt = (
-            select(AccessHistory, Member)
-            .join(Member, Member.pk == AccessHistory.member_pk)
-            .order_by(AccessHistory.logged_in_at.desc())
-            .limit(limit)
-        )
-        rows = (await self._session.execute(stmt)).all()
-        return [
-            AccessHistoryEntry(
-                id=history.id,
-                member_id=member.id,
-                member_nickname=member.nickname,
-                logged_in_at=history.logged_in_at,
-                screen_code=history.screen_code,
-            )
-            for history, member in rows
-        ]
 
     async def signup(self, payload: SignupRequest) -> tuple[Member, str, str]:
         member = await self._member_service.create_member(

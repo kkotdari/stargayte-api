@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Request
 
-from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
+from app.api.deps import CurrentMember, DbSession, StorageDep
 from app.domain.auth.schemas import (
-    AccessHistoryEntry,
     AccessPingRequest,
     AuthResponse,
     LoginRequest,
@@ -68,8 +67,3 @@ async def access_ping(
     )
 
 
-@router.get("/access-history", response_model=list[AccessHistoryEntry])
-async def access_history(
-    db: DbSession, storage: StorageDep, _admin: CurrentAdmin
-) -> list[AccessHistoryEntry]:
-    return await AuthService(db, storage).list_access_history()

@@ -14,8 +14,6 @@ api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(members_router)
 api_router.include_router(game_results_router, prefix="/game-results")
-# 옛 경로 — 프론트가 모두 새 경로를 쓰게 된 뒤 한참 지나면 지워도 된다.
-api_router.include_router(game_results_router, prefix="/matches", include_in_schema=False)
 api_router.include_router(app_version_router)
 api_router.include_router(app_versions_router)
 api_router.include_router(challenges_router)

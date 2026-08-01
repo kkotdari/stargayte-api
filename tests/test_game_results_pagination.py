@@ -152,12 +152,11 @@ async def test_user_search_matches_replay_alias(client):
     assert ids == {match["id"]}
 
 
-async def test_legacy_matches_path_still_answers(client):
-    """옛 경로(/api/matches)도 같은 핸들러로 그대로 응답한다.
+async def test_legacy_matches_path_is_gone(client):
+    """옛 경로(/api/matches) 별칭은 걷어냈다 — 프론트가 /api/game-results만 쓴다.
 
-    이름 정리로 정식 경로가 /api/game-results가 됐지만, 프론트와 백엔드 배포 사이가
-    한 순간이라도 어긋나면 옛 경로로 오는 요청이 있다 — 그래서 별칭을 남겼다(요청).
-    이 테스트가 그 별칭이 살아 있는지를 지킨다. 나중에 별칭을 지울 때 함께 지우면 된다.
+    한때 배포가 어긋나는 순간을 대비해 같은 라우터를 두 경로에 끼워 뒀는데, 그 사이
+    game-results 라우터가 31개까지 늘어 숨은 표면이 그만큼 커졌다. 되살아나면 여기서 잡힌다.
     """
     a = await _signup(client, "legacyA", "legacyA#1")
     headers = {"Authorization": f"Bearer {a['accessToken']}"}
@@ -165,7 +164,6 @@ async def test_legacy_matches_path_still_answers(client):
     await _create_match(client, headers, "2026-03-01", ["legacyA"], ["legacyB"])
 
     new = await client.get("/api/game-results?limit=5", headers=headers)
-    old = await client.get("/api/matches?limit=5", headers=headers)
     assert new.status_code == 200, new.text
-    assert old.status_code == 200, old.text
-    assert [m["id"] for m in old.json()["items"]] == [m["id"] for m in new.json()["items"]]
+    old = await client.get("/api/matches?limit=5", headers=headers)
+    assert old.status_code == 404, old.text

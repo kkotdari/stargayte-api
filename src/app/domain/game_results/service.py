@@ -1171,57 +1171,6 @@ class GameResultService:
         # 서비스가 시간창 안에서 한 이벤트로 합친다. 실패해도 등록 자체는 성공으로 둔다.
         return await self._repo.refresh(match)
 
-    async def update_match(self, match_id: int, payload: GameResultWrite, *, actor: Member) -> GameResult:
-        match = await self.get_match(match_id)
-        self._ensure_can_modify(match, actor)
-        await self._ensure_no_duplicate_members(payload)
-        members_by_id = await self._ensure_members_exist(payload.team1 + payload.team2)
-        await self._remember_placeholder_raw_names(payload)
-        await self._ensure_player_name_classifications(payload.team1, payload.team2, members_by_id)
-
-        match.match_date = date.fromisoformat(payload.date)
-        match.match_type = payload.match_type
-        match.updated_by = actor.pk
-
-        map_hash = await self._store_replay_map(payload.map_data)
-        if match.result_row is None:
-            match.result_row = GameOutcome(
-                result=payload.result,
-                map_name=payload.map_name,
-                game_started_at=payload.game_started_at,
-                duration_seconds=payload.duration_seconds,
-                summary_data=payload.summary_data,
-                map_hash=map_hash,
-            )
-        else:
-            match.result_row.result = payload.result
-            match.result_row.map_name = payload.map_name
-            match.result_row.game_started_at = payload.game_started_at
-            match.result_row.duration_seconds = payload.duration_seconds
-            # 요약은 리플레이에서 다시 계산된 값이 있을 때만 갱신한다 — 수정 폼처럼 요약을
-            # 만들 재료(리플레이)를 다시 올리지 않는 경로에서 기존 값을 지우지 않도록.
-            if payload.summary_data is not None:
-                match.result_row.summary_data = payload.summary_data
-            # 맵 연결도 같은 규칙 — 리플레이를 다시 읽은 경로에서만 갱신한다.
-            if map_hash is not None:
-                match.result_row.map_hash = map_hash
-
-        match.participants.clear()
-        await self._session.flush()
-        match.participants.extend(
-            self._build_participants(payload.team1, payload.team2, members_by_id, actor_pk=actor.pk)
-        )
-
-        if payload.replay is None:
-            if match.result_row.replay is not None:
-                await self._storage.delete(match.result_row.replay.file_path)
-                match.result_row.replay = None  # single_parent+delete-orphan이라 행도 함께 삭제된다
-        else:
-            await self._apply_replay(match, payload.replay, actor_pk=actor.pk)
-
-        await self._session.commit()
-        return await self._repo.refresh(match)
-
     async def merge_replay(self, payload: GameResultReplayMerge, *, actor: Member) -> GameResult | None:
         """이미 등록된 경기(game_started_at 일치)에 리플레이 내부 정보만 다시 덮어쓴다(요청:
         중복 리플레이 재등록 시 새 컬럼 백필). 지표(APM/커맨드/생산)·맵·플레이시간은 항상,

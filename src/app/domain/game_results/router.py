@@ -36,9 +36,9 @@ from app.domain.game_results.schemas import (
 from app.domain.game_results.service import GameResultService, to_game_result_out
 
 
-# prefix는 여기서 안 붙인다 — 상위(api/router.py)가 이 라우터를 두 번 끼운다: 정식 경로
-# (/api/game-results)와, 배포가 어긋나는 순간을 위한 옛 경로(/api/matches). 한 벌의 핸들러가
-# 두 경로를 모두 받으므로 둘이 갈라질 일이 없다(요청: API URL도 통일).
+# prefix는 상위(api/router.py)에서 /game-results로 붙인다. 한때 옛 경로 /api/matches로도
+# 같은 라우터를 한 벌 더 끼워 뒀지만(배포가 어긋나는 순간 대비), 프론트가 새 경로만 쓰게 된
+# 뒤라 지웠다.
 router = APIRouter(tags=["game-results"])
 
 
@@ -302,22 +302,6 @@ async def create_match(
 ) -> GameResultOut:
     service = GameResultService(db, storage)
     match = await service.create_match(payload, actor=current)
-    return to_game_result_out(
-        match, storage, await service.alias_by_player_name(),
-        actor_pk=current.pk, is_admin=current.has_any_role("0202"),
-    )
-
-
-@router.put("/{match_id}", response_model=GameResultOut)
-async def update_match(
-    match_id: int,
-    payload: GameResultWrite,
-    db: DbSession,
-    storage: StorageDep,
-    current: CurrentMember,
-) -> GameResultOut:
-    service = GameResultService(db, storage)
-    match = await service.update_match(match_id, payload, actor=current)
     return to_game_result_out(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),

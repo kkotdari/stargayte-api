@@ -185,22 +185,6 @@ async def test_match_lifecycle_with_attachment(client):
     assert list_res.status_code == 200
     assert len(list_res.json()["items"]) == 1
 
-    update_res = await client.put(
-        f"/api/game-results/{match['id']}",
-        headers=headers,
-        json={
-            "date": "2026-07-01",
-            "team1": [{"memberId": "player01", "race": "테란"}],
-            "team2": [{"memberId": "player02", "race": "저그"}],
-            "result": "team2",
-            "note": "수정됨",
-            "replay": None,
-        },
-    )
-    assert update_res.status_code == 200, update_res.text
-    updated = update_res.json()
-    assert updated["result"] == "team2"
-    assert updated["replay"] is None
 
 
 async def test_manual_match_no_uses_match_date_not_registration_time(client):
@@ -361,7 +345,7 @@ async def test_match_shows_author(client):
     assert match["createdBy"] == {"id": "player01", "nickname": "Shadow"}
 
 
-async def test_only_author_or_admin_can_update_or_delete_match(client):
+async def test_only_author_or_admin_can_delete_match(client):
     admin = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
     await _set_status(client, admin["accessToken"], "player02", "active")
@@ -371,31 +355,13 @@ async def test_only_author_or_admin_can_update_or_delete_match(client):
 
     match = await _create_match(client, admin["accessToken"])
 
-    # 작성자가 아닌 일반 회원은 수정/삭제 모두 막힌다.
+    # 작성자가 아닌 일반 회원은 삭제가 막힌다(경기 수정 엔드포인트는 없어졌다).
     other_headers = {"Authorization": f"Bearer {member['accessToken']}"}
-    update_payload = {
-        "date": "2026-07-01",
-        "team1": [{"memberId": "player01", "race": "테란"}],
-        "team2": [{"memberId": "player02", "race": "저그"}],
-        "result": "team2",
-        "note": "몰래 수정",
-    }
-    forbidden_update = await client.put(
-        f"/api/game-results/{match['id']}", headers=other_headers, json=update_payload
-    )
-    assert forbidden_update.status_code == 403
-
     forbidden_delete = await client.delete(f"/api/game-results/{match['id']}", headers=other_headers)
     assert forbidden_delete.status_code == 403
 
-    # 작성자 본인은 수정 가능
+    # 작성자 본인은 삭제 가능, 삭제 후 목록에서 사라진다
     author_headers = {"Authorization": f"Bearer {admin['accessToken']}"}
-    own_update = await client.put(
-        f"/api/game-results/{match['id']}", headers=author_headers, json=update_payload
-    )
-    assert own_update.status_code == 200
-
-    # 작성자 본인은 삭제도 가능, 삭제 후 목록에서 사라진다
     own_delete = await client.delete(f"/api/game-results/{match['id']}", headers=author_headers)
     assert own_delete.status_code == 204
     list_res = await client.get("/api/game-results", headers=author_headers)
