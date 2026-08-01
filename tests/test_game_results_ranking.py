@@ -260,51 +260,41 @@ async def test_rank_score_is_null_without_games(client):
     assert by_id["player03"]["sortOrder"] > by_id["player01"]["sortOrder"]
 
 
-async def test_team_rank_needs_ten_plays(client):
-    """팀전은 열 판을 채워야 점수·순위가 나온다(요청: 개인전 3판, 팀전 10판).
+async def test_team_rank_ignores_min_plays(client):
+    """포인트에는 최소 판수를 걸지 않는다(요청: "포인트 컬럼은 최소 경기수 제약을 적용
+    안 하는 곳이야 — 편차가 없는 확정적 결과이기 때문").
 
-    한 판의 결과를 넷이 나눠 갖는 자리라, 몇 판 안 되는 팀전 점수는 그 사람을 말해 주지
-    못한다. 못 채운 사람은 0경기 회원과 같은 자리 — 점수는 없고(null) 순위표 맨 아래
-    한 덩어리다."""
+    이 점수는 평균이 아니라 누적이라, 적게 뛴 사람은 못 믿을 값이 나오는 게 아니라 그냥
+    적게 쌓인다. 한때 팀전 열 판을 채워야 점수가 나왔는데, 그 문턱을 걷어냈다."""
     headers = await _signup_many(client, 4)
     for _ in range(9):
         await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
 
     nine = await _stats(client, headers, match_type="0102")
     assert nine["player01"]["overall"]["plays"] == 9
-    assert nine["player01"]["rankScore"] is None  # 아홉 판까지는 아직 없음
-    assert nine["player03"]["rankScore"] is None
-
-    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
-    ten = await _stats(client, headers, match_type="0102")
-    assert ten["player01"]["rankScore"] > 0  # 열 판째에 비로소 나온다
-    assert ten["player03"]["rankScore"] < 0
+    assert nine["player01"]["rankScore"] > 0   # 아홉 판이어도 그대로 나온다
+    assert nine["player03"]["rankScore"] < 0
 
 
-async def test_solo_rank_needs_three_plays(client):
-    """개인전은 세 판을 채워야 점수가 나온다(요청: 개인전 3판) — 팀전(10판)보다 문턱이
-    낮은 건 결과가 온전히 그 사람 몫이라서다."""
+async def test_solo_rank_ignores_min_plays(client):
+    """개인전도 마찬가지 — 두 판만 뛰어도 포인트는 그대로 나온다. 한 판도 안 뛴 사람만
+    값이 없다(0경기와 0점은 다른 말이라서)."""
     headers = await _signup_many(client, 3)
     for _ in range(2):
         await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
 
     two = await _stats(client, headers, match_type="0101")
     assert two["player01"]["overall"]["plays"] == 2
-    assert two["player01"]["rankScore"] is None  # 두 판까지는 아직 없음
-    assert two["player02"]["rankScore"] is None
-
-    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
-    three = await _stats(client, headers, match_type="0101")
-    assert three["player01"]["rankScore"] > 0  # 세 판째에 비로소 나온다
-    assert three["player02"]["rankScore"] < 0
-    assert three["player03"]["rankScore"] is None  # 안 뛴 사람은 여전히 없다
+    assert two["player01"]["rankScore"] > 0
+    assert two["player02"]["rankScore"] < 0
+    assert two["player03"]["rankScore"] is None  # 안 뛴 사람만 없다
 
 
-async def test_race_filter_min_plays_counts_that_race_only(client):
-    """종족 필터를 걸면 최소 판수도 그 종족 판수로 센다(요청) — 기준값은 유형 그대로다.
+async def test_race_filter_counts_that_race_only(client):
+    """종족 필터를 걸면 그 종족 판수로 센다 — 포인트는 판수와 무관하게 나오지만, 그 종족으로
+    한 판도 안 뛰었으면(0경기) 여전히 값이 없다.
 
-    p1은 개인전 4판을 뛰었지만 저그는 두 판뿐이다. 종족을 안 걸면 4판이라 개인전 기준
-    (3판)을 넘어 점수가 나오고, 저그를 걸면 두 판이라 못 넘어 점수가 사라져야 한다."""
+    p1은 개인전 4판(저그 2·테란 2)을 뛰었고 프로토스로는 한 판도 안 뛰었다."""
     headers = await _signup_many(client, 2)
 
     async def game(p1_race: str) -> None:
@@ -330,6 +320,9 @@ async def test_race_filter_min_plays_counts_that_race_only(client):
         assert res.status_code == 200, res.text
         return {m["memberId"]: m for m in res.json()["members"]}["player01"]
 
-    assert (await entry(None))["rankScore"] is not None       # 전 종족 4판 → 통과
-    assert (await entry("저그"))["rankScore"] is None          # 저그 2판 → 미달
-    assert (await entry("테란"))["rankScore"] is None          # 테란 2판 → 미달
+    # 포인트는 어느 쪽이든 나온다 — 두 판이어도 뛴 건 뛴 거다.
+    assert (await entry(None))["rankScore"] is not None
+    assert (await entry("저그"))["rankScore"] is not None
+    assert (await entry("테란"))["rankScore"] is not None
+    # 프로토스는 한 판도 안 뛰었다 → 포인트도 없다(0경기와 0점은 다른 말).
+    assert (await entry("프로토스"))["rankScore"] is None

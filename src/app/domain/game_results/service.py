@@ -310,19 +310,20 @@ HeadToHead = dict[int, dict[int, _Record]]
 # 몫이라 적은 판수로도 읽히는 편이지만, 팀전은 한 판의 결과를 넷이 나눠 갖는 자리라 표본이
 # 그만큼 얕다 — 그래서 팀전 쪽 문턱이 더 높다.
 #
-# 두 곳에서 같은 값을 쓴다.
-#  1) 순위·점수(_apply_rank_order) — 못 채우면 rank_score가 null이고 순위표 맨 아래 한 덩어리.
-#  2) 지표 평균(_gate_metrics_by_plays) — 못 채우면 APM·유효APM·커맨드·유효커맨드·생산이 전부
-#     null. 판수가 적으면 이상치 판정(_OUTLIER_MIN_SAMPLES)조차 못 돌아서, 두 판 중 한 판만
-#     튀어도 그 평균이 그대로 끌려간다 — 잴 만큼 안 뛴 걸 숫자로 내보내는 게 더 나쁘다.
+# 쓰는 곳은 지표 평균 하나뿐이다(_gate_metrics_by_plays) — 못 채우면 APM·유효APM·커맨드·
+# 유효커맨드·생산이 전부 null이다. 판수가 적으면 이상치 판정(_OUTLIER_MIN_SAMPLES)조차 못
+# 돌아서, 두 판 중 한 판만 튀어도 그 평균이 그대로 끌려간다 — 잴 만큼 안 뛴 걸 숫자로
+# 내보내는 게 더 나쁘다.
 #
-# 전적(판수/승/무/승률)은 어느 쪽에도 안 걸린다(요청: "승률은 정확하니까 굳이 안 빼도 될듯").
-# 한 판을 뛰었으면 그 한 판의 승패는 있는 그대로의 사실이라, 표본이 적다고 가릴 값이 아니다.
+# 안 걸리는 것들.
+#  · 전적(판수/승/무/승률) — 요청: "승률은 정확하니까 굳이 안 빼도 될듯". 한 판을 뛰었으면
+#    그 한 판의 승패는 있는 그대로의 사실이라, 표본이 적다고 가릴 값이 아니다.
+#  · 포인트·순위(_apply_rank_order) — 요청: "포인트 컬럼은 최소 경기수 제약을 적용 안 하는
+#    곳이야, 편차가 없는 확정적 결과이기 때문". 평균이 아니라 누적이라 적게 뛴 사람은
+#    '못 믿을 값'이 나오는 게 아니라 그냥 적게 쌓인다.
 #
 # 종족 필터가 걸리면 세는 대상이 그 종족 판수로 바뀐다(기준값 자체는 유형 그대로다 — 개인전에
-# 종족을 걸면 그 종족으로 3판, 팀전이면 그 종족으로 10판). 순위 쪽은 별도 분기가 없는데,
-# _ranked/_played가 보는 entry.overall.plays를 get_stats가 종족 필터 시 이미 그 종족 기준으로
-# 좁혀서 만들어 두기 때문이다.
+# 종족을 걸면 그 종족으로 3판, 팀전이면 그 종족으로 10판).
 #
 # 유형을 안 고른 조회(match_type=None)는 예전 기준('한 판이라도')을 그대로 둔다 — 화면에서는
 # 유형이 필수라 갈 수 없는 경로이고(프론트가 항상 matchType을 보낸다), 개인전과 팀전 경기가
@@ -769,37 +770,41 @@ class GameResultService:
         # 승리는 0 이상이어야하는데 아니야?", "많이 패배해서 승리보다 점수를 쌓을수도
         # 있는 문제가 있잖아") — running은 그 자체로 이미 이 규칙을 만족한다(잠정 선수를
         # 낮게 잡는 안전장치도 그대로 유지된다 — 새 회원은 0에서 시작해 여전히 σ가 큰
-        # 동안은 표시 점수가 크게 못 오른다). 종족 필터 시 overall.plays는 이미 그 종족
-        # 기준이라(get_stats), 0경기(그 종족 미플레이) 회원은 아래 _played 게이트로
-        # 지금처럼 공동 최하위로 내려간다(요청).
+        # 동안은 표시 점수가 크게 못 오른다). 그 종족으로 한 판도 안 뛴 회원은 running이
+        # 0이라 자연히 공동 최하위로 내려간다.
         # running은 _replay_ratings에서 이미 ×10 스케일(요청)이다 — 상세의 경기당 Δ와
         # 같은 곳에서 스케일돼 "Δ의 합 = 카드 점수"가 스케일 후에도 정확히 유지된다.
         score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
 
-        # 순위 대상이 되려면 이 유형에서 최소 판수는 채워야 한다(위 _MIN_PLAYS).
-        # 참가 우선 — 그 판수를 채운 사람은 레이팅이 아무리 낮아도 못 채운 회원보다 무조건
-        # 위(요청). 그다음 보수레이팅(높은 순) → 닉네임 → 로그인 아이디.
-        min_plays = _min_plays_for(match_type)
-
-        def _ranked(idx: int) -> bool:
-            return pairs[idx][0].overall.plays >= min_plays
+        # 포인트에는 최소 판수(_MIN_PLAYS)를 걸지 않는다(요청: "포인트 컬럼은 최소 경기수
+        # 제약을 적용 안 하는 곳이야 — 편차가 없는 확정적 결과이기 때문"). 이 점수는 평균이
+        # 아니라 누적이다: 이길 때만 오르고 질 때 안 내려가는 값이라, 적게 뛴 사람은 표본이
+        # 얕아 못 믿을 값이 나오는 게 아니라 그냥 적게 쌓인다. 세 판 뛰고 3점인 사람과 서른
+        # 판 뛰고 30점인 사람 사이에 문턱을 둘 이유가 없다 — 순서가 이미 그 차이를 말한다.
+        # (표본이 얕으면 못 믿는 값들 — APM·커맨드·생산 — 은 여전히 _gate_metrics_by_plays가
+        # 가린다. 그쪽은 평균이라 사정이 다르다.)
+        #
+        # 갈라 두는 것은 '한 판이라도 뛰었나' 하나뿐이다. 0경기와 0점은 다른 말이라(잰 적이
+        # 없는 것과 바닥까지 떨어진 것) 값을 null로 두고, 진 사람이 음수여도 안 뛴 사람보다는
+        # 위에 둔다(요청: "1경기라도 뛰면 점수가 음수여도 0경기 회원보다 무조건 위").
+        def _played(idx: int) -> bool:
+            return pairs[idx][0].overall.plays > 0
 
         order = sorted(
             range(len(pairs)),
             key=lambda i: (
-                0 if _ranked(i) else 1,
+                0 if _played(i) else 1,
                 -score[pairs[i][1].pk],
                 pairs[i][1].nickname,
                 pairs[i][1].id,
             ),
         )
-        # tie_group = (순위대상 여부, 보수레이팅)이 같으면 동률. 판수 미달 회원은 전원 맨
-        # 아래 한 덩어리다 — 점수를 안 내리므로 그 사이에 순위를 매길 근거도 없다.
+        # tie_group = (뛴 적 있나, 점수)가 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리다.
         prev_key: tuple[bool, float | None] | None = None
         group = -1
         for pos, i in enumerate(order):
             entry, m = pairs[i]
-            played = entry.overall.plays >= min_plays
+            played = entry.overall.plays > 0
             key = (played, score[m.pk] if played else None)
             if key != prev_key:
                 group += 1
@@ -811,10 +816,8 @@ class GameResultService:
             entry.equal_count = e
             entry.inferior_count = inf
             entry.person_score = s - inf  # 우열(우세-열세) — 상세 참고용
-            # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적) — 최소 판수를 못 채웠으면
-            # 점수를 내리지 않는다(요청: 최소 판수 이상만 노출하고 나머진 null). 0점은
-            # '바닥까지 떨어진 점수'로 읽히는데, 실제로는 아직 잴 만큼 안 뛰었다는 뜻이라
-            # 다른 말이다 — 화면에서는 "-"로 그려진다.
+            # 카드에 보여줄 점수(패배 비증가/승리 비감소 누적) — 최소 판수는 안 걸고,
+            # 한 판도 안 뛴 사람만 null이다(위 주석).
             entry.rank_score = score[m.pk] if played else None
             r = engine.get(_rk(m.pk))
             entry.mu = round(r.mu, 1)
