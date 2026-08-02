@@ -328,41 +328,38 @@ async def test_race_filter_counts_that_race_only(client):
     assert (await entry("프로토스"))["rankScore"] is None
 
 
-async def test_games_with_non_members_are_excluded_from_points(client, db_session):
-    """컴퓨터·비회원이 낀 경기는 포인트 집계에서 통째로 빠진다(요청: "포인트 0점이 아니라
-    게임으로 안 침").
+async def test_game_against_non_member_scores_zero(client, db_session):
+    """컴퓨터·비회원과 붙은 경기는 포인트가 0이다 — 경기 자체는 집계에 그대로 들어가고,
+    그 자리만 레이팅 대상에서 빠진다(요청).
 
-    예전에는 그 자리만 레이팅 대상에서 빼고 경기 자체는 반영했다 — 그러면 남은 사람이
-    '한 명 모자란 상대'와 싸운 것으로 계산돼 실제로 없던 실력차가 점수에 들어간다.
+    포인트(TrueSkill)는 상대의 실력치와 견줘 오르내리는 값인데 컴퓨터·비회원에는 그 값이
+    없다. 한쪽 편에 회원이 한 명도 없으면 견줄 상대가 아예 없어 갱신이 일어나지 않는다
+    (rating.py의 RatingEngine.update — 어느 한쪽이 비면 그대로 반환). 팀전에서 한 자리만
+    비회원이면 남은 회원들끼리는 정상적으로 계산된다.
 
-    전적(판수·승률)은 이 규칙과 무관하다 — 뛴 건 뛴 거다.
+    전적(판수·승률)은 이와 무관하게 그대로 센다 — 뛴 건 뛴 거다.
 
     회원 여부는 참가자 행이 아니라 replay_aliases(원본 게임 아이디 → 회원)로 판단하므로
     (models.py 주석), 그 매핑을 지우면 그 자리가 곧 비회원이 된다 — 등록 API는 회원만
     받으므로 여기서는 그렇게 만든다."""
-    headers = await _signup_many(client, 5)
-    # 2:2 팀전 — 그중 한 자리(player04)를 비회원으로 만든다. 1:1로는 이 규칙을 확인할 수
-    # 없다: 상대 한 명이 통째로 빠지면 겨룰 상대가 없어 어느 쪽 규칙이든 점수가 안 움직인다.
-    await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
-
     from sqlalchemy import delete
 
     from app.domain.members.models import ReplayAlias
 
-    await db_session.execute(delete(ReplayAlias).where(ReplayAlias.raw_name == "player04"))
+    headers = await _signup_many(client, 3)
+    await _match(client, headers, ["player01"], ["player02"], "team1", TODAY)
+    await db_session.execute(delete(ReplayAlias).where(ReplayAlias.raw_name == "player02"))
     await db_session.commit()
 
-    by_id = await _stats(client, headers, match_type="0102")
+    by_id = await _stats(client, headers, match_type="0101")
     # 판수·승률은 그대로 센다.
     assert by_id["player01"]["overall"]["plays"] == 1
     assert by_id["player01"]["overall"]["wins"] == 1
-    # 포인트는 안 움직인다 — 그 경기는 레이팅 계산에 들어가지 않는다.
-    # (예전 규칙이었다면 남은 셋이 2:1로 붙은 것으로 계산돼 점수가 갈렸다.)
+    assert by_id["player01"]["overall"]["winRate"] == 100.0
+    # 포인트만 0 — 견줄 상대가 없어 레이팅이 안 움직인다.
     assert by_id["player01"]["rankScore"] == 0
-    assert by_id["player03"]["rankScore"] == 0
 
-    # 회원끼리만 붙은 경기는 그대로 반영된다(같은 표에서 대조).
-    await _match(client, headers, ["player01", "player02"], ["player03", "player05"], "team1", TODAY)
-    by_id = await _stats(client, headers, match_type="0102")
+    # 회원끼리 붙은 경기는 그대로 점수가 움직인다(같은 표에서 대조).
+    await _match(client, headers, ["player01"], ["player03"], "team1", TODAY)
+    by_id = await _stats(client, headers, match_type="0101")
     assert by_id["player01"]["rankScore"] > 0
-    assert by_id["player03"]["rankScore"] < 0

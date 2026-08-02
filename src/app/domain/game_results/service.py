@@ -381,13 +381,10 @@ def _replay_ratings(
     실제 점수"가 여전히 어긋날 수 있었다. 이제 카드 점수 자체가 이 누적값이라 항상
     정확히 일치한다). engine 자신(μ/σ)은 순수 TrueSkill 그대로 갱신되어 통계적으로
     올바르고, 화면에 노출하는 숫자만 이 파생값을 쓴다.
-    컴퓨터나 비회원이 한 명이라도 낀 경기는 통째로 건너뛴다(요청: "포인트에 컴퓨터나
-    비회원이 포함된 게임은 집계에서 무조건 제외, 포인트 0점이 아니라 게임으로 안 침").
-    예전에는 그 자리만 레이팅 대상에서 빼고 경기 자체는 반영했는데, 그러면 남은 사람들이
-    '한 명 모자란 상대'와 싸운 것으로 계산돼 실제로 없던 실력차가 점수에 들어간다. 컴퓨터는
-    레이팅이라 부를 실력치가 아예 없고, 비회원은 여러 사람이 한 이름을 쓸 수도 있다 —
-    어느 쪽이든 그 경기 결과로 회원의 실력을 조정할 근거가 못 된다.
-    전적(판수·승률)은 이 규칙과 무관하게 그대로 센다 — 뛴 건 뛴 거다."""
+    컴퓨터/비회원(member_pk=None)은 by_race와 무관하게 None으로 둬(레이팅 미대상) 갱신에서
+    빠진다 — 그 자리만 빠지고 경기 자체는 그대로 반영된다(요청). 일대일이라면 겨룰 상대가
+    아예 없는 셈이라 그 경기로는 점수가 움직이지 않는다(0점).
+    전적(판수·승률)도 그대로 센다 — 뛴 건 뛴 거다."""
     def _ident(member_pk, race):
         if member_pk is None:
             return None
@@ -400,21 +397,15 @@ def _replay_ratings(
             m = matches[r.match_id] = {
                 "team1": [], "team2": [], "result": r.result, "match_no": r.match_no,
                 "key": _replay_order_key(r.game_started_at, r.match_date, r.match_no),
-                "outsider": False,
             }
         if r.team in ("team1", "team2"):
             m[r.team].append(_ident(r.member_pk, r.race))
-            # 회원이 아닌 참가자(컴퓨터·비회원)가 한 명이라도 있으면 이 경기는 통째로 뺀다.
-            if r.member_pk is None:
-                m["outsider"] = True
 
     engine = RatingEngine()
     deltas: dict[str, float] = {}
     running: dict = defaultdict(float)
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
-        if mm["outsider"]:
-            continue
         participants = [p for p in (mm["team1"] + mm["team2"]) if p is not None]
         pre = {p: engine.get(p).conservative for p in participants}
         engine.update(mm["team1"], mm["team2"], mm["result"])
