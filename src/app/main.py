@@ -214,12 +214,17 @@ async def _add_challenge_canceled_by(conn: object) -> None:
 
     from sqlalchemy import text
 
-    try:
-        await conn.execute(  # type: ignore[attr-defined]
-            text("ALTER TABLE challenges ADD COLUMN IF NOT EXISTS canceled_by_pk BIGINT")
-        )
-    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
-        logging.getLogger(__name__).debug("challenges.canceled_by_pk 컬럼 추가 건너뜀", exc_info=True)
+    # SQLite는 ADD COLUMN IF NOT EXISTS를 모른다(개발용 DB가 그렇다) — 그 문법이 막히면
+    # 조건 없는 ADD COLUMN으로 한 번 더 시도한다. 이미 있으면 그쪽이 에러를 내고 넘어간다.
+    for sql in (
+        "ALTER TABLE challenges ADD COLUMN IF NOT EXISTS canceled_by_pk BIGINT",
+        "ALTER TABLE challenges ADD COLUMN canceled_by_pk BIGINT",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
+            logging.getLogger(__name__).debug("challenges.canceled_by_pk 추가 시도 실패: %s", sql, exc_info=True)
 
 
 async def _drop_challenge_revenge_chain(conn: object) -> None:
