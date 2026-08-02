@@ -13,6 +13,7 @@ from app.domain.feed.schemas import (
     FeedCommentOut,
     RankingShiftEntry,
     RankingShiftOut,
+    RankingShiftSection,
     normalize_target_type,
 )
 from app.domain.members.models import Member
@@ -132,11 +133,16 @@ class FeedCommentService:
 def _to_ranking_shift_out(snap: RankingShift) -> RankingShiftOut:
     return RankingShiftOut(
         id=snap.id,
-        matchType=snap.match_type,
         reason=snap.reason,
         createdAt=snap.created_at,
         matchIds=list(snap.match_ids or []),
-        shifts=[RankingShiftEntry.model_validate(e) for e in snap.shifts or []],
+        sections=[
+            RankingShiftSection(
+                matchType=sec.get("matchType", ""),
+                shifts=[RankingShiftEntry.model_validate(e) for e in sec.get("shifts") or []],
+            )
+            for sec in snap.sections or []
+        ],
     )
 
 
@@ -179,18 +185,29 @@ class RankingShiftService:
 
         stmt = select(RankingShift).order_by(RankingShift.created_at.desc()).limit(limit * 3)
         rows = list((await self._session.scalars(stmt)).all())
-        return [_to_ranking_shift_out(s) for s in rows if s.shifts][:limit]
+        # 어느 칸에든 변동이 하나라도 있는 날만 보여준다 — 기준선만 남은 날은 다음 비교의
+        # 재료일 뿐이라 카드가 될 이야기가 없다.
+        shown = [s for s in rows if any((sec.get("shifts") or []) for sec in s.sections or [])]
+        return [_to_ranking_shift_out(s) for s in shown][:limit]
 
-    async def _latest(self, match_type: str) -> RankingShift | None:
+    async def _latest(self) -> RankingShift | None:
+        """가장 최근 스냅샷 한 행 — 하루에 한 행이므로 유형을 안 가린다."""
         from sqlalchemy import select
 
         stmt = (
             select(RankingShift)
-            .where(RankingShift.match_type == match_type)
             .order_by(RankingShift.created_at.desc(), RankingShift.id.desc())
             .limit(1)
         )
         return await self._session.scalar(stmt)
+
+    @staticmethod
+    def _section_of(snap: RankingShift | None, match_type: str) -> dict:
+        """그 스냅샷에서 이 유형 칸 — 없으면 빈 칸(순위표도 변동도 없음)."""
+        for sec in (snap.sections if snap else None) or []:
+            if sec.get("matchType") == match_type:
+                return sec
+        return {"matchType": match_type, "standings": [], "shifts": []}
 
     async def latest_snapshot_at(self) -> datetime | None:
         """가장 최근 스냅샷을 남긴 시각 — 유형 구분 없이 하나. 하루 한 번 집계를 '밀린 일
@@ -254,81 +271,83 @@ class RankingShiftService:
         return sorted(shifts, key=lambda s: s["to"])
 
     async def recompute_daily(self, compute_entries) -> None:
-        """하루 한 번(자정) 순위표를 다시 집계해 변동이 있으면 스냅샷으로 남긴다(요청).
+        """하루 한 번(아침) 순위표를 다시 집계해 변동이 있으면 스냅샷으로 남긴다(요청).
 
         예전에는 경기 등록/삭제 때마다 계산했는데, 그러면 하루에도 여러 번 변동 카드가
-        피드에 떠서 목록이 그 카드로 도배됐다(지적: "지금처럼 등록/삭제 시마다 계산을
-        하면 너무 자주 목록에 노출되는 문제"). 이제 하루치를 모아 한 번만 남긴다 —
-        같은 날 열 경기를 등록해도 카드는 하나다.
+        피드에 떠서 목록이 그 카드로 도배됐다(지적) — 이제 하루치를 모아 한 번만 남긴다.
+        행도 하루에 하나다(요청): 개인전·팀전을 한 행의 sections에 나란히 담아, 카드도
+        댓글도 하나로 묶인다.
 
         기준선(같은 달 스냅샷)이 없으면 변동 없이 기준선만 남긴다. 최초 도입 직후와
         매달 1일이 그런 경우인데, 그때 전원을 '신규 진입'으로 쏟아내면 안 되기 때문이다.
         """
+        latest = await self._latest()
+        baseline = latest is None or _period_of(latest.created_at) != _current_period()
+        sections: list[dict] = []
+        changed = False
         for match_type in ("0101", "0102"):
             standings = await self._compute_standings(match_type, compute_entries)
-            latest = await self._latest(match_type)
-            # 순위표가 그대로면 남길 이야기가 없다.
-            if latest is not None and list(latest.standings or []) == standings:
-                continue
-            baseline = latest is None or _period_of(latest.created_at) != _current_period()
-            base = [] if baseline else list(latest.standings or [])
-            self._session.add(RankingShift(
-                match_type=match_type,
-                reason="seed" if baseline else "daily",
-                match_ids=[],
-                standings=standings,
-                shifts=[] if baseline else self._diff(base, standings),
-            ))
+            base = [] if baseline else list(self._section_of(latest, match_type).get("standings") or [])
+            if standings != base:
+                changed = True
+            sections.append({
+                "matchType": match_type,
+                "standings": standings,
+                "shifts": [] if baseline else self._diff(base, standings),
+            })
+        # 어느 유형도 안 움직였으면 남길 이야기가 없다 — 다만 기준선이 아예 없으면
+        # (첫 집계) 순위표가 비어 있어도 한 행은 남겨야 한다. 그게 다음 날의 비교 대상이다.
+        if not changed and latest is not None:
+            return
+        self._session.add(RankingShift(
+            reason="seed" if baseline else "daily", match_ids=[], sections=sections,
+        ))
         await self._session.commit()
 
     async def reseed_now(self, compute_entries) -> dict[str, int]:
         """지금 데이터 기준으로 기준선을 다시 깐다 — 제어판에서 손으로 누르는 1회용(요청).
 
-        변동 없이(reason="seed", shifts=[]) 저장되므로 피드 목록에는 안 보인다. 이번 달
+        변동 없이(reason="seed", shifts 빈 배열) 저장되므로 피드 목록에는 안 보인다. 이번 달
         기준선이 이미 있으면 그 행을 갱신한다 — 여러 번 눌러도 행이 쌓이지 않는다.
         돌려주는 값은 유형별로 몇 명이 순위표에 들어갔는지다.
         """
         out: dict[str, int] = {}
+        sections: list[dict] = []
         for match_type in ("0101", "0102"):
             standings = await self._compute_standings(match_type, compute_entries)
-            latest = await self._latest(match_type)
-            if (
-                latest is not None
-                and latest.reason == "seed"
-                and _period_of(latest.created_at) == _current_period()
-            ):
-                latest.standings = standings
-                latest.shifts = []
-            else:
-                self._session.add(RankingShift(
-                    match_type=match_type, reason="seed",
-                    match_ids=[], standings=standings, shifts=[],
-                ))
+            sections.append({"matchType": match_type, "standings": standings, "shifts": []})
             out[match_type] = len(standings)
+        latest = await self._latest()
+        if (
+            latest is not None
+            and latest.reason == "seed"
+            and _period_of(latest.created_at) == _current_period()
+        ):
+            latest.sections = sections
+        else:
+            self._session.add(RankingShift(reason="seed", match_ids=[], sections=sections))
         await self._session.commit()
         return out
 
     async def seed_if_empty(self, compute_entries) -> None:
-        """최초 부팅 시 현재 순위표를 기준선으로 적재 — 다음 등록/삭제의 비교 대상이 된다.
+        """최초 부팅 시 현재 순위표를 기준선으로 적재 — 다음 집계의 비교 대상이 된다.
 
-        변동분 없이(reason="seed") 저장되므로 피드에는 보이지 않는다. 멱등.
-
-        멱등 판정은 반드시 경기유형별로 한다(지적) — 예전엔 테이블 전체 건수를 봤는데,
-        개인전 행만 있고 팀전 행이 없는 DB에서는 팀전 기준선이 영영 안 깔려서 팀전 첫
-        이벤트가 전원 신규 진입으로 나왔다.
+        변동분 없이(reason="seed") 저장되므로 피드에는 보이지 않는다. 멱등: 행이 하나라도
+        있으면 아무 일도 안 한다. 예전에는 유형마다 행이 따로 있어 "개인전만 있고 팀전은
+        없는" 어중간한 상태를 따로 살펴야 했는데, 이제 한 행이 두 칸을 다 갖는다.
         """
         from sqlalchemy import func, select
 
-        for match_type in ("0101", "0102"):
-            count = await self._session.scalar(
-                select(func.count()).select_from(RankingShift)
-                .where(RankingShift.match_type == match_type)
-            )
-            if count and count > 0:
-                continue
-            standings = await self._compute_standings(match_type, compute_entries)
-            self._session.add(RankingShift(
-                match_type=match_type, reason="seed",
-                match_ids=[], standings=standings, shifts=[],
-            ))
+        count = await self._session.scalar(select(func.count()).select_from(RankingShift))
+        if count and count > 0:
+            return
+        sections = [
+            {
+                "matchType": match_type,
+                "standings": await self._compute_standings(match_type, compute_entries),
+                "shifts": [],
+            }
+            for match_type in ("0101", "0102")
+        ]
+        self._session.add(RankingShift(reason="seed", match_ids=[], sections=sections))
         await self._session.commit()

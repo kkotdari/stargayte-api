@@ -253,7 +253,10 @@ async def test_daily_recompute_first_run_is_silent_baseline(client):
     events = res.json()
     assert len(events) >= 1
     assert events[0]["reason"] == "daily"
-    assert all(s["from"] is not None for ev in events for s in ev["shifts"])
+    assert all(
+        s["from"] is not None
+        for ev in events for sec in ev["sections"] for s in sec["shifts"]
+    )
 
 
 async def test_shift_carries_point_change(client):
@@ -271,7 +274,7 @@ async def test_shift_carries_point_change(client):
     await _recompute(client)
 
     events = (await client.get("/api/feed/ranking-shifts", headers=_h(a))).json()
-    shifts = [s for ev in events for s in ev["shifts"]]
+    shifts = [s for ev in events for sec in ev["sections"] for s in sec["shifts"]]
     assert shifts
     assert all(s["fromPoints"] is not None and s["toPoints"] is not None for s in shifts)
     # 순위가 바뀔 만큼 경기를 했으면 포인트도 실제로 움직였어야 한다.
@@ -294,12 +297,12 @@ async def test_daily_recompute_is_idempotent(client):
     assert [e["id"] for e in after] == [e["id"] for e in before]
 
 
-async def test_seed_lays_baseline_per_match_type(client, db_session):
-    """시드 멱등 판정은 경기유형별로 한다(지적).
+async def test_seed_lays_one_row_with_both_types(client, db_session):
+    """기준선은 하루 한 행이고, 그 안에 개인전·팀전 칸이 함께 들어간다(요청).
 
-    예전엔 테이블 전체 건수를 봐서, 개인전 행만 있고 팀전 행이 없는 DB에서는 팀전
-    기준선이 영영 안 깔렸다."""
-    from sqlalchemy import delete, select
+    예전엔 유형마다 행이 따로라 "개인전 행만 있고 팀전 행이 없는" 어중간한 상태를 따로
+    살펴야 했다 — 이제 한 행이 두 칸을 다 갖는다."""
+    from sqlalchemy import select
 
     from app.domain.feed.models import RankingShift
     from app.main import _seed_ranking_shifts
@@ -307,14 +310,14 @@ async def test_seed_lays_baseline_per_match_type(client, db_session):
     await _signup(client, "alice", "Alice#1001")
     await _seed_ranking_shifts()
     db_session.expire_all()
-    assert set((await db_session.scalars(select(RankingShift.match_type))).all()) == {"0101", "0102"}
+    rows = (await db_session.scalars(select(RankingShift))).all()
+    assert len(rows) == 1
+    assert [sec["matchType"] for sec in rows[0].sections] == ["0101", "0102"]
 
-    # 팀전 기준선만 지우고 다시 부팅 — 팀전만 새로 깔려야 한다.
-    await db_session.execute(delete(RankingShift).where(RankingShift.match_type == "0102"))
-    await db_session.commit()
+    # 멱등 — 다시 부팅해도 행이 늘지 않는다.
     await _seed_ranking_shifts()
     db_session.expire_all()
-    assert set((await db_session.scalars(select(RankingShift.match_type))).all()) == {"0101", "0102"}
+    assert len((await db_session.scalars(select(RankingShift))).all()) == 1
 
 
 async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session):
@@ -350,7 +353,10 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
     await _recompute(client)
     events = (await client.get("/api/feed/ranking-shifts", headers=_h(a))).json()
     assert len(events) >= 1
-    assert all(s["from"] is not None for ev in events for s in ev["shifts"])
+    assert all(
+        s["from"] is not None
+        for ev in events for sec in ev["sections"] for s in sec["shifts"]
+    )
 
 
 async def test_feed_comment_on_rankshift_target(client):

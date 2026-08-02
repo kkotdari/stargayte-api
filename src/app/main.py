@@ -63,6 +63,7 @@ async def _ensure_schema() -> None:
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
         await _drop_legacy_match_summary(conn)
+        await _rebuild_ranking_shifts(conn)
     await _seed_ranking_shifts()
 
 
@@ -440,6 +441,71 @@ async def _migrate_match_notes(conn) -> None:
             "(SELECT COALESCE(MAX(id), 1) FROM feed_comment_mentions))"
         ))
 
+
+
+async def _rebuild_ranking_shifts(conn) -> None:
+    """랭크 변동 스냅샷을 '하루 한 행 + 유형별 칸(sections)' 구조로 갈아엎는다.
+
+    예전에는 유형(개인전/팀전)마다 한 행이었다. 카드를 한 장으로 합치면서(요청) 저장도
+    하루 한 행으로 모았다 — 앞으로 유형이 늘어도 sections에 칸을 더하면 되므로 스키마를
+    다시 안 건드린다.
+
+    옛 행은 옮기지 않고 통째로 지운다(요청: "기존 로우 모두 삭제해줘도 돼, 트렁케이트 앤드
+    리스타트 아이덴티티"). 스냅샷은 그날 순위표의 사진일 뿐이라, 다음 집계가 지금 성적으로
+    기준선을 새로 깔면 그대로 복구된다.
+
+    함께 지우는 것 하나 — 그 카드들에 달렸던 댓글(feed_comments의 target_type='rankingShift').
+    지우지 않으면 id가 1부터 다시 시작하면서 옛 댓글이 엉뚱한 날짜의 새 카드에 가서 붙는다.
+
+    멱등: sections 컬럼이 이미 있으면(=이미 갈아엎은 DB) 아무 일도 안 한다.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger(__name__)
+
+    def _state(sync_conn) -> tuple[bool, set[str]]:
+        insp = inspect(sync_conn)
+        if "ranking_shifts" not in insp.get_table_names():
+            return False, set()
+        return True, {c["name"] for c in insp.get_columns("ranking_shifts")}
+
+    try:
+        exists, cols = await conn.run_sync(_state)
+        if not exists or "sections" in cols:
+            return
+        # ① 옛 카드에 달린 댓글부터 — 아래에서 id가 1로 되감기므로 남겨 두면 오배달된다.
+        await conn.execute(
+            text("DELETE FROM feed_comments WHERE target_type = 'rankingShift'")
+        )
+        # ② 행을 비우고 id를 1로 되돌린다. TRUNCATE … RESTART IDENTITY는 PostgreSQL 전용이라
+        #    실패하면 DELETE + SQLite 시퀀스 초기화로 물러선다.
+        try:
+            await conn.execute(text("TRUNCATE TABLE ranking_shifts RESTART IDENTITY"))
+        except Exception:  # noqa: BLE001 — SQLite 등 TRUNCATE 미지원.
+            await conn.execute(text("DELETE FROM ranking_shifts"))
+            try:
+                await conn.execute(
+                    text("DELETE FROM sqlite_sequence WHERE name = 'ranking_shifts'")
+                )
+            except Exception:  # noqa: BLE001 — sqlite_sequence가 없는 DB면 그냥 넘어간다.
+                pass
+        # ③ 컬럼 갈아 끼우기. sections는 create_all이 안 만들어 주므로(이미 있는 테이블)
+        #    여기서 더하고, 유형별 행 시절의 컬럼은 지운다.
+        await conn.execute(
+            text("ALTER TABLE ranking_shifts ADD COLUMN IF NOT EXISTS sections JSONB")
+        )
+        for col in ("match_type", "standings", "shifts"):
+            try:
+                await conn.execute(
+                    text(f"ALTER TABLE ranking_shifts DROP COLUMN IF EXISTS {col}")
+                )
+            except Exception:  # noqa: BLE001 — 미지원 DB면 안 쓰는 컬럼으로 남겨 둔다.
+                log.debug("ranking_shifts.%s 컬럼 삭제 건너뜀", col, exc_info=True)
+        log.info("랭크 변동 스냅샷을 하루 한 행 구조로 재구성했습니다(옛 행·댓글 삭제)")
+    except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다.
+        log.exception("랭크 변동 스냅샷 재구성 실패")
 
 
 async def _drop_legacy_match_summary(conn) -> None:

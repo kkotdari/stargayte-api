@@ -67,9 +67,10 @@ async def _shifts(client, headers, match_type: str = "0101") -> dict[str, dict]:
     내려주므로, 부르는 쪽에서 먼저 기준선(_recompute 1회)을 깔아 둬야 한다."""
     res = await client.get("/api/feed/ranking-shifts", headers=headers, params={"limit": 50})
     assert res.status_code == 200, res.text
-    rows = [s for s in res.json() if s["matchType"] == match_type]
+    rows = res.json()
     assert rows, "변동 스냅샷이 남지 않았다"
-    return {e["memberId"]: e for e in rows[0]["shifts"]}
+    sec = next(x for x in rows[0]["sections"] if x["matchType"] == match_type)
+    return {e["memberId"]: e for e in sec["shifts"]}
 
 
 async def test_short_of_min_plays_still_gets_real_ranks(client):

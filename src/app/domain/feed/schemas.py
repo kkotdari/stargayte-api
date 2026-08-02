@@ -91,12 +91,22 @@ class RankingRecomputeResult(BaseModel):
     changed: bool
 
 
+class RankingShiftSection(BaseModel):
+    """하루치 스냅샷 안의 경기유형 한 칸 — 카드가 좌우로 나눠 그리는 단위다(요청)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    match_type: Literal["0101", "0102"] = Field(alias="matchType")
+    shifts: list[RankingShiftEntry]
+
+
 class RankingShiftOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
-    match_type: Literal["0101", "0102"] = Field(alias="matchType")
     reason: str
     created_at: datetime = Field(alias="createdAt")
     match_ids: list[int] = Field(alias="matchIds")
-    shifts: list[RankingShiftEntry]
+    # 순위표(standings)는 다음 날 비교의 재료일 뿐이라 내보내지 않는다 — 화면이 쓰는 건
+    # 변동분(shifts)뿐이고, 회원 수만큼 긴 배열을 매번 실어 보낼 이유가 없다.
+    sections: list[RankingShiftSection]
