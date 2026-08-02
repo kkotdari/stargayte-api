@@ -50,6 +50,12 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 유일한 폐기 판정 근거이자, 휴지통 7일 자동 비움(deleted_at 소프트삭제)의 기준 시각이다.
     # (예전의 취소/연기 기능은 제거됐다 — 취소는 폐기로 통합됐고 연기는 없앴다.)
     discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 그 폐기가 '취소'였다면 취소한 사람 — 호출자(또는 운영자)가 성사 전에 스스로 거둬들인
+    # 경우다(요청: "호출자가 취소도 가능함"). NULL이면 취소가 아닌 폐기(상대의 거절·버림,
+    # 무응답 만료, 미실시)다. 화면은 이 값으로 "취소"와 "만료"를 갈라 그 사람 자리에 표시한다.
+    canceled_by_pk: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("members.pk", ondelete="SET NULL"), nullable=True
+    )
     # 소프트 삭제 — 폐기(discarded_at)된 지 7일이 지나면 목록 조회 시 배치가 이 값을 찍어
     # 이후로는 어떤 조회에도 안 나온다(DB에서는 남겨둔다). NULL이면 살아있음.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -70,6 +76,9 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     )
     creator: Mapped["Member | None"] = relationship(
         "Member", foreign_keys="Challenge.created_by", viewonly=True, lazy="selectin",
+    )
+    canceled_by: Mapped["Member | None"] = relationship(
+        "Member", foreign_keys="Challenge.canceled_by_pk", viewonly=True, lazy="selectin",
     )
 
     __table_args__ = (

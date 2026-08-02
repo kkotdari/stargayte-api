@@ -764,3 +764,60 @@ async def test_time_note_kept_without_date(client):
     assert res.status_code == 200, res.text
     assert res.json()["scheduledDate"] is None
     assert res.json()["scheduledTimeNote"] == "그날 봐서"
+
+
+async def test_caller_can_cancel_own_challenge(client):
+    """부른 사람이 제 너 나와!를 거둬들이면 폐기로 가되 '취소'였다는 사실이 남는다(요청:
+    "호출자가 취소도 가능함", 피드에서 취소/만료를 갈라 표시).
+
+    상대의 거절·버림이나 무응답 만료도 똑같이 폐기지만 canceledBy가 비어 있다 — 화면은
+    그 차이로 "취소"와 "만료"를 가른다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-08-01"},
+    )
+    challenge_id = res.json()["id"]
+    assert res.json()["canceledBy"] is None
+
+    # 지목된 쪽은 남의 호출을 취소할 수 없다.
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_b)
+    assert res.status_code == 403, res.text
+
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "discarded"
+    assert body["discardedAt"] is not None
+    assert body["canceledBy"]["id"] == "alice"
+    # 아무도 응답하지 않았다는 사실은 그대로 남는다 — 만료와 같은 모양이지만 canceledBy로 갈린다.
+    assert [t["response"] for t in body["targets"]] == ["pending"]
+
+    # 이미 끝난 것은 다시 취소할 수 없다.
+    res = await client.post(f"/api/challenges/{challenge_id}/cancel", headers=headers_a)
+    assert res.status_code == 400, res.text
+
+
+async def test_expired_challenge_has_no_canceled_by(client):
+    """무응답 만료로 폐기된 건은 canceledBy가 비어 있다 — 취소와 갈리는 유일한 근거다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+    # 응답 마감(요청일+1일)이 이미 지난 날짜로 만들면 다음 목록 조회 때 배치가 폐기시킨다.
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2020-01-01"},
+    )
+    challenge_id = res.json()["id"]
+
+    res = await client.get("/api/challenges", headers=headers_a)
+    got = next(c for c in res.json()["items"] if c["id"] == challenge_id)
+    assert got["status"] == "discarded"
+    assert got["canceledBy"] is None
+    assert [t["response"] for t in got["targets"]] == ["pending"]

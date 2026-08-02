@@ -65,6 +65,9 @@ class ChallengeOut(BaseModel):
     # 폐기(휴지통)된 시각 — 폐기 상태가 아니면 None. 휴지통 목록을 "최근 버려진 순"으로
     # 정렬하는 데 쓴다(프론트 요청: "최근 버려진게 위에 오게").
     discarded_at: datetime | None = Field(default=None, alias="discardedAt")
+    # 그 폐기가 '취소'였다면 취소한 사람 — 아니면 None(상대의 거절·버림, 무응답 만료,
+    # 미실시). 화면은 이 값으로 "취소"와 "만료"를 갈라 그 사람 자리에 표시한다(요청).
+    canceled_by: ChallengeAuthor | None = Field(default=None, alias="canceledBy")
     # 확정된 대결의 결과(이긴 쪽) — 아직 아무도 입력하지 않았으면 None.
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
     # "대결 요청 들어주기"로 만들어졌으면 True — 카드에 "요청대결" 배지를 붙인다.

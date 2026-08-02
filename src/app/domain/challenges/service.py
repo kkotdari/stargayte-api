@@ -136,6 +136,15 @@ def to_challenge_out(challenge: Challenge) -> ChallengeOut:
         ],
         createdAt=challenge.created_at,
         discardedAt=challenge.discarded_at,
+        canceledBy=(
+            ChallengeAuthor(
+                id=challenge.canceled_by.id,
+                nickname=challenge.canceled_by.nickname,
+                avatar=challenge.canceled_by.avatar_url,
+            )
+            if challenge.canceled_by is not None
+            else None
+        ),
         resultWinnerSide=challenge.result_winner_side,
         fromMatchRequest=challenge.from_match_request,
     )
@@ -339,6 +348,30 @@ class ChallengeService:
             _discard(challenge, datetime.now(UTC))
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
+        return to_challenge_out(challenge)
+
+    async def cancel(self, challenge_id: int, *, actor: Member) -> ChallengeOut:
+        """부른 사람이 제 너 나와를 거둬들인다(요청) — 폐기로 넘기되 '취소'였다는 사실과
+        누가 했는지를 남긴다. 상대의 거절·버림이나 무응답 만료와는 다른 끝이라, 화면이
+        그 사람 자리에 "취소"라고 적을 수 있어야 한다.
+
+        아직 안 끝난 것만 취소할 수 있다 — 이미 결과가 들어왔거나 폐기된 건을 다시
+        취소하는 것은 뜻이 없다.
+        """
+        challenge = await self._repo.get(challenge_id)
+        if challenge is None:
+            raise NotFoundError("너 나와!를 찾을 수 없어요.")
+        is_admin = "admin" in {r.role for r in actor.roles}
+        if challenge.created_by != actor.pk and not is_admin:
+            raise ForbiddenError("자신이 보낸 너 나와!만 취소할 수 있습니다.")
+        if _status_of(challenge) not in ("pending", "confirmed"):
+            raise ValidationError("이미 끝난 너 나와!는 취소할 수 없습니다.")
+        now = datetime.now(UTC)
+        _discard(challenge, now)
+        challenge.canceled_by_pk = actor.pk
+        challenge.updated_by = actor.pk
+        await self._session.commit()
+        await self._session.refresh(challenge, attribute_names=["participants", "canceled_by"])
         return to_challenge_out(challenge)
 
     async def reschedule(

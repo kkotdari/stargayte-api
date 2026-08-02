@@ -70,6 +70,16 @@ async def enter_challenge_result(
     )
 
 
+@router.post("/{challenge_id}/cancel", response_model=ChallengeOut)
+async def cancel_challenge(challenge_id: int, db: DbSession, current: CurrentMember) -> ChallengeOut:
+    """너 나와! 취소 — 부른 사람이 성사 전에 스스로 거둬들인다(요청: "호출자가 취소도 가능함").
+
+    삭제(운영자 전용)와 다르다: 기록은 남고 폐기로만 넘어가며, 누가 취소했는지를 함께
+    적어 둔다. 피드는 그 값으로 "취소"와 "만료"를 갈라 보여준다.
+    """
+    return await ChallengeService(db).cancel(challenge_id, actor=current)
+
+
 @router.delete("/{challenge_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_challenge(challenge_id: int, db: DbSession, admin: CurrentAdmin) -> None:
     """너 나와! 완전 삭제 — 운영자 전용. 달린 피드 댓글도 함께 지운다."""

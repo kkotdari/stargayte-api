@@ -58,6 +58,7 @@ async def _ensure_schema() -> None:
         await _add_replay_map_resources(conn)
         await _add_replay_map_image_id(conn)
         await _add_challenge_time_note(conn)
+        await _add_challenge_canceled_by(conn)
         await _drop_challenge_time(conn)
         await _drop_challenge_revenge_chain(conn)
         await _drop_access_screen_code_check(conn)
@@ -200,6 +201,25 @@ async def _add_challenge_time_note(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("challenges.scheduled_time_note 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_challenge_canceled_by(conn: object) -> None:
+    """challenges.canceled_by_pk 컬럼을 더한다(멱등).
+
+    위 _add_challenge_time_note와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
+    넣어주지 않는다. 폐기가 '취소'였는지(누가 거둬들였는지)를 담는 자리다(요청: 피드에
+    거절/무응답거절/취소를 갈라 보여주기). NULL이면 취소가 아닌 폐기다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE challenges ADD COLUMN IF NOT EXISTS canceled_by_pk BIGINT")
+        )
+    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("challenges.canceled_by_pk 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _drop_challenge_revenge_chain(conn: object) -> None:
