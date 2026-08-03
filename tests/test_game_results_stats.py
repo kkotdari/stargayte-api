@@ -88,17 +88,17 @@ async def test_stats_aggregates_exact_numbers(client):
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 410, "avgBuild": 320,
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
-        "buildMix": None, "avgWorker5": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 400, "avgBuild": 300,
-        "buildMix": None, "avgWorker5": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
-        "buildMix": None, "avgWorker5": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -108,7 +108,7 @@ async def test_stats_aggregates_exact_numbers(client):
     assert p2_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 220, "avgBuild": 165,
-        "buildMix": None, "avgWorker5": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -432,7 +432,7 @@ async def test_stats_race_filter_scopes_overall(client):
     assert overall == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
-        "buildMix": None, "avgWorker5": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -447,7 +447,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     assert entry["overall"] == {
         "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
-        "buildMix": None, "avgWorker5": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None,
     }
     assert entry["mostPlayedRace"] is None
 
@@ -566,15 +566,15 @@ async def test_rivalries_team_mode_individualizes(client):
 
 
 def _mix(
-    b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0,
-    worker5=0, worker_all=0, units=None, skills=None,
+    b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
+    up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
         "uBasic": u_basic, "uAdv": u_adv, "uCaster": u_caster,
-        "uGround": u_ground, "uAir": u_air,
-        "worker5": worker5, "workerAll": worker_all,
-        "units": units or {}, "skills": skills or {},
+        "uGround": u_ground, "uAir": u_air, "worker5": worker5,
+        "upGw": up_gw, "upGa": up_ga, "upAw": up_aw, "upAa": up_aa, "upSh": up_sh,
+        "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
     }
 
 
@@ -588,14 +588,16 @@ async def test_stats_sums_build_mix_across_matches(client):
     s1 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     s1["buildMix"] = _mix(
         b_prod=20, b_def=5, u_basic=60, u_adv=10, u_caster=2, u_ground=65, u_air=7,
-        worker5=14, worker_all=30,
-        units={"Marine": 40, "Siege Tank (Tank Mode)": 6}, skills={"Stim Packs": 12},
+        worker5=14, up_gw=3, up_ga=2, up_aw=1, up_aa=0,
+        buildings={"Barracks": 4, "Bunker": 2}, units={"Marine": 40, "Siege Tank (Tank Mode)": 6},
+        skills={"Stim Packs": 12},
     )
     s2 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     s2["buildMix"] = _mix(
         b_prod=10, b_def=15, u_basic=20, u_adv=30, u_caster=8, u_ground=40, u_air=18,
-        worker5=8, worker_all=22,
-        units={"Marine": 25, "Wraith": 9}, skills={"Stim Packs": 5, "Yamato Gun": 3},
+        worker5=8, up_gw=2, up_ga=1, up_aw=3, up_aa=2,
+        buildings={"Barracks": 3, "Starport": 1}, units={"Marine": 25, "Wraith": 9},
+        skills={"Stim Packs": 5, "Yamato Gun": 3},
     )
     await _create_match(
         client, headers, "2026-07-01",
@@ -616,12 +618,16 @@ async def test_stats_sums_build_mix_across_matches(client):
     overall = res.json()["members"][0]["overall"]
     assert overall["buildMix"] == _mix(
         b_prod=30, b_def=20, u_basic=80, u_adv=40, u_caster=10, u_ground=105, u_air=25,
-        worker5=22, worker_all=52,
-        # 유닛·스킬 원장도 이름별로 더해진다(요청: 통계 유닛/스킬 Top5) — 순위를 매기고
+        # 공/방 단계도 합계로 쌓인다 — 경기당 평균으로 되돌리는 나눗셈은 화면이 한다.
+        worker5=22, up_gw=5, up_ga=3, up_aw=4, up_aa=2,
+        # 건물·유닛·스킬 원장도 이름별로 더해진다(요청: 통계 Top5) — 순위를 매기고
         # 한국어로 옮기는 것은 화면의 몫이라 여기서는 합계만 확인한다.
+        buildings={"Barracks": 7, "Bunker": 2, "Starport": 1},
         units={"Marine": 65, "Siege Tank (Tank Mode)": 6, "Wraith": 9},
         skills={"Stim Packs": 17, "Yamato Gun": 3},
     )
+    # 분모(구성이 실린 경기 수)도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸다.
+    assert overall["mixPlays"] == 2
     # 구성이 실린 경기는 둘뿐이다 — 없는 경기까지 세면 초반 일꾼이 실제보다 낮아진다.
     assert overall["avgWorker5"] == 11.0
 

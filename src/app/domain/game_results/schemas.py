@@ -56,17 +56,24 @@ class BuildMix(BaseModel):
     u_ground: int = Field(default=0, ge=0, le=100000, alias="uGround")
     u_air: int = Field(default=0, ge=0, le=100000, alias="uAir")
     worker5: int = Field(default=0, ge=0, le=100000)
-    worker_all: int = Field(default=0, ge=0, le=100000, alias="workerAll")
-    # 유닛·스킬 원장(요청: 통계에 유닛/스킬 Top5 칸) — 이름은 screp 영문 키 그대로 두고
-    # 한국어 표기는 화면이 붙인다. 표기를 고치면 이미 등록된 경기도 다음 조회부터 새 표기로
+    # 공/방/실드 업그레이드 단계(0~3) — 종족 이름을 지우고 지상/공중 × 공/방 넷과 실드로만
+    # 담는다(요청: 종족 무관). 합계로 쌓이므로 상한은 경기 수만큼 커진다.
+    up_gw: int = Field(default=0, ge=0, le=100000, alias="upGw")
+    up_ga: int = Field(default=0, ge=0, le=100000, alias="upGa")
+    up_aw: int = Field(default=0, ge=0, le=100000, alias="upAw")
+    up_aa: int = Field(default=0, ge=0, le=100000, alias="upAa")
+    up_sh: int = Field(default=0, ge=0, le=100000, alias="upSh")
+    # 건물·유닛·스킬 원장(요청: 통계에 Top5 칸) — 이름은 screp 영문 키 그대로 두고 한국어
+    # 표기는 화면이 붙인다. 표기를 고치면 이미 등록된 경기도 다음 조회부터 새 표기로
     # 읽히게 하기 위해서다.
     #
     # 자유 형식 사전이라 크기와 값을 여기서 막는다 — 갈래가 정해진 위 항목들과 달리 무엇이든
     # 들어올 수 있는 자리이고, 이 값은 화면의 목록으로만 쓰여 이상한 게 들어와도 티가 안 난다.
+    buildings: dict[str, int] = Field(default_factory=dict)
     units: dict[str, int] = Field(default_factory=dict)
     skills: dict[str, int] = Field(default_factory=dict)
 
-    @field_validator("units", "skills")
+    @field_validator("buildings", "units", "skills")
     @classmethod
     def _sane_tally(cls, v: dict[str, int]) -> dict[str, int]:
         if len(v) > _MAX_TALLY_KEYS:
@@ -394,6 +401,9 @@ class RaceStatsEntry(BaseModel):
     build_mix: BuildMix | None = Field(default=None, alias="buildMix")
     # 초반 일꾼은 '경기당 몇 기'라야 뜻이 선다 — 위 합계를 경기 수로 나눈 값이다.
     avg_worker5: float | None = Field(default=None, alias="avgWorker5")
+    # build_mix에 실제로 더해진 경기 수 — 합계를 경기당 값으로 되돌릴 분모다(평균 건설 수,
+    # 공/방 평균 단계). 나눗셈을 화면이 하는 이유는 무엇을 무엇으로 나눌지가 칸마다 달라서다.
+    mix_plays: int | None = Field(default=None, alias="mixPlays")
 
 
 class MemberStatsEntry(BaseModel):

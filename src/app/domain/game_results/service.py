@@ -187,17 +187,17 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
 # 더한다. 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이 그 사람의
 # 그림을 흔들기 때문이다. 초반 일꾼만은 '경기당 몇 기'라야 뜻이 서서 따로 나눠 낸다.
 _BUILD_MIX_FIELDS = (
-    "b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air",
-    "worker5", "worker_all",
+    "b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air", "worker5",
+    "up_gw", "up_ga", "up_aw", "up_aa", "up_sh",
 )
-# 사전으로 쌓이는 갈래(유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
-_BUILD_MIX_TALLIES = ("units", "skills")
+# 사전으로 쌓이는 갈래(건물·유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
+_BUILD_MIX_TALLIES = ("buildings", "units", "skills")
 
 
 def _build_mix_agg(rows: list) -> dict[str, object]:
     mixes = [r.build_mix for r in rows if getattr(r, "build_mix", None)]
     if not mixes:
-        return {"build_mix": None, "avg_worker5": None}
+        return {"build_mix": None, "avg_worker5": None, "mix_plays": None}
     total: dict[str, object] = {f: 0 for f in _BUILD_MIX_FIELDS}
     tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
     for m in mixes:
@@ -219,6 +219,9 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
     return {
         "build_mix": BuildMix(**total),
         "avg_worker5": round(int(total["worker5"]) / len(mixes), 1),  # type: ignore[arg-type]
+        # 합계를 경기당 값으로 되돌릴 때 쓴다(평균 건설 수, 공/방 평균 단계) — 무엇을
+        # 무엇으로 나눌지가 칸마다 달라서, 나눗셈은 화면이 하고 서버는 분모만 준다.
+        "mix_plays": len(mixes),
     }
 
 
@@ -409,7 +412,7 @@ def _gate_metrics_by_plays(entry: RaceStatsEntry, min_plays: int) -> RaceStatsEn
     blanks: dict[str, object] = {field: None for field, _attr in _TRIMMED_METRICS}
     # 생산 구성도 지표다 — 표본이 모자라면 같이 내린다(안 그러면 한 판만 뛴 사람의 도넛이
     # 다른 지표는 '-'인 채로 혼자 그려진다).
-    blanks.update({"build_mix": None, "avg_worker5": None})
+    blanks.update({"build_mix": None, "avg_worker5": None, "mix_plays": None})
     return entry.model_copy(update=blanks)
 
 
