@@ -540,7 +540,7 @@ class GameResultRepository:
         return list((await self._session.execute(stmt)).scalars().all())
 
     async def list_replay_maps(self, hashes: list[str]) -> list[ReplayMap]:
-        """미니맵 격자를 해시로 한꺼번에 가져온다 — 피드 한 화면에 여러 경기가 있고 그중
+        """미니맵 격자를 해시로 한꺼번에 가져온다 — 활동 한 화면에 여러 경기가 있고 그중
         상당수가 같은 맵이라, 경기마다 한 번씩 묻는 대신 없는 것만 모아 한 번에 받는다."""
         if not hashes:
             return []

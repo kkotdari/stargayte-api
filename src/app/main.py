@@ -107,8 +107,8 @@ async def _ensure_schema() -> None:
 _COMMENTS = ActivityComment.__tablename__
 _MENTIONS = ActivityCommentMention.__tablename__
 
-# 이름 정리(요청) 이전에 쓰던 테이블 이름 → 지금 이름. 피드 1뎁스가 게임결과/너 나와/
-# 랭크변동이고 게임결과 포스트 안의 2뎁스가 게임결과 카드라는 계층에 맞춘 것이다.
+# 이름 정리(요청) 이전에 쓰던 테이블 이름 → 지금 이름. 활동 1뎁스가 게임결과/너 나와/
+# 랭크변동이고 게임결과 카드 안의 2뎁스가 게임결과 카드라는 계층에 맞춘 것이다.
 _TABLE_RENAMES = [
     ("matches", "game_results"),
     ("match_participants", "game_result_participants"),
@@ -248,7 +248,7 @@ async def _add_challenge_canceled_by(conn: object) -> None:
     """challenges.canceled_by_pk 컬럼을 더한다(멱등).
 
     위 _add_challenge_time_note와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
-    넣어주지 않는다. 폐기가 '취소'였는지(누가 거둬들였는지)를 담는 자리다(요청: 피드에
+    넣어주지 않는다. 폐기가 '취소'였는지(누가 거둬들였는지)를 담는 자리다(요청: 활동에
     거절/무응답거절/취소를 갈라 보여주기). NULL이면 취소가 아닌 폐기다.
     """
     import logging
@@ -400,7 +400,7 @@ async def _drop_access_screen_code_check(conn: object) -> None:
 
     이 제약은 테이블이 처음 만들어질 때의 화면 목록으로 굳어 있는데, 스키마를 create_all로만
     관리해(마이그레이션 없음) 코드에서 목록을 고쳐도 기존 DB에는 영원히 반영되지 않았다 —
-    그래서 새 화면(feed 등)의 접속 기록이 INSERT 단계에서 조용히 터졌다. 검증은 API 계층
+    그래서 새 화면(activity 등)의 접속 기록이 INSERT 단계에서 조용히 터졌다. 검증은 API 계층
     (schemas.ScreenCode)이 하므로 제약 자체를 없앤다. SQLite는 제약 삭제를 지원하지 않지만
     로컬/테스트는 새 DB로 만들어지면 이 제약이 아예 안 생기므로 문제되지 않는다.
     """
@@ -417,7 +417,7 @@ async def _drop_access_screen_code_check(conn: object) -> None:
 
 
 async def _rank_entries_computer(session):
-    """랭크 스냅샷 계산기 — 피드 도메인이 경기 통계를 되부르는 순환을 피해 콜백으로 넘긴다."""
+    """랭크 스냅샷 계산기 — 활동 도메인이 경기 통계를 되부르는 순환을 피해 콜백으로 넘긴다."""
     from app.domain.game_results.service import GameResultService
     from app.storage import get_storage
 
@@ -435,7 +435,7 @@ async def _rank_entries_computer(session):
 async def _seed_ranking_shifts() -> None:
     """rank_snapshots가 비어 있으면 현재 포인트·순위표를 기준선으로 1회 적재(멱등).
 
-    변동분 없이(reason="seed") 저장되므로 피드에는 안 보인다. 실패해도 부팅은 막지 않는다.
+    변동분 없이(reason="seed") 저장되므로 활동에는 안 보인다. 실패해도 부팅은 막지 않는다.
     """
     import logging
 
@@ -450,7 +450,7 @@ async def _seed_ranking_shifts() -> None:
 
 
 # 하루 한 번 순위표를 다시 집계한다(요청) — 예전처럼 경기 등록/삭제마다 계산하면 하루에도
-# 여러 번 변동 카드가 떠서 피드가 그 카드로 도배됐다. 하루치를 모아 한 번만 남긴다.
+# 여러 번 변동 카드가 떠서 활동가 그 카드로 도배됐다. 하루치를 모아 한 번만 남긴다.
 #
 # 예전에는 "다음 자정까지 남은 초만큼 sleep" 하나로 만들어 뒀는데, 그러면 그 순간에 프로세스가
 # 살아 있어야만 돈다 — 그리고 실제로 안 돌았다(지적). 이 앱은 새벽에 아무도 안 쓰니 그때

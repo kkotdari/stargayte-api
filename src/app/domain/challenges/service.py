@@ -156,7 +156,7 @@ class ChallengeService:
         self._member_repo = MemberRepository(session)
 
     async def delete(self, challenge_id: int) -> None:
-        """운영자 전용 완전 삭제 — 도전장과 그에 달린 피드 댓글을 지운다."""
+        """운영자 전용 완전 삭제 — 도전장과 그에 달린 활동 댓글을 지운다."""
         from sqlalchemy import delete as sa_delete, select
 
         from app.domain.challenges.models import Challenge as ChallengeModel

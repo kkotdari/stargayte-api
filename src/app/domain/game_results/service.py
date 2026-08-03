@@ -1363,7 +1363,7 @@ class GameResultService:
             await self._apply_replay(match, payload.replay, actor_pk=actor.pk)
 
         await self._session.commit()
-        # 등록으로 달라진 포인트/순위를 스냅샷으로 남긴다 — 배치 등록(연속 POST)은 피드
+        # 등록으로 달라진 포인트/순위를 스냅샷으로 남긴다 — 배치 등록(연속 POST)은 활동
         # 서비스가 시간창 안에서 한 이벤트로 합친다. 실패해도 등록 자체는 성공으로 둔다.
         return await self._repo.refresh(match)
 
@@ -1463,7 +1463,7 @@ class GameResultService:
         await self._session.commit()
         return count
 
-    # (삭제) 등록/삭제 직후 랭크 스냅샷을 남기던 훅 — 하루에도 여러 번 변동 카드가 피드에
+    # (삭제) 등록/삭제 직후 랭크 스냅샷을 남기던 훅 — 하루에도 여러 번 변동 카드가 활동에
     # 떠서 목록이 그 카드로 도배됐다(지적: "지금처럼 등록/삭제 시마다 계산을 하면 너무 자주
     # 목록에 노출되는 문제"). 이제 재집계는 매일 자정 스케줄러 한 곳에서만 한다
     # (app/main.py의 _ranking_shift_scheduler → RankingShiftService.recompute_daily).
