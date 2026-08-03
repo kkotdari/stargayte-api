@@ -8,6 +8,8 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import ValidationError as PydanticValidationError
+
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.domain.game_results.models import (
     GameResult,
@@ -148,10 +150,20 @@ _MIN_DURATION_SECONDS = 120
 
 def _mix_json(v: object) -> dict | None:
     """생산 구성을 DB에 넣을 dict로 — 검증을 지난 모델일 수도, 이미 dict일 수도 있다
-    (등록 payload는 모델이지만, 다른 경로에서 만든 슬롯은 dict 그대로 온다)."""
+    (등록 payload는 모델이지만, 다른 경로에서 만든 슬롯은 dict 그대로 온다).
+
+    dict로 온 것도 모델을 한 번 거쳐 보낸다. 그래야 어느 경로로 들어왔든 저장되는 키가
+    한 가지(필드명)로 통일된다 — camelCase 별칭 그대로 저장되면 나중에 합산(_build_mix_agg)이
+    아는 키를 하나도 못 찾아 통계가 조용히 0이 된다."""
     if v is None:
         return None
-    return v.model_dump() if hasattr(v, "model_dump") else dict(v)  # type: ignore[arg-type]
+    if not hasattr(v, "model_dump"):
+        try:
+            v = BuildMix.model_validate(v)
+        except PydanticValidationError:
+            # 우리가 아는 형식이 아니면 아예 안 싣는다 — 반쯤 맞는 값이 통계에 섞이는 것보다 낫다.
+            return None
+    return v.model_dump()  # type: ignore[union-attr]
 
 
 def _trimmed_avgs(rows: list) -> dict[str, int | None]:
@@ -174,14 +186,20 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
 # 생산 구성 합계(요청: 도넛 셋 + 초반 일꾼) — 경기마다 비율을 내서 평균 내지 않고 통째로
 # 더한다. 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이 그 사람의
 # 그림을 흔들기 때문이다. 초반 일꾼만은 '경기당 몇 기'라야 뜻이 서서 따로 나눠 낸다.
-_BUILD_MIX_FIELDS = ("b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air", "worker5")
+_BUILD_MIX_FIELDS = (
+    "b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air",
+    "worker5", "worker_all",
+)
+# 사전으로 쌓이는 갈래(유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
+_BUILD_MIX_TALLIES = ("units", "skills")
 
 
 def _build_mix_agg(rows: list) -> dict[str, object]:
     mixes = [r.build_mix for r in rows if getattr(r, "build_mix", None)]
     if not mixes:
         return {"build_mix": None, "avg_worker5": None}
-    total = {f: 0 for f in _BUILD_MIX_FIELDS}
+    total: dict[str, object] = {f: 0 for f in _BUILD_MIX_FIELDS}
+    tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
     for m in mixes:
         # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
         if not isinstance(m, dict):
@@ -189,10 +207,18 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
         for f in _BUILD_MIX_FIELDS:
             v = m.get(f)
             if isinstance(v, (int, float)) and v >= 0:
-                total[f] += int(v)
+                total[f] = int(total[f]) + int(v)  # type: ignore[arg-type]
+        for t in _BUILD_MIX_TALLIES:
+            d = m.get(t)
+            if not isinstance(d, dict):
+                continue
+            for name, v in d.items():
+                if isinstance(name, str) and isinstance(v, (int, float)) and v > 0:
+                    tallies[t][name] = tallies[t].get(name, 0) + int(v)
+    total.update(tallies)
     return {
         "build_mix": BuildMix(**total),
-        "avg_worker5": round(total["worker5"] / len(mixes), 1),
+        "avg_worker5": round(int(total["worker5"]) / len(mixes), 1),  # type: ignore[arg-type]
     }
 
 

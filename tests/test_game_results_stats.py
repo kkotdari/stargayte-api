@@ -565,11 +565,16 @@ async def test_rivalries_team_mode_individualizes(client):
     assert not [p for p in res.json()["pairs"] if {p["a"], p["b"]} <= ours]
 
 
-def _mix(b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0) -> dict:
+def _mix(
+    b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0,
+    worker5=0, worker_all=0, units=None, skills=None,
+) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
         "uBasic": u_basic, "uAdv": u_adv, "uCaster": u_caster,
-        "uGround": u_ground, "uAir": u_air, "worker5": worker5,
+        "uGround": u_ground, "uAir": u_air,
+        "worker5": worker5, "workerAll": worker_all,
+        "units": units or {}, "skills": skills or {},
     }
 
 
@@ -581,9 +586,17 @@ async def test_stats_sums_build_mix_across_matches(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     s1 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
-    s1["buildMix"] = _mix(b_prod=20, b_def=5, u_basic=60, u_adv=10, u_caster=2, u_ground=65, u_air=7, worker5=14)
+    s1["buildMix"] = _mix(
+        b_prod=20, b_def=5, u_basic=60, u_adv=10, u_caster=2, u_ground=65, u_air=7,
+        worker5=14, worker_all=30,
+        units={"Marine": 40, "Siege Tank (Tank Mode)": 6}, skills={"Stim Packs": 12},
+    )
     s2 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
-    s2["buildMix"] = _mix(b_prod=10, b_def=15, u_basic=20, u_adv=30, u_caster=8, u_ground=40, u_air=18, worker5=8)
+    s2["buildMix"] = _mix(
+        b_prod=10, b_def=15, u_basic=20, u_adv=30, u_caster=8, u_ground=40, u_air=18,
+        worker5=8, worker_all=22,
+        units={"Marine": 25, "Wraith": 9}, skills={"Stim Packs": 5, "Yamato Gun": 3},
+    )
     await _create_match(
         client, headers, "2026-07-01",
         team1=[s1], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
@@ -602,7 +615,12 @@ async def test_stats_sums_build_mix_across_matches(client):
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
     overall = res.json()["members"][0]["overall"]
     assert overall["buildMix"] == _mix(
-        b_prod=30, b_def=20, u_basic=80, u_adv=40, u_caster=10, u_ground=105, u_air=25, worker5=22,
+        b_prod=30, b_def=20, u_basic=80, u_adv=40, u_caster=10, u_ground=105, u_air=25,
+        worker5=22, worker_all=52,
+        # 유닛·스킬 원장도 이름별로 더해진다(요청: 통계 유닛/스킬 Top5) — 순위를 매기고
+        # 한국어로 옮기는 것은 화면의 몫이라 여기서는 합계만 확인한다.
+        units={"Marine": 65, "Siege Tank (Tank Mode)": 6, "Wraith": 9},
+        skills={"Stim Packs": 17, "Yamato Gun": 3},
     )
     # 구성이 실린 경기는 둘뿐이다 — 없는 경기까지 세면 초반 일꾼이 실제보다 낮아진다.
     assert overall["avgWorker5"] == 11.0

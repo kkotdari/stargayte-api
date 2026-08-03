@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Race = Literal["테란", "프로토스", "저그", "랜덤"]
 GameOutcome = Literal["team1", "team2", "draw", "not_held"]
@@ -34,6 +34,11 @@ def is_placeholder_slot(member_id: str) -> bool:
     return is_computer_slot(member_id) or is_unregistered_slot(member_id)
 
 
+# 유닛·스킬 원장이 담을 수 있는 크기 — 스타의 유닛과 기술을 다 합쳐도 여든을 넘지 않는다.
+_MAX_TALLY_KEYS = 80
+_MAX_TALLY_KEY_LEN = 40
+
+
 class BuildMix(BaseModel):
     """그 경기에서 무엇을 짓고 무엇을 뽑았나의 구성(요청) — 값은 전부 커맨드 수이고, 보는
     쪽이 비율로 읽는다. 갈래 이름은 프론트 replayBuildMix.ts와 짝이다.
@@ -51,6 +56,27 @@ class BuildMix(BaseModel):
     u_ground: int = Field(default=0, ge=0, le=100000, alias="uGround")
     u_air: int = Field(default=0, ge=0, le=100000, alias="uAir")
     worker5: int = Field(default=0, ge=0, le=100000)
+    worker_all: int = Field(default=0, ge=0, le=100000, alias="workerAll")
+    # 유닛·스킬 원장(요청: 통계에 유닛/스킬 Top5 칸) — 이름은 screp 영문 키 그대로 두고
+    # 한국어 표기는 화면이 붙인다. 표기를 고치면 이미 등록된 경기도 다음 조회부터 새 표기로
+    # 읽히게 하기 위해서다.
+    #
+    # 자유 형식 사전이라 크기와 값을 여기서 막는다 — 갈래가 정해진 위 항목들과 달리 무엇이든
+    # 들어올 수 있는 자리이고, 이 값은 화면의 목록으로만 쓰여 이상한 게 들어와도 티가 안 난다.
+    units: dict[str, int] = Field(default_factory=dict)
+    skills: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("units", "skills")
+    @classmethod
+    def _sane_tally(cls, v: dict[str, int]) -> dict[str, int]:
+        if len(v) > _MAX_TALLY_KEYS:
+            raise ValueError(f"항목이 너무 많습니다(최대 {_MAX_TALLY_KEYS}개)")
+        for name, n in v.items():
+            if not name or len(name) > _MAX_TALLY_KEY_LEN:
+                raise ValueError("항목 이름이 비었거나 너무 깁니다")
+            if not isinstance(n, int) or n < 0 or n > 100000:
+                raise ValueError("항목 값이 범위를 벗어났습니다")
+        return v
 
 
 class GameResultSlot(BaseModel):
