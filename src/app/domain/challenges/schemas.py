@@ -62,6 +62,11 @@ class ChallengeOut(BaseModel):
     targets: list[ChallengeTargetOut]
     own_members: list[ChallengeOwnMemberOut] = Field(alias="ownMembers")
     created_at: datetime = Field(alias="createdAt")
+    # 마지막으로 손댄 시각 — 응답(수락/거절/버림), 일시 수정, 결과 입력, 취소가 전부 여기
+    # 찍힌다(TimestampMixin의 onupdate). 활동 목록이 "새로 올라온 것(NEW)"과 "달라진
+    # 것(UPDATE)"을 가르는 데 쓴다 — 만든 지는 오래됐지만 방금 답이 온 호출은 새것이
+    # 아니라 달라진 것이다.
+    updated_at: datetime = Field(alias="updatedAt")
     # 폐기(휴지통)된 시각 — 폐기 상태가 아니면 None. 휴지통 목록을 "최근 버려진 순"으로
     # 정렬하는 데 쓴다(프론트 요청: "최근 버려진게 위에 오게").
     discarded_at: datetime | None = Field(default=None, alias="discardedAt")

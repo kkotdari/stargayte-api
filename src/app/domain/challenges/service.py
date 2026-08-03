@@ -135,6 +135,7 @@ def to_challenge_out(challenge: Challenge) -> ChallengeOut:
             for p in own_members
         ],
         createdAt=challenge.created_at,
+        updatedAt=challenge.updated_at,
         discardedAt=challenge.discarded_at,
         canceledBy=(
             ChallengeAuthor(
