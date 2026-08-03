@@ -47,11 +47,16 @@ class Settings(BaseSettings):
     storage_url_path: str = "/uploads"
     public_base_url: str = "http://localhost:8000"
 
-    # 랭크 변동을 하루 한 번 집계할 시각(KST, 0~23). 자정에 돌리던 것을 아침으로 옮겼다
-    # (요청) — 자정엔 아무도 앱을 안 써서 컨테이너가 잠들거나 재시작돼 있을 때가 많고,
-    # 그러면 그 순간을 놓친 채로 하루가 지나간다. 환경변수(RANK_RECOMPUTE_HOUR)로 바꿀 수
-    # 있게 둔 이유는 이 값이 코드가 아니라 운영 리듬에 딸린 값이기 때문이다.
-    rank_recompute_hour: int = Field(default=8, ge=0, le=23)
+    # 랭크 변동을 집계할 시각들(KST, 0~23). 하루 한 번(아침 8시)에서 자정·정오 두 번으로
+    # 늘렸다(요청) — 밤에 몰아친 경기 결과가 다음 날 아침까지 순위표에 안 잡혀 있었다.
+    # 두 번 돌아도 카드가 두 배가 되진 않는다: 집계는 직전 스냅샷과 견줘 달라진 게 없으면
+    # 아무 행도 남기지 않으므로(RankingShiftService.recompute_daily), 조용한 반나절은
+    # 그냥 지나간다. 목표 시각을 놓쳐도 다음 확인 때 따라잡는 구조라(_rank_slot_start)
+    # "자정엔 컨테이너가 잠들어 있다"는 옛 걱정은 더 이상 이 값을 묶지 않는다.
+    # 환경변수(RANK_RECOMPUTE_HOURS="0,12")로 바꾼다 — 코드가 아니라 운영 리듬에 딸린 값이다.
+    rank_recompute_hours: Annotated[list[int], NoDecode] = Field(
+        default_factory=lambda: [0, 12]
+    )
 
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
@@ -59,6 +64,24 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @field_validator("rank_recompute_hours", mode="before")
+    @classmethod
+    def _split_hours(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [int(h.strip()) for h in value.split(",") if h.strip()]
+        return value
+
+    @field_validator("rank_recompute_hours", mode="after")
+    @classmethod
+    def _check_hours(cls, value: list[int]) -> list[int]:
+        # 빈 목록이면 스케줄러가 '구간'을 정할 수 없어 영영 안 돈다 — 잘못 준 환경변수가
+        # 조용히 기능을 꺼 버리는 것보다 부팅 때 터지는 편이 낫다.
+        if not value:
+            raise ValueError("rank_recompute_hours는 최소 한 개여야 한다")
+        if any(h < 0 or h > 23 for h in value):
+            raise ValueError("rank_recompute_hours는 0~23 사이여야 한다")
+        return sorted(set(value))
 
     @field_validator("database_url", mode="before")
     @classmethod

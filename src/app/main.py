@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -449,8 +449,11 @@ async def _seed_ranking_shifts() -> None:
         logging.getLogger(__name__).exception("랭크 스냅샷 기준선 적재 실패")
 
 
-# 하루 한 번 순위표를 다시 집계한다(요청) — 예전처럼 경기 등록/삭제마다 계산하면 하루에도
-# 여러 번 변동 카드가 떠서 활동가 그 카드로 도배됐다. 하루치를 모아 한 번만 남긴다.
+# 정해진 시각마다 순위표를 다시 집계한다(요청) — 예전처럼 경기 등록/삭제마다 계산하면
+# 하루에도 여러 번 변동 카드가 떠서 활동이 그 카드로 도배됐다. 한동안 모아 한 번만 남긴다.
+# 지금은 자정과 정오, 하루 두 번이다(요청) — 한 번(아침)일 때는 밤에 몰아친 경기가 다음 날
+# 아침까지 순위표에 안 잡혔다. 두 번이라고 카드가 두 배가 되진 않는다: 집계는 직전 스냅샷과
+# 견줘 달라진 게 없으면 아무 행도 안 남기므로, 조용한 반나절은 그냥 지나간다.
 #
 # 예전에는 "다음 자정까지 남은 초만큼 sleep" 하나로 만들어 뒀는데, 그러면 그 순간에 프로세스가
 # 살아 있어야만 돈다 — 그리고 실제로 안 돌았다(지적). 이 앱은 새벽에 아무도 안 쓰니 그때
@@ -459,37 +462,42 @@ async def _seed_ranking_shifts() -> None:
 # 알아채는 장치도 없었다.
 #
 # 그래서 '정확한 시각에 깨어나기'를 버리고 '밀린 일을 찾아 하기'로 바꿨다: 짧은 주기로 깨어나
-# ① 오늘 목표 시각을 지났고 ② 오늘 남긴 스냅샷이 아직 없으면 그때 집계한다. 부팅 직후에도
+# ① 지금이 어느 구간인지 보고 ② 그 구간 것을 아직 안 남겼으면 그때 집계한다. 부팅 직후에도
 # 같은 검사를 하므로, 목표 시각에 잠들어 있었더라도 그 뒤 처음 누가 앱을 열면 그때 돈다.
-# 이 방식은 상태를 DB에서 읽으므로 재시작에 영향받지 않는다.
+# 이 방식은 상태를 DB에서 읽으므로 재시작에 영향받지 않는다 — 자정처럼 아무도 안 쓰는
+# 시각을 목표로 삼아도 되는 이유가 이것이다.
 _RANK_RECOMPUTE_TZ = ZoneInfo("Asia/Seoul")
 # 밀린 일이 있는지 확인하는 주기. 짧게 두는 건 잠에서 깬 직후를 빨리 잡기 위해서고, 확인
 # 자체는 스냅샷 한 줄을 읽는 것뿐이라 부담이 없다.
 _RANK_CHECK_INTERVAL_SEC = 10 * 60
 
 
-def _rank_recompute_due(latest_at: datetime | None, last_try: date | None) -> bool:
-    """지금 집계해야 하나 — 목표 시각을 지났고, 오늘 아직 안 남겼고, 이 프로세스에서 오늘
-    시도한 적도 없을 때만.
+def _rank_slot_start(now: datetime) -> datetime:
+    """지금이 속한 집계 구간의 시작 시각 — now까지(포함) 지나온 가장 최근 목표 시각.
 
-    오늘 남긴 스냅샷이 있으면 건너뛰는 게 핵심이다. 아침에 한 번 돌고 낮에 경기가 등록된
-    뒤 재시작이 걸리면, 그 검사가 없으면 같은 날 두 번째 변동 카드가 뜬다(하루에 카드
-    하나라는 규칙이 깨진다).
+    하루 한 번이던 시절엔 '날짜'가 곧 구간이었지만, 하루 여러 번이 되면 날짜만으로는
+    오전 것과 오후 것을 못 가른다. 구간을 시각으로 잡아 두면 "이 구간 것은 이미 남겼나"가
+    스냅샷 시각 한 번의 비교로 끝난다.
 
-    last_try(이 프로세스에서 마지막으로 시도한 날)까지 함께 보는 이유: 순위표가 그대로인
-    날은 recompute_daily가 아무 행도 남기지 않으므로 DB만 보면 '아직 안 했다'로 계속
-    읽힌다 — 그러면 10분마다 헛돌게 된다.
+    오늘 첫 목표 시각도 아직 안 지났으면 어제의 마지막 구간에 있는 것이다.
     """
-    now = datetime.now(_RANK_RECOMPUTE_TZ)
-    if now.hour < settings.rank_recompute_hour:
-        return False
-    if last_try == now.date():
-        return False
+    hours = settings.rank_recompute_hours  # 설정에서 정렬·중복제거를 마친 값
+    today = [now.replace(hour=h, minute=0, second=0, microsecond=0) for h in hours]
+    passed = [t for t in today if t <= now]
+    return passed[-1] if passed else today[-1] - timedelta(days=1)
+
+
+def _rank_recompute_due(latest_at: datetime | None, slot: datetime) -> bool:
+    """이 구간 것을 아직 안 남겼나 — 마지막 스냅샷이 구간 시작보다 앞서면 남길 차례다.
+
+    구간 안에 이미 스냅샷이 있으면 건너뛰는 게 핵심이다. 정오에 한 번 돌고 오후에 경기가
+    등록된 뒤 재시작이 걸려도, 그 검사가 있어야 같은 구간에 두 번째 변동 카드가 안 뜬다.
+    """
     if latest_at is None:
         return True
-    # created_at은 UTC(tz 없이 저장되는 경우도 있다)라 KST 날짜로 옮겨 비교한다.
+    # created_at은 UTC(tz 없이 저장되는 경우도 있다)라 KST로 옮겨 비교한다.
     at = latest_at if latest_at.tzinfo else latest_at.replace(tzinfo=UTC)
-    return at.astimezone(_RANK_RECOMPUTE_TZ).date() < now.date()
+    return at.astimezone(_RANK_RECOMPUTE_TZ) < slot
 
 
 async def _ranking_shift_scheduler() -> None:
@@ -499,18 +507,23 @@ async def _ranking_shift_scheduler() -> None:
     from app.domain.activity.service import RankingShiftService
 
     log = logging.getLogger(__name__)
-    last_try: date | None = None
+    # 이 프로세스에서 마지막으로 집계를 마친 구간. DB만 보면 안 되는 이유: 순위표가 그대로인
+    # 구간은 recompute_daily가 아무 행도 남기지 않으므로 '아직 안 했다'로 계속 읽혀 10분마다
+    # 헛돌게 된다.
+    last_slot: datetime | None = None
     while True:
         try:
-            async with AsyncSessionLocal() as session:
-                service = RankingShiftService(session)
-                if _rank_recompute_due(await service.latest_snapshot_at(), last_try):
-                    await service.recompute_daily(await _rank_entries_computer(session))
-                    # 성공한 뒤에 표시한다 — 먼저 표시하면 한 번 실패한 날이 통째로
+            slot = _rank_slot_start(datetime.now(_RANK_RECOMPUTE_TZ))
+            if slot != last_slot:
+                async with AsyncSessionLocal() as session:
+                    service = RankingShiftService(session)
+                    if _rank_recompute_due(await service.latest_snapshot_at(), slot):
+                        await service.recompute_daily(await _rank_entries_computer(session))
+                        log.info("랭크 스냅샷 재집계 완료 — %s 구간", slot.isoformat())
+                    # 성공한 뒤에 표시한다 — 먼저 표시하면 한 번 실패한 구간이 통째로
                     # 건너뛰어진다. 이렇게 두면 잠깐의 실패는 다음 확인에서 회복되고,
                     # 계속 실패하면 10분마다 로그가 남아 눈에 띈다.
-                    last_try = datetime.now(_RANK_RECOMPUTE_TZ).date()
-                    log.info("랭크 스냅샷 재집계 완료")
+                    last_slot = slot
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
