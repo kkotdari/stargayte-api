@@ -652,25 +652,6 @@ async def test_result_pending_for_me_skips_future_schedule_and_entered_result(cl
     assert res.json()["items"] == []
 
 
-async def test_from_match_request_flag_roundtrips(client):
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
-    await _approve(client, a["accessToken"], "bob")
-
-    # 일반 도전장은 False.
-    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
-    assert res.json()["fromMatchRequest"] is False
-
-    # 들어주기로 만든 도전장은 fromMatchRequest=True로 표식된다.
-    res = await client.post(
-        "/api/challenges", headers=headers_a,
-        json={"targetMemberIds": ["bob"], "fromMatchRequest": True},
-    )
-    assert res.status_code == 200, res.text
-    assert res.json()["fromMatchRequest"] is True
-
-
 async def test_time_note_is_free_text_and_never_affects_schedule(client):
     """약속 시간을 사람 말로 적어 두는 자리(요청: 시간 필드 대신 "언제"를 한마디처럼).
 

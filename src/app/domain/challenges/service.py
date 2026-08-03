@@ -146,7 +146,6 @@ def to_challenge_out(challenge: Challenge) -> ChallengeOut:
             else None
         ),
         resultWinnerSide=challenge.result_winner_side,
-        fromMatchRequest=challenge.from_match_request,
     )
 
 
@@ -241,7 +240,6 @@ class ChallengeService:
             message=payload.message.strip(),
             scheduled_date=payload.scheduled_date,
             scheduled_time_note=payload.scheduled_time_note.strip(),
-            from_match_request=payload.from_match_request,
             created_by=actor.pk,
             updated_by=actor.pk,
         )

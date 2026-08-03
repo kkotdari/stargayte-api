@@ -37,7 +37,6 @@ async def _ensure_schema() -> None:
     from app.domain.challenges import models as _challenges_models  # noqa: F401
     from app.domain.env_vars import models as _env_vars_models  # noqa: F401
     from app.domain.feed import models as _feed_models  # noqa: F401
-    from app.domain.match_requests import models as _match_requests_models  # noqa: F401
     from app.domain.game_results import models as _game_results_models  # noqa: F401
     from app.domain.members import models as _members_models  # noqa: F401
 
@@ -61,6 +60,8 @@ async def _ensure_schema() -> None:
         await _add_challenge_canceled_by(conn)
         await _drop_challenge_time(conn)
         await _drop_challenge_revenge_chain(conn)
+        await _drop_challenge_from_match_request(conn)
+        await _drop_match_request_tables(conn)
         await _drop_access_screen_code_check(conn)
         await _drop_legacy_match_notes(conn)
         await _drop_legacy_match_summary(conn)
@@ -70,7 +71,6 @@ async def _ensure_schema() -> None:
 
 # 이름 정리(요청) 이전에 쓰던 테이블 이름 → 지금 이름. 피드 1뎁스가 게임결과/너 나와/
 # 랭크변동이고 게임결과 포스트 안의 2뎁스가 게임결과 카드라는 계층에 맞춘 것이다.
-# match_requests(@지목 공개 요청글)는 이 셋과 별개 기능이라 손대지 않는다.
 _TABLE_RENAMES = [
     ("matches", "game_results"),
     ("match_participants", "game_result_participants"),
@@ -275,6 +275,59 @@ async def _drop_challenge_time(conn: object) -> None:
         )
     except Exception:  # noqa: BLE001 — 이미 없거나 미지원 DB면 그냥 넘어간다.
         logging.getLogger(__name__).debug("challenges.scheduled_time 컬럼 삭제 건너뜀", exc_info=True)
+
+
+async def _drop_challenge_from_match_request(conn) -> None:
+    """challenges.from_match_request("요청대결" 배지 플래그)를 지운다(멱등).
+
+    "너 나와! 요청"(match_requests) 기능이 통째로 없어져(요청) 그 요청을 "들어주기"로 받아
+    만들어진 도전장이라는 표식도 뜻이 없어졌다 — 배지를 그리던 화면도 함께 사라졌다.
+
+    아래 _drop_match_request_tables와 짝이다. IF EXISTS는 PostgreSQL만 받으므로(SQLite는
+    DROP COLUMN까지만) 있는지 먼저 보고 조건 없는 DROP COLUMN을 날린다.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    try:
+        cols = await conn.run_sync(
+            lambda c: {col["name"] for col in inspect(c).get_columns("challenges")}
+        )
+        if "from_match_request" not in cols:
+            return
+        await conn.execute(text("ALTER TABLE challenges DROP COLUMN from_match_request"))
+        logging.getLogger(__name__).info("challenges.from_match_request 삭제 완료")
+    except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(안 읽는 컬럼으로 남는다).
+        logging.getLogger(__name__).warning(
+            "challenges.from_match_request 삭제 건너뜀", exc_info=True,
+        )
+
+
+async def _drop_match_request_tables(conn) -> None:
+    """"너 나와! 요청"(match_requests) 세 테이블을 통째로 지운다(멱등).
+
+    "이런 대결 봤으면 좋겠다"를 남기고 다른 회원이 추천(엄지척)하던 공개 요청글 코너다.
+    등록/목록/추천/완료 화면은 이미 없어졌고 인박스(언급 알림)만 남아 있었는데, 프론트에서
+    그것마저 걷어내(요청) 이 테이블들을 읽는 코드가 하나도 남지 않았다 — API·모델과 함께
+    저장소도 정리한다. 되살릴 값이 아니다(경기 기록·포인트와는 무관한 게시판이었다).
+
+    자식(match_request_targets/recommends)을 먼저 지워야 외래키가 걸리지 않는다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        for table in (
+            "match_request_recommends",
+            "match_request_targets",
+            "match_requests",
+        ):
+            await conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        logging.getLogger(__name__).info("너 나와! 요청(match_requests) 테이블 삭제 완료")
+    except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(안 쓰는 테이블로 남는다).
+        logging.getLogger(__name__).exception("너 나와! 요청(match_requests) 테이블 삭제 실패")
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:

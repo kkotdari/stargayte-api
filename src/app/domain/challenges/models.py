@@ -59,9 +59,6 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 소프트 삭제 — 폐기(discarded_at)된 지 7일이 지나면 목록 조회 시 배치가 이 값을 찍어
     # 이후로는 어떤 조회에도 안 나온다(DB에서는 남겨둔다). NULL이면 살아있음.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # "대결 요청 코너"의 요청을 누군가 "들어주기"로 받아 만든 도전장이면 True — 카드에 "요청대결"
-    # 배지를 붙이는 데 쓴다(요청). 일반 도전장은 False.
-    from_match_request: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 확정된 대결의 승부 결과 — 이긴 쪽(side)만 기록한다. 예정 일시가 지난 뒤 참가자
     # 누구든 먼저 입력하는 쪽이 그대로 인정된다(요청: "먼저 입력하는 쪽 인정"). 아무도
     # 입력하지 않으면 계속 NULL로 남는다(요청: "그냥 결과 미정으로 계속 남음").
