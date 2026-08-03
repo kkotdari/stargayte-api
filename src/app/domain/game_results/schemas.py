@@ -34,6 +34,25 @@ def is_placeholder_slot(member_id: str) -> bool:
     return is_computer_slot(member_id) or is_unregistered_slot(member_id)
 
 
+class BuildMix(BaseModel):
+    """그 경기에서 무엇을 짓고 무엇을 뽑았나의 구성(요청) — 값은 전부 커맨드 수이고, 보는
+    쪽이 비율로 읽는다. 갈래 이름은 프론트 replayBuildMix.ts와 짝이다.
+
+    음수는 있을 수 없고, 터무니없이 큰 값도 받지 않는다 — 이 값은 화면의 도넛 비율로만
+    쓰이므로 이상한 값이 들어와도 티가 잘 안 난다. 들어오는 자리에서 막는 편이 낫다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    b_prod: int = Field(default=0, ge=0, le=100000, alias="bProd")
+    b_def: int = Field(default=0, ge=0, le=100000, alias="bDef")
+    u_basic: int = Field(default=0, ge=0, le=100000, alias="uBasic")
+    u_adv: int = Field(default=0, ge=0, le=100000, alias="uAdv")
+    u_caster: int = Field(default=0, ge=0, le=100000, alias="uCaster")
+    u_ground: int = Field(default=0, ge=0, le=100000, alias="uGround")
+    u_air: int = Field(default=0, ge=0, le=100000, alias="uAir")
+    worker5: int = Field(default=0, ge=0, le=100000)
+
+
 class GameResultSlot(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -55,6 +74,8 @@ class GameResultSlot(BaseModel):
     effective_cmd_count: int | None = Field(default=None, alias="effectiveCmdCount")
     # 리플레이 커맨드 스트림에서 센 '생산' 지표(유닛 훈련+건물 건설+변태 커맨드 수).
     build_count: int | None = Field(default=None, alias="buildCount")
+    # 그 '생산'의 구성(models.build_mix 주석 참고) — 프론트가 세서 그대로 보낸다.
+    build_mix: BuildMix | None = Field(default=None, alias="buildMix")
 
 
 class GameResultReplayMergeSlot(BaseModel):
@@ -70,6 +91,7 @@ class GameResultReplayMergeSlot(BaseModel):
     cmd_count: int | None = Field(default=None, alias="cmdCount")
     effective_cmd_count: int | None = Field(default=None, alias="effectiveCmdCount")
     build_count: int | None = Field(default=None, alias="buildCount")
+    build_mix: BuildMix | None = Field(default=None, alias="buildMix")
 
 
 class ReplayMapData(BaseModel):
@@ -340,6 +362,12 @@ class RaceStatsEntry(BaseModel):
     # 경기당 평균 '생산'(유닛 훈련+건물 건설+변태 커맨드 수) — avg_cmd처럼 총합의 단순 평균.
     # 리플레이로 등록된(build_count가 있는) 경기만 반영된다(수동 등록/과거 경기는 NULL).
     avg_build: int | None = Field(default=None, alias="avgBuild")
+    # 그 기간 경기들의 생산 구성 합계(요청: 도넛 셋 + 초반 일꾼) — 경기마다 비율을 내서
+    # 평균 내지 않고 통째로 더한다. 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면
+    # 짧은 판 한 번이 그 사람의 그림을 흔든다. 구성이 있는 경기가 하나도 없으면 None.
+    build_mix: BuildMix | None = Field(default=None, alias="buildMix")
+    # 초반 일꾼은 '경기당 몇 기'라야 뜻이 선다 — 위 합계를 경기 수로 나눈 값이다.
+    avg_worker5: float | None = Field(default=None, alias="avgWorker5")
 
 
 class MemberStatsEntry(BaseModel):

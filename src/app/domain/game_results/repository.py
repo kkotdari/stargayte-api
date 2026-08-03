@@ -378,6 +378,7 @@ class GameResultRepository:
                 GameResultParticipant.cmd_count,
                 GameResultParticipant.effective_cmd_count,
                 GameResultParticipant.build_count,
+                GameResultParticipant.build_mix,
                 GameOutcome.duration_seconds,
             )
             .select_from(GameResultParticipant)

@@ -21,6 +21,7 @@ from app.domain.game_results.rating import RatingEngine
 from app.domain.game_results.repository import GameResultRepository
 from app.domain.game_results.schemas import (
     COMPUTER_ID_PREFIX,
+    BuildMix,
     UNREGISTERED_ID_PREFIX,
     GameResultAuthor,
     GameResultOut,
@@ -145,6 +146,14 @@ def _trimmed_avg(rows: list, attr: str) -> int | None:
 _MIN_DURATION_SECONDS = 120
 
 
+def _mix_json(v: object) -> dict | None:
+    """생산 구성을 DB에 넣을 dict로 — 검증을 지난 모델일 수도, 이미 dict일 수도 있다
+    (등록 payload는 모델이지만, 다른 경로에서 만든 슬롯은 dict 그대로 온다)."""
+    if v is None:
+        return None
+    return v.model_dump() if hasattr(v, "model_dump") else dict(v)  # type: ignore[arg-type]
+
+
 def _trimmed_avgs(rows: list) -> dict[str, int | None]:
     """_TRIMMED_METRICS 다섯 항목을 RaceStatsEntry.model_copy(update=...)에 바로 넣을
     모양으로 낸다 — 종족별/전체 두 곳에서 같은 목록을 쓰게 해서 한쪽만 빠지는 일을 막는다.
@@ -157,7 +166,34 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
         r for r in rows
         if r.duration_seconds is None or r.duration_seconds >= _MIN_DURATION_SECONDS
     ]
-    return {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_METRICS}
+    out: dict[str, object] = {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_METRICS}
+    out.update(_build_mix_agg(rows))
+    return out  # type: ignore[return-value]
+
+
+# 생산 구성 합계(요청: 도넛 셋 + 초반 일꾼) — 경기마다 비율을 내서 평균 내지 않고 통째로
+# 더한다. 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이 그 사람의
+# 그림을 흔들기 때문이다. 초반 일꾼만은 '경기당 몇 기'라야 뜻이 서서 따로 나눠 낸다.
+_BUILD_MIX_FIELDS = ("b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air", "worker5")
+
+
+def _build_mix_agg(rows: list) -> dict[str, object]:
+    mixes = [r.build_mix for r in rows if getattr(r, "build_mix", None)]
+    if not mixes:
+        return {"build_mix": None, "avg_worker5": None}
+    total = {f: 0 for f in _BUILD_MIX_FIELDS}
+    for m in mixes:
+        # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
+        if not isinstance(m, dict):
+            continue
+        for f in _BUILD_MIX_FIELDS:
+            v = m.get(f)
+            if isinstance(v, (int, float)) and v >= 0:
+                total[f] += int(v)
+    return {
+        "build_mix": BuildMix(**total),
+        "avg_worker5": round(total["worker5"] / len(mixes), 1),
+    }
 
 
 def _split_terms(query: str | None) -> list[str]:
@@ -344,7 +380,11 @@ def _gate_metrics_by_plays(entry: RaceStatsEntry, min_plays: int) -> RaceStatsEn
     안 걸고 byRace에서 꺼내 본 같은 숫자가 서로 어긋나지 않는다."""
     if entry.plays >= min_plays:
         return entry
-    return entry.model_copy(update={field: None for field, _attr in _TRIMMED_METRICS})
+    blanks: dict[str, object] = {field: None for field, _attr in _TRIMMED_METRICS}
+    # 생산 구성도 지표다 — 표본이 모자라면 같이 내린다(안 그러면 한 판만 뛴 사람의 도넛이
+    # 다른 지표는 '-'인 채로 혼자 그려진다).
+    blanks.update({"build_mix": None, "avg_worker5": None})
+    return entry.model_copy(update=blanks)
 
 
 def _replay_order_key(game_started_at, match_date, match_no):
@@ -466,6 +506,7 @@ def _to_match_slot(p: GameResultParticipant, alias_by_player_name: dict[str, Rep
         cmd_count=p.cmd_count,
         effective_cmd_count=p.effective_cmd_count,
         build_count=p.build_count,
+        build_mix=_mix_json(p.build_mix),
     )
 
 
@@ -1273,6 +1314,8 @@ class GameResultService:
                 p.effective_cmd_count = s.effective_cmd_count
             if s.build_count is not None:
                 p.build_count = s.build_count
+            if s.build_mix is not None:
+                p.build_mix = _mix_json(s.build_mix)
             p.updated_by = actor.pk
 
         # 중복 리플레이 재등록이면 저장된 다운로드 파일명도 최신 포맷으로 갱신한다(요청). 위에서
@@ -1379,6 +1422,7 @@ class GameResultService:
                 cmd_count=slot.cmd_count,
                 effective_cmd_count=slot.effective_cmd_count,
                 build_count=slot.build_count,
+                build_mix=_mix_json(slot.build_mix),
                 created_by=actor_pk,
                 updated_by=actor_pk,
             )
@@ -1395,6 +1439,7 @@ class GameResultService:
                 cmd_count=slot.cmd_count,
                 effective_cmd_count=slot.effective_cmd_count,
                 build_count=slot.build_count,
+                build_mix=_mix_json(slot.build_mix),
                 created_by=actor_pk,
                 updated_by=actor_pk,
             )

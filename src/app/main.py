@@ -58,6 +58,7 @@ async def _ensure_schema() -> None:
         await _add_replay_map_image_id(conn)
         await _add_challenge_time_note(conn)
         await _add_challenge_canceled_by(conn)
+        await _add_participant_build_mix(conn)
         await _drop_challenge_time(conn)
         await _drop_challenge_revenge_chain(conn)
         await _drop_challenge_from_match_request(conn)
@@ -225,6 +226,30 @@ async def _add_challenge_canceled_by(conn: object) -> None:
             return
         except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
             logging.getLogger(__name__).debug("challenges.canceled_by_pk 추가 시도 실패: %s", sql, exc_info=True)
+
+
+async def _add_participant_build_mix(conn: object) -> None:
+    """game_result_participants.build_mix 컬럼을 더한다(멱등).
+
+    그 경기에서 무엇을 짓고 무엇을 뽑았나의 구성이다(요청: 통계 생산 칸에 도넛 셋 + 초반
+    일꾼 수). 옛 경기는 NULL로 남고, 그런 경기만 있는 회원은 화면에서 도넛 없이 총량만
+    보인다 — 리플레이를 다시 올리면(머지) 그때 채워진다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    # SQLite는 ADD COLUMN IF NOT EXISTS를 모른다(위 _add_challenge_canceled_by 참고).
+    # 타입은 JSON으로 둔다 — Postgres는 그대로, SQLite는 TEXT로 받아 준다.
+    for sql in (
+        "ALTER TABLE game_result_participants ADD COLUMN IF NOT EXISTS build_mix JSON",
+        "ALTER TABLE game_result_participants ADD COLUMN build_mix JSON",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
+            logging.getLogger(__name__).debug("build_mix 추가 시도 실패: %s", sql, exc_info=True)
 
 
 async def _drop_challenge_revenge_chain(conn: object) -> None:

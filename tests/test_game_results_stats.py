@@ -87,14 +87,18 @@ async def test_stats_aggregates_exact_numbers(client):
     assert p1_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 410, "avgBuild": 320,
+        # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
+        "buildMix": None, "avgWorker5": None,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 400, "avgBuild": 300,
+        "buildMix": None, "avgWorker5": None,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
+        "buildMix": None, "avgWorker5": None,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -104,6 +108,7 @@ async def test_stats_aggregates_exact_numbers(client):
     assert p2_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 220, "avgBuild": 165,
+        "buildMix": None, "avgWorker5": None,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -427,6 +432,7 @@ async def test_stats_race_filter_scopes_overall(client):
     assert overall == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
+        "buildMix": None, "avgWorker5": None,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -441,6 +447,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     assert entry["overall"] == {
         "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
+        "buildMix": None, "avgWorker5": None,
     }
     assert entry["mostPlayedRace"] is None
 
@@ -556,3 +563,63 @@ async def test_rivalries_team_mode_individualizes(client):
     # solo 모드(기본)에는 팀전이 안 섞인다.
     res = await client.get("/api/game-results/stats/rivalries", headers=headers)
     assert not [p for p in res.json()["pairs"] if {p["a"], p["b"]} <= ours]
+
+
+def _mix(b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0) -> dict:
+    return {
+        "bProd": b_prod, "bDef": b_def,
+        "uBasic": u_basic, "uAdv": u_adv, "uCaster": u_caster,
+        "uGround": u_ground, "uAir": u_air, "worker5": worker5,
+    }
+
+
+async def test_stats_sums_build_mix_across_matches(client):
+    """생산 구성(도넛 셋 + 초반 일꾼)은 기간 안의 경기를 통째로 더한다 — 경기마다 비율을
+    내서 평균 내지 않는다(짧은 판 한 번이 그림을 흔들지 않게)."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    s1 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    s1["buildMix"] = _mix(b_prod=20, b_def=5, u_basic=60, u_adv=10, u_caster=2, u_ground=65, u_air=7, worker5=14)
+    s2 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    s2["buildMix"] = _mix(b_prod=10, b_def=15, u_basic=20, u_adv=30, u_caster=8, u_ground=40, u_air=18, worker5=8)
+    await _create_match(
+        client, headers, "2026-07-01",
+        team1=[s1], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+    )
+    await _create_match(
+        client, headers, "2026-07-02",
+        team1=[s2], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+    )
+    # 최소 판수(개인전 3판)를 채워야 지표가 나온다 — 구성도 지표라 같은 문을 지난다.
+    s3 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    await _create_match(
+        client, headers, "2026-07-03",
+        team1=[s3], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    assert overall["buildMix"] == _mix(
+        b_prod=30, b_def=20, u_basic=80, u_adv=40, u_caster=10, u_ground=105, u_air=25, worker5=22,
+    )
+    # 구성이 실린 경기는 둘뿐이다 — 없는 경기까지 세면 초반 일꾼이 실제보다 낮아진다.
+    assert overall["avgWorker5"] == 11.0
+
+
+async def test_stats_build_mix_is_none_without_replay_matches(client):
+    """구성이 실린 경기가 하나도 없으면 None이다 — 0이 아니다(잰 적이 없다는 뜻)."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    for i in range(3):
+        await _create_match(
+            client, headers, f"2026-07-0{i + 1}",
+            team1=[_slot("player01", "테란", 100, 80, 500, 400, build=300)],
+            team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+        )
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    assert overall["buildMix"] is None
+    assert overall["avgWorker5"] is None

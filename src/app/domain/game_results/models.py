@@ -87,6 +87,12 @@ class GameResultParticipant(AuditMixin, Base):
     # 총합이다(build order 규모). apm 4형제와 마찬가지로 리플레이 파싱으로만 채워지고
     # 수동 등록/과거 데이터는 NULL이다. 프론트 replayParser가 세서 슬롯에 실어 보낸다.
     build_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 그 '생산'을 갈래별로 나눈 값(요청: 통계 생산 칸에 도넛 셋 + 초반 일꾼 수) — 건물
+    # 생산/방어, 병력 기본/고급/마법, 지상/공중, 5분까지의 일꾼 수. 총량 하나로는 "많이
+    # 했다"까지밖에 못 말해서 구성을 따로 싣는다. 갈래가 늘거나 이름이 바뀔 수 있어 컬럼을
+    # 쪼개지 않고 JSON 한 칸에 담는다(집계는 파이썬에서 더한다 — 통계 한 번에 도는 행이
+    # 수천 건 규모라 DB에서 굳이 풀 이유가 없다). 프론트 replayBuildMix가 세서 보낸다.
+    build_mix: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     game_result: Mapped[GameResult] = relationship(back_populates="participants")
 
