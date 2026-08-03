@@ -1,3 +1,8 @@
+# 코드에서는 '활동(activity)'이라고 부르지만 테이블 이름만은 feed_comments /
+# feed_comment_mentions 그대로다. 한 번 옮겨 봤다가 운영(PostgreSQL)에서 부팅이 통째로
+# 실패해 되돌렸다 — 클래스 이름과 테이블 이름이 다른 것은 여기 한 곳에만 있는 사실이라
+# 이 주석으로 못 박아 둔다. 다시 시도하려면 진짜 실패 원인을 PostgreSQL에서 먼저 재현해야
+# 한다(main.py의 _TABLE_RENAMES / _ensure_schema 주석 참고).
 from sqlalchemy import JSON, BigInteger, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,11 +16,11 @@ class ActivityComment(AuditMixin, TimestampMixin, Base):
     """활동 요소 하나에 달리는 댓글 — 대상은 (target_type, target_id)로 가리킨다.
 
     경기("match")든 너 나와!("challenge")든, 앞으로 추가될 어떤 활동 요소든 같은
-    테이블 하나로 담는다. 본문 안 @닉네임 언급은 activity_comment_mentions에 구조적으로
+    테이블 하나로 담는다. 본문 안 @닉네임 언급은 feed_comment_mentions에 구조적으로
     저장해 현재 닉네임으로 렌더한다. 작성자 본인 또는 운영자만 수정·삭제할 수 있다.
     """
 
-    __tablename__ = "activity_comments"
+    __tablename__ = "feed_comments"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     target_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
@@ -33,14 +38,14 @@ class ActivityComment(AuditMixin, TimestampMixin, Base):
 class ActivityCommentMention(Base):
     """댓글 본문에 언급(@)된 회원 한 명 — (댓글, 회원) 조합은 유일하다."""
 
-    __tablename__ = "activity_comment_mentions"
+    __tablename__ = "feed_comment_mentions"
     __table_args__ = (
-        UniqueConstraint("comment_id", "member_pk", name="uq_activity_comment_mentions_comment_member"),
+        UniqueConstraint("comment_id", "member_pk", name="uq_feed_comment_mentions_comment_member"),
     )
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     comment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("activity_comments.id", ondelete="CASCADE"), nullable=False
+        BigInteger, ForeignKey("feed_comments.id", ondelete="CASCADE"), nullable=False
     )
     member_pk: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("members.pk", ondelete="CASCADE"), nullable=False

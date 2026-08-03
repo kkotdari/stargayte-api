@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.domain.activity.models import ActivityComment, ActivityCommentMention
 from app.core.exceptions import (
     AppError,
     ConflictError,
@@ -40,35 +41,71 @@ async def _ensure_schema() -> None:
     from app.domain.game_results import models as _game_results_models  # noqa: F401
     from app.domain.members import models as _members_models  # noqa: F401
 
+    # 각 단계를 사바포인트(begin_nested)로 감싼다. 이게 없으면 PostgreSQL에서는 단계 하나가
+    # 실패한 순간 트랜잭션 전체가 aborted가 되고, 그 뒤 단계들은 무엇을 하든
+    # InFailedSQLTransactionError로 줄줄이 죽는다 — 각 단계가 try/except로 실패를 삼켜도
+    # 소용없다. 파이썬 쪽에서만 삼켰지 DB 쪽 트랜잭션은 이미 망가져 있기 때문이다. 실제로
+    # 그렇게 부팅이 통째로 실패했다(운영 로그: "DROP TABLE IF EXISTS match_request_recommends"
+    # 자리에서 InFailedSQLTransactionError — 정작 그 문장은 죄가 없고, 훨씬 앞선 단계가
+    # 트랜잭션을 이미 망가뜨린 뒤였다). 사바포인트로 감싸면 실패한 단계만 되돌아가고
+    # 나머지는 제 할 일을 한다.
+    #
+    # 실패는 삼키되 반드시 남긴다 — 조용히 넘어가면 "왜 이 컬럼이 없지"를 한참 뒤에
+    # 딴 데서 만나게 된다.
+    import logging
+
+    from sqlalchemy import text
+
+    log = logging.getLogger(__name__)
+
+    async def step(name: str, run) -> None:
+        try:
+            async with conn.begin_nested():
+                await run()
+        except Exception:  # noqa: BLE001 — 한 단계가 실패해도 나머지와 부팅은 계속한다.
+            log.exception("스키마 단계 실패: %s", name)
+
     async with engine.begin() as conn:
         # 랭킹변동(rank_shifts)은 스냅샷(rank_snapshots) 방식으로 대체됐다 — 옛 테이블은
         # 쌓인 데이터까지 함께 버린다(요청: 기존 랭킹변동 저장 테이블 드롭).
-        from sqlalchemy import text
-        await conn.execute(text("DROP TABLE IF EXISTS rank_shifts"))
+        await step("drop rank_shifts", lambda: conn.execute(text("DROP TABLE IF EXISTS rank_shifts")))
         # 이름 정리(요청: 계층에 맞춰 통일)로 테이블 몇 개의 이름이 바뀌었다 — create_all보다
         # 반드시 먼저 돌려야 한다. 나중에 돌리면 create_all이 새 이름의 빈 테이블을 먼저
         # 만들어 버려서, 옛 테이블은 데이터를 안은 채 이름을 못 바꾸고 남는다.
-        await _rename_legacy_tables(conn)
-        await conn.run_sync(Base.metadata.create_all)
-        await _migrate_match_notes(conn)
-        await _migrate_activity_target_types(conn)
-        await _add_match_result_summary(conn)
-        await _add_match_result_map_hash(conn)
-        await _add_replay_map_resources(conn)
-        await _add_replay_map_image_id(conn)
-        await _add_challenge_time_note(conn)
-        await _add_challenge_canceled_by(conn)
-        await _add_participant_build_mix(conn)
-        await _drop_challenge_time(conn)
-        await _drop_challenge_revenge_chain(conn)
-        await _drop_challenge_from_match_request(conn)
-        await _drop_match_request_tables(conn)
-        await _drop_access_screen_code_check(conn)
-        await _drop_legacy_match_notes(conn)
-        await _drop_legacy_match_summary(conn)
-        await _rebuild_ranking_shifts(conn)
+        await step("rename legacy tables", lambda: _rename_legacy_tables(conn))
+        await step("create_all", lambda: conn.run_sync(Base.metadata.create_all))
+        for name, fn in (
+            ("migrate match notes", _migrate_match_notes),
+            ("migrate activity target types", _migrate_activity_target_types),
+            ("add game_outcomes.summary_data", _add_match_result_summary),
+            ("add game_outcomes.map_hash", _add_match_result_map_hash),
+            ("add replay map resources", _add_replay_map_resources),
+            ("add replay map image id", _add_replay_map_image_id),
+            ("add challenge time note", _add_challenge_time_note),
+            ("add challenge canceled_by", _add_challenge_canceled_by),
+            ("add participant build_mix", _add_participant_build_mix),
+            ("drop challenge time", _drop_challenge_time),
+            ("drop challenge revenge chain", _drop_challenge_revenge_chain),
+            ("drop challenge from match request", _drop_challenge_from_match_request),
+            ("drop match request tables", _drop_match_request_tables),
+            ("drop access screen code check", _drop_access_screen_code_check),
+            ("drop legacy match notes", _drop_legacy_match_notes),
+            ("drop legacy match summary", _drop_legacy_match_summary),
+            ("rebuild ranking shifts", _rebuild_ranking_shifts),
+        ):
+            await step(name, (lambda f=fn: f(conn)))
     await _seed_ranking_shifts()
 
+
+# 생 SQL이 쓰는 활동 댓글 테이블 이름 — 손으로 적지 않고 모델에서 가져온다.
+#
+# 손으로 적었다가 실제로 운영을 세웠다: 이름 일괄 변경(피드 → 활동) 때 이 파일의 SQL
+# 문자열까지 함께 치환됐는데 정작 __tablename__은 그대로여서, 부팅 도중 "UPDATE
+# activity_comments …"가 없는 테이블을 건드렸다. PostgreSQL은 그 한 번으로 트랜잭션을
+# aborted로 만들고, 뒤따르는 모든 단계가 InFailedSQLTransactionError로 죽었다.
+# 모델에서 가져오면 이름이 어디로 바뀌든 SQL과 스키마가 갈라설 수가 없다.
+_COMMENTS = ActivityComment.__tablename__
+_MENTIONS = ActivityCommentMention.__tablename__
 
 # 이름 정리(요청) 이전에 쓰던 테이블 이름 → 지금 이름. 피드 1뎁스가 게임결과/너 나와/
 # 랭크변동이고 게임결과 포스트 안의 2뎁스가 게임결과 카드라는 계층에 맞춘 것이다.
@@ -77,11 +114,9 @@ _TABLE_RENAMES = [
     ("match_participants", "game_result_participants"),
     ("match_results", "game_outcomes"),
     ("rank_snapshots", "ranking_shifts"),
-    # 피드 → 활동 이름 일괄 변경(요청)의 마지막 조각. 코드 쪽은 먼저 옮겼고 테이블만
-    # 남겨 뒀었는데, 이제 여기서 함께 옮긴다 — 아래 규칙(옛 이름이 있고 새 이름이 아직
-    # 없을 때만) 덕분에 이미 바뀐 DB에서도, 처음 뜨는 DB에서도 안전하다.
-    ("feed_comments", "activity_comments"),
-    ("feed_comment_mentions", "activity_comment_mentions"),
+    # (되돌림) 활동 댓글 두 테이블의 이름 변경 — 운영(PostgreSQL)에서 부팅이 통째로
+    # 실패했다. 아래 _ensure_schema의 사바포인트 주석 참고: 이 목록에 줄을 더하기 전에
+    # 진짜 실패 원인을 PostgreSQL에서 먼저 확인해야 한다.
 ]
 
 
@@ -485,7 +520,7 @@ async def _ranking_shift_scheduler() -> None:
 
 
 async def _migrate_activity_target_types(conn) -> None:
-    """activity_comments.target_type에 저장된 옛 값을 지금 이름으로 옮긴다(멱등).
+    """활동 댓글 테이블의 target_type에 저장된 옛 값을 지금 이름으로 옮긴다(멱등).
 
     댓글이 가리키는 대상 종류는 문자열 그대로 컬럼에 들어가므로, 이름 정리(요청)로
     match→gameResult·rankshift→rankingShift가 되면서 쌓여 있던 값도 함께 옮겨야 한다.
@@ -501,7 +536,7 @@ async def _migrate_activity_target_types(conn) -> None:
     try:
         for old, new in LEGACY_FEED_TARGET_TYPES.items():
             res = await conn.execute(
-                text("UPDATE activity_comments SET target_type = :new WHERE target_type = :old"),
+                text(f"UPDATE {_COMMENTS} SET target_type = :new WHERE target_type = :old"),
                 {"new": new, "old": old},
             )
             if res.rowcount:
@@ -513,9 +548,9 @@ async def _migrate_activity_target_types(conn) -> None:
 
 
 async def _migrate_match_notes(conn) -> None:
-    """기존 경기 댓글(match_notes)을 일반화된 피드 댓글(activity_comments)로 1회 이관.
+    """기존 경기 댓글(match_notes)을 일반화된 활동 댓글 테이블로 1회 이관.
 
-    activity_comments가 비어 있고 match_notes에 데이터가 있을 때만 복사한다(멱등).
+    활동 댓글 테이블이 비어 있고 match_notes에 데이터가 있을 때만 복사한다(멱등).
     id를 그대로 보존해 언급(mentions) 매핑도 함께 옮긴다.
 
     이제 match_notes는 모델에서 빠져 create_all이 만들지 않는다 — 새로 만든 DB에는 아예
@@ -526,27 +561,27 @@ async def _migrate_match_notes(conn) -> None:
     tables = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
     if "match_notes" not in tables:
         return
-    existing = await conn.scalar(text("SELECT COUNT(*) FROM activity_comments"))
+    existing = await conn.scalar(text(f"SELECT COUNT(*) FROM {_COMMENTS}"))
     if existing and existing > 0:
         return
     legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes"))
     if not legacy:
         return
     await conn.execute(text(
-        "INSERT INTO activity_comments (id, target_type, target_id, text, created_at, updated_at, created_by, updated_by) "
+        f"INSERT INTO {_COMMENTS} (id, target_type, target_id, text, created_at, updated_at, created_by, updated_by) "
         "SELECT id, 'gameResult', match_id, text, created_at, updated_at, created_by, updated_by FROM match_notes"
     ))
     await conn.execute(text(
-        "INSERT INTO activity_comment_mentions (comment_id, member_pk) "
+        f"INSERT INTO {_MENTIONS} (comment_id, member_pk) "
         "SELECT note_id, member_pk FROM match_note_mentions"
     ))
     if conn.dialect.name == "postgresql":
         await conn.execute(text(
-            "SELECT setval(pg_get_serial_sequence('activity_comments', 'id'), (SELECT MAX(id) FROM activity_comments))"
+            f"SELECT setval(pg_get_serial_sequence('{_COMMENTS}', 'id'), (SELECT MAX(id) FROM {_COMMENTS}))"
         ))
         await conn.execute(text(
-            "SELECT setval(pg_get_serial_sequence('activity_comment_mentions', 'id'), "
-            "(SELECT COALESCE(MAX(id), 1) FROM activity_comment_mentions))"
+            f"SELECT setval(pg_get_serial_sequence('{_MENTIONS}', 'id'), "
+            f"(SELECT COALESCE(MAX(id), 1) FROM {_MENTIONS}))"
         ))
 
 
@@ -562,7 +597,7 @@ async def _rebuild_ranking_shifts(conn) -> None:
     리스타트 아이덴티티"). 스냅샷은 그날 순위표의 사진일 뿐이라, 다음 집계가 지금 성적으로
     기준선을 새로 깔면 그대로 복구된다.
 
-    함께 지우는 것 하나 — 그 카드들에 달렸던 댓글(activity_comments의 target_type='rankingShift').
+    함께 지우는 것 하나 — 그 카드들에 달렸던 댓글(활동 댓글 테이블의 target_type='rankingShift').
     지우지 않으면 id가 1부터 다시 시작하면서 옛 댓글이 엉뚱한 날짜의 새 카드에 가서 붙는다.
 
     멱등: sections 컬럼이 이미 있으면(=이미 갈아엎은 DB) 아무 일도 안 한다.
@@ -585,7 +620,7 @@ async def _rebuild_ranking_shifts(conn) -> None:
             return
         # ① 옛 카드에 달린 댓글부터 — 아래에서 id가 1로 되감기므로 남겨 두면 오배달된다.
         await conn.execute(
-            text("DELETE FROM activity_comments WHERE target_type = 'rankingShift'")
+            text(f"DELETE FROM {_COMMENTS} WHERE target_type = 'rankingShift'")
         )
         # ② 행을 비우고 id를 1로 되돌린다. TRUNCATE … RESTART IDENTITY는 PostgreSQL 전용이라
         #    실패하면 DELETE + SQLite 시퀀스 초기화로 물러선다.
@@ -647,10 +682,10 @@ async def _drop_legacy_match_summary(conn) -> None:
 async def _drop_legacy_match_notes(conn) -> None:
     """이관이 끝난 옛 경기 댓글 테이블을 지운다.
 
-    바로 위 _migrate_match_notes가 같은 트랜잭션에서 먼저 돌아 남은 행을 activity_comments로
+    바로 위 _migrate_match_notes가 같은 트랜잭션에서 먼저 돌아 남은 행을 활동 댓글 테이블로
     옮긴 뒤라, 여기서 지우는 건 이미 복사된 것뿐이다. 그래도 되돌릴 수 없는 작업이므로
     '이관이 실제로 끝났다'는 증거를 한 번 더 확인한다 — match_notes에 있던 만큼이
-    activity_comments에 들어와 있어야 한다. 하나라도 어긋나면 지우지 않고 그대로 둔다.
+    활동 댓글 테이블에 들어와 있어야 한다. 하나라도 어긋나면 지우지 않고 그대로 둔다.
 
     자식(match_note_mentions)을 먼저 지워야 외래키가 걸리지 않는다.
     """
@@ -664,11 +699,11 @@ async def _drop_legacy_match_notes(conn) -> None:
     try:
         legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes")) or 0
         moved = await conn.scalar(
-            text("SELECT COUNT(*) FROM activity_comments WHERE target_type = 'gameResult'")
+            text(f"SELECT COUNT(*) FROM {_COMMENTS} WHERE target_type = 'gameResult'")
         ) or 0
         if legacy > moved:
             logging.getLogger(__name__).warning(
-                "match_notes(%s건)가 activity_comments(%s건)보다 많아 옛 테이블을 남겨 둔다", legacy, moved,
+                "match_notes(%s건)가 %s(%s건)보다 많아 옛 테이블을 남겨 둔다", legacy, _COMMENTS, moved,
             )
             return
         await conn.execute(text("DROP TABLE IF EXISTS match_note_mentions"))
