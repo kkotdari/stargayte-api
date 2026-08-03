@@ -88,17 +88,17 @@ async def test_stats_aggregates_exact_numbers(client):
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 410, "avgBuild": 320,
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
-        "buildMix": None, "avgWorker5": None, "mixPlays": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 400, "avgBuild": 300,
-        "buildMix": None, "avgWorker5": None, "mixPlays": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
-        "buildMix": None, "avgWorker5": None, "mixPlays": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -108,7 +108,7 @@ async def test_stats_aggregates_exact_numbers(client):
     assert p2_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 220, "avgBuild": 165,
-        "buildMix": None, "avgWorker5": None, "mixPlays": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -249,7 +249,8 @@ async def test_stats_keeps_game_at_the_duration_floor(client):
     overall = res.json()["members"][0]["overall"]
     assert overall["plays"] == 2
     assert overall["avgApm"] == 100  # 120초짜리 한 판만 반영 — 둘 다면 500이었다
-    assert overall["avgBuild"] == 300
+    # 생산은 10분당으로 환산된다(요청) — 2분짜리 한 판에서 300이면 10분당 1500이다.
+    assert overall["avgBuild"] == 1500
 
 
 _METRIC_FIELDS = ("avgApm", "avgEapm", "avgCmd", "avgEcmd", "avgBuild")
@@ -432,7 +433,7 @@ async def test_stats_race_filter_scopes_overall(client):
     assert overall == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
-        "buildMix": None, "avgWorker5": None, "mixPlays": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -447,7 +448,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     assert entry["overall"] == {
         "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
-        "buildMix": None, "avgWorker5": None, "mixPlays": None,
+        "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert entry["mostPlayedRace"] is None
 
@@ -568,7 +569,7 @@ async def test_rivalries_team_mode_individualizes(client):
 def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
-    building_plays=None, unit_plays=None, skill_plays=None,
+    building_secs=None, unit_secs=None, skill_secs=None,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
@@ -576,8 +577,8 @@ def _mix(
         "uGround": u_ground, "uAir": u_air, "worker5": worker5,
         "upGw": up_gw, "upGa": up_ga, "upAw": up_aw, "upAa": up_aa, "upSh": up_sh,
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
-        "buildingPlays": building_plays or {}, "unitPlays": unit_plays or {},
-        "skillPlays": skill_plays or {},
+        "buildingSecs": building_secs or {}, "unitSecs": unit_secs or {},
+        "skillSecs": skill_secs or {},
     }
 
 
@@ -628,13 +629,15 @@ async def test_stats_sums_build_mix_across_matches(client):
         buildings={"Barracks": 7, "Bunker": 2, "Starport": 1},
         units={"Marine": 65, "Siege Tank (Tank Mode)": 6, "Wraith": 9},
         skills={"Stim Packs": 17, "Yamato Gun": 3},
-        # 판수는 '그 이름이 나온 경기 수'다 — 배럭은 두 판 다, 벙커는 첫 판에만 나왔다.
-        building_plays={"Barracks": 2, "Bunker": 1, "Starport": 1},
-        unit_plays={"Marine": 2, "Siege Tank (Tank Mode)": 1, "Wraith": 1},
-        skill_plays={"Stim Packs": 2, "Yamato Gun": 1},
+        # 이름별 분모는 '그 이름이 나온 경기들의 총 길이'다 — 두 판 다 600초라 배럭은 1200,
+        # 첫 판에만 나온 벙커는 600이다. 화면은 이 시간으로 10분당 값을 낸다.
+        building_secs={"Barracks": 1200, "Bunker": 600, "Starport": 600},
+        unit_secs={"Marine": 1200, "Siege Tank (Tank Mode)": 600, "Wraith": 600},
+        skill_secs={"Stim Packs": 1200, "Yamato Gun": 600},
     )
-    # 분모(구성이 실린 경기 수)도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸다.
+    # 두 분모도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸고, 그 두 판은 600초씩이다.
     assert overall["mixPlays"] == 2
+    assert overall["mixSeconds"] == 1200
     # 구성이 실린 경기는 둘뿐이다 — 없는 경기까지 세면 초반 일꾼이 실제보다 낮아진다.
     assert overall["avgWorker5"] == 11.0
 

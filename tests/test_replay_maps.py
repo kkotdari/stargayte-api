@@ -270,8 +270,8 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
         "uGround": 65, "uAir": 7, "worker5": 14,
         "upGw": 3, "upGa": 2, "upAw": 0, "upAa": 0, "upSh": 0,
         "buildings": {"Barracks": 4}, "units": {"Marine": 40}, "skills": {"Stim Packs": 12},
-        # 이름별 판수는 기간 합계를 낼 때만 세는 값이라, 경기 하나짜리에는 빈 사전으로 남는다.
-        "buildingPlays": {}, "unitPlays": {}, "skillPlays": {},
+        # 이름별 시간은 기간 합계를 낼 때만 세는 값이라, 경기 하나짜리에는 빈 사전으로 남는다.
+        "buildingSecs": {}, "unitSecs": {}, "skillSecs": {},
     }
     res = await client.post(
         f"/api/game-results/{made['id']}/summary", headers=headers,

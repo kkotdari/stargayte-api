@@ -72,18 +72,18 @@ class BuildMix(BaseModel):
     buildings: dict[str, int] = Field(default_factory=dict)
     units: dict[str, int] = Field(default_factory=dict)
     skills: dict[str, int] = Field(default_factory=dict)
-    # 위 세 원장의 '이름별 판수' — 그 이름이 한 번이라도 나온 경기가 몇 판인가. 화면이 총합을
-    # 판당 평균으로 되돌릴 분모다(요청). 집계에서만 채워진다: 경기 하나짜리 값에서는 전부 1이라
-    # 실을 이유가 없고, 합칠 때 세는 편이 payload도 가볍다.
+    # 위 세 원장의 '이름별 총 경기시간(초)' — 그 이름이 한 번이라도 나온 경기들의 길이 합.
+    # 화면이 총합을 10분당 값으로 되돌릴 분모다(요청). 집계에서만 채워진다: 경기 하나짜리
+    # 값에서는 그 판의 길이 하나뿐이라 실을 이유가 없고, 합칠 때 세는 편이 payload도 가볍다.
     #
-    # 전체 게임수로 나누지 않는 이유 — 그 기술을 안 쓴 판까지 분모에 들어가면 프로토스만 쓰는
-    # 기술의 값이 종족 비율만큼 깎인다.
-    building_plays: dict[str, int] = Field(default_factory=dict, alias="buildingPlays")
-    unit_plays: dict[str, int] = Field(default_factory=dict, alias="unitPlays")
-    skill_plays: dict[str, int] = Field(default_factory=dict, alias="skillPlays")
+    # 전체 경기시간으로 나누지 않는 이유 — 그 기술을 안 쓴 판의 시간까지 분모에 들어가면
+    # 프로토스만 쓰는 기술의 값이 종족 비율만큼 깎인다.
+    building_secs: dict[str, int] = Field(default_factory=dict, alias="buildingSecs")
+    unit_secs: dict[str, int] = Field(default_factory=dict, alias="unitSecs")
+    skill_secs: dict[str, int] = Field(default_factory=dict, alias="skillSecs")
 
     @field_validator(
-        "buildings", "units", "skills", "building_plays", "unit_plays", "skill_plays",
+        "buildings", "units", "skills", "building_secs", "unit_secs", "skill_secs",
     )
     @classmethod
     def _sane_tally(cls, v: dict[str, int]) -> dict[str, int]:
@@ -441,6 +441,8 @@ class RaceStatsEntry(BaseModel):
     # build_mix에 실제로 더해진 경기 수 — 합계를 경기당 값으로 되돌릴 분모다(평균 건설 수,
     # 공/방 평균 단계). 나눗셈을 화면이 하는 이유는 무엇을 무엇으로 나눌지가 칸마다 달라서다.
     mix_plays: int | None = Field(default=None, alias="mixPlays")
+    # 구성이 실린 경기들의 총 길이(초) — 10분당 값으로 되돌릴 분모다.
+    mix_seconds: int | None = Field(default=None, alias="mixSeconds")
 
 
 class MemberStatsEntry(BaseModel):

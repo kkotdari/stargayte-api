@@ -112,11 +112,17 @@ def _outlier_keep_mask(values: list[float]) -> list[bool]:
 # 경기 길이가 3.2분이라는 말이 안 되는 값이었다). 커맨드·생산은 경기당 총합이라 방향이 반대다
 # — 아주 짧은 판은 낮은 쪽으로, 아주 긴 판은 높은 쪽으로 끌어당긴다. 어느 쪽이든 그 회원의
 # 다른 경기들과 편차가 심한 판이라는 점은 같아서 같은 자를 쓴다.
-_TRIMMED_METRICS = (
+# 이 둘은 이미 '분당'이라 경기 길이와 무관하다 — 그대로 평균 낸다.
+_TRIMMED_RATES = (
     ("avg_apm", "apm"),
     ("avg_eapm", "eapm"),
+)
+# 이쪽은 경기당 총합이라 긴 판일수록 그냥 커진다 — 10분당으로 환산한다(요청: 게임시간에
+# 영향을 받는 요소는 모두 10분당 평균). 경기마다 10분당을 내서 평균 내지 않고 '총합 ÷ 총
+# 시간'으로 낸다: 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이
+# 그 사람의 값을 통째로 흔든다(생산 구성 비율을 합쳐서 내는 것과 같은 이유).
+_TRIMMED_VOLUMES = (
     ("avg_cmd", "cmd_count"),
-    # 한때 "분당" 값이었지만 경기당 평균 유효커맨드로 되돌렸다(요청).
     ("avg_ecmd", "effective_cmd_count"),
     ("avg_build", "build_count"),
 )
@@ -131,6 +137,33 @@ def _trimmed_avg(rows: list, attr: str) -> int | None:
     mask = _outlier_keep_mask(values)
     kept = [v for v, keep in zip(values, mask) if keep]
     return round(sum(kept) / len(kept))
+
+
+# 10분(초) — 경기당 총합을 이 길이로 환산한다. 분당은 값이 너무 잘아서(커맨드 200대) 자릿수
+# 차이가 안 읽히고, 경기당은 판 길이에 그대로 끌려간다.
+PER_WINDOW_SECONDS = 600
+
+
+def _trimmed_per10(rows: list, attr: str) -> int | None:
+    """attr 총합을 총 경기시간으로 나눠 10분당 값으로 낸다(요청). 길이를 안 잰 경기는 환산할
+    자가 없으므로 분자·분모 양쪽에서 함께 뺀다 — 한쪽만 빼면 시간 없는 판의 값이 다른 판의
+    시간에 얹혀 값이 부풀어 오른다.
+
+    이상치 판정은 원래 값(경기당 총합)으로 한다 — '이 회원의 다른 판과 유독 다른 판'을 찾는
+    일이라, 환산 뒤의 값으로 보면 길이가 반영돼 판정 자체가 달라진다."""
+    pairs = [
+        (float(getattr(r, attr)), float(r.duration_seconds))
+        for r in rows
+        if getattr(r, attr) is not None and r.duration_seconds
+    ]
+    if not pairs:
+        return None
+    mask = _outlier_keep_mask([v for v, _ in pairs])
+    kept = [p for p, keep in zip(pairs, mask) if keep]
+    seconds = sum(d for _, d in kept)
+    if seconds <= 0:
+        return None
+    return round(sum(v for v, _ in kept) / seconds * PER_WINDOW_SECONDS)
 
 
 # 지표 평균에서 아예 빼는 경기 길이 — 2분 미만은 '치른 판'으로 보지 않는다.
@@ -167,7 +200,7 @@ def _mix_json(v: object) -> dict | None:
 
 
 def _trimmed_avgs(rows: list) -> dict[str, int | None]:
-    """_TRIMMED_METRICS 다섯 항목을 RaceStatsEntry.model_copy(update=...)에 바로 넣을
+    """_TRIMMED_RATES·_TRIMMED_VOLUMES 다섯 항목을 RaceStatsEntry.model_copy(update=...)에 바로 넣을
     모양으로 낸다 — 종족별/전체 두 곳에서 같은 목록을 쓰게 해서 한쪽만 빠지는 일을 막는다.
 
     지표 평균에만 영향을 준다 — 전적(판수/승/무/승률)은 짧은 판도 그대로 센다. 나간 판도
@@ -178,7 +211,8 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
         r for r in rows
         if r.duration_seconds is None or r.duration_seconds >= _MIN_DURATION_SECONDS
     ]
-    out: dict[str, object] = {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_METRICS}
+    out: dict[str, object] = {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_RATES}
+    out.update({field: _trimmed_per10(rows, attr) for field, attr in _TRIMMED_VOLUMES})
     out.update(_build_mix_agg(rows))
     return out  # type: ignore[return-value]
 
@@ -191,43 +225,49 @@ _BUILD_MIX_FIELDS = (
     "up_gw", "up_ga", "up_aw", "up_aa", "up_sh",
 )
 # 사전으로 쌓이는 갈래(건물·유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
-# 값과 함께 '그 이름이 나온 판수'도 센다(요청: 목록에 판당 평균) — 화면이 총합을 이 판수로
-# 나눈다. 전체 게임수로 나누면 그 기술을 안 쓴 판까지 분모에 들어가 프로토스만 쓰는 기술의
-# 값이 종족 비율만큼 깎인다.
-_BUILD_MIX_TALLIES = {"buildings": "building_plays", "units": "unit_plays", "skills": "skill_plays"}
+# 값과 함께 '그 이름이 나온 경기들의 총 시간'도 센다 — 화면이 총합을 이 시간으로 나눠 10분당
+# 값을 낸다(요청). 전체 경기시간으로 나누지 않는 이유: 그 기술을 안 쓴 판의 시간까지 분모에
+# 들어가면 프로토스만 쓰는 기술의 값이 종족 비율만큼 깎인다.
+_BUILD_MIX_TALLIES = {"buildings": "building_secs", "units": "unit_secs", "skills": "skill_secs"}
 
 
 def _build_mix_agg(rows: list) -> dict[str, object]:
-    mixes = [r.build_mix for r in rows if getattr(r, "build_mix", None)]
-    if not mixes:
-        return {"build_mix": None, "avg_worker5": None, "mix_plays": None}
+    mixed = [r for r in rows if getattr(r, "build_mix", None)]
+    if not mixed:
+        return {"build_mix": None, "avg_worker5": None, "mix_plays": None, "mix_seconds": None}
     total: dict[str, object] = {f: 0 for f in _BUILD_MIX_FIELDS}
     tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
-    tallies.update({p: {} for p in _BUILD_MIX_TALLIES.values()})
-    for m in mixes:
+    tallies.update({k: {} for k in _BUILD_MIX_TALLIES.values()})
+    seconds = 0
+    for r in mixed:
+        m = r.build_mix
         # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
         if not isinstance(m, dict):
             continue
+        dur = int(r.duration_seconds) if r.duration_seconds else 0
+        seconds += dur
         for f in _BUILD_MIX_FIELDS:
             v = m.get(f)
             if isinstance(v, (int, float)) and v >= 0:
                 total[f] = int(total[f]) + int(v)  # type: ignore[arg-type]
-        for t, plays_key in _BUILD_MIX_TALLIES.items():
+        for t, secs_key in _BUILD_MIX_TALLIES.items():
             d = m.get(t)
             if not isinstance(d, dict):
                 continue
             for name, v in d.items():
                 if isinstance(name, str) and isinstance(v, (int, float)) and v > 0:
                     tallies[t][name] = tallies[t].get(name, 0) + int(v)
-                    # 이 경기에 그 이름이 나왔다 — 몇 개를 지었든 판수는 하나다.
-                    tallies[plays_key][name] = tallies[plays_key].get(name, 0) + 1
+                    # 이 경기에 그 이름이 나왔다 — 그 판의 길이를 이 이름의 분모에 얹는다.
+                    tallies[secs_key][name] = tallies[secs_key].get(name, 0) + dur
     total.update(tallies)
     return {
         "build_mix": BuildMix(**total),
-        "avg_worker5": round(int(total["worker5"]) / len(mixes), 1),  # type: ignore[arg-type]
-        # 합계를 경기당 값으로 되돌릴 때 쓴다(평균 건설 수, 공/방 평균 단계) — 무엇을
-        # 무엇으로 나눌지가 칸마다 달라서, 나눗셈은 화면이 하고 서버는 분모만 준다.
-        "mix_plays": len(mixes),
+        "avg_worker5": round(int(total["worker5"]) / len(mixed), 1),  # type: ignore[arg-type]
+        # 합계를 되돌릴 두 분모 — 경기 수(공/방 평균 단계처럼 판마다 하나인 값)와 총 시간
+        # (10분당으로 환산할 값). 무엇을 무엇으로 나눌지가 칸마다 달라서 나눗셈은 화면이
+        # 하고 서버는 분모만 준다.
+        "mix_plays": len(mixed),
+        "mix_seconds": seconds or None,
     }
 
 
@@ -415,10 +455,12 @@ def _gate_metrics_by_plays(entry: RaceStatsEntry, min_plays: int) -> RaceStatsEn
     안 걸고 byRace에서 꺼내 본 같은 숫자가 서로 어긋나지 않는다."""
     if entry.plays >= min_plays:
         return entry
-    blanks: dict[str, object] = {field: None for field, _attr in _TRIMMED_METRICS}
+    blanks: dict[str, object] = {
+        field: None for field, _attr in (*_TRIMMED_RATES, *_TRIMMED_VOLUMES)
+    }
     # 생산 구성도 지표다 — 표본이 모자라면 같이 내린다(안 그러면 한 판만 뛴 사람의 도넛이
     # 다른 지표는 '-'인 채로 혼자 그려진다).
-    blanks.update({"build_mix": None, "avg_worker5": None, "mix_plays": None})
+    blanks.update({"build_mix": None, "avg_worker5": None, "mix_plays": None, "mix_seconds": None})
     return entry.model_copy(update=blanks)
 
 
@@ -694,7 +736,7 @@ class GameResultService:
         for row in rows:
             by_member.setdefault(row.member_pk, {})[row.race] = row
 
-        # 평균으로 나가는 지표(_TRIMMED_METRICS)는 합계만으로는 이상치(그 회원의 다른 경기들과
+        # 평균으로 나가는 지표(_TRIMMED_RATES·_TRIMMED_VOLUMES)는 합계만으로는 이상치(그 회원의 다른 경기들과
         # 편차가 너무 심한 경기 하나)를 가려낼 수 없어, 경기 단위 원본을 따로 받아 회원+종족별로
         # 묶어둔다.
         raw_rows = await self._repo.raw_metric_rows(
