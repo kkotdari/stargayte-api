@@ -134,3 +134,50 @@ async def test_numbers_are_unique_and_contiguous(client):
 async def test_requires_login(client):
     res = await client.get("/api/activity/list")
     assert res.status_code in (401, 403), res.text
+
+
+async def test_survives_odd_shapes(client, db_session):
+    """운영 데이터에서만 나오는 모양들 — 일정 없는 도전장, 기준선만 있는 스냅샷,
+    결과 행이 없는 경기. 하나라도 걸리면 목록 전체가 500으로 죽어 번호가 통째로 안 나온다.
+    """
+    from sqlalchemy import text
+
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+
+    # 일정 없는 도전장(scheduledDate 없음).
+    res = await client.post(
+        "/api/challenges",
+        headers=_h(a),
+        json={"targetMemberIds": ["bob"], "ownTeamMemberIds": [], "message": "언제든"},
+    )
+    assert res.status_code in (200, 201), res.text
+
+    await _register_match(client, _h(a), "2026-04-01")
+
+    # 변동 없이 기준선만 있는 스냅샷(reason=seed, shifts 빈 배열) — 목록에 안 떠야 한다.
+    await db_session.execute(
+        text(
+            "INSERT INTO ranking_shifts (reason, match_ids, sections, created_at, updated_at)"
+            " VALUES ('seed', '[]', :sections, '2026-04-02 00:00:00', '2026-04-02 00:00:00')"
+        ),
+        {"sections": '[{"matchType": "0101", "standings": [], "shifts": []}]'},
+    )
+    # 변동이 있는 스냅샷 — 이건 떠야 한다.
+    await db_session.execute(
+        text(
+            "INSERT INTO ranking_shifts (reason, match_ids, sections, created_at, updated_at)"
+            " VALUES ('daily', '[]', :sections, '2026-04-03 00:00:00', '2026-04-03 00:00:00')"
+        ),
+        {"sections": '[{"matchType": "0101", "standings": [], "shifts": [{"memberId": "alice", "nickname": "alice", "from": 2, "to": 1}]}]'},
+    )
+    await db_session.commit()
+
+    res = await client.get("/api/activity/list", headers=_h(a))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    kinds = sorted(r["kind"] for r in body["rows"])
+    # 도전장 1 + 게임결과 1 + 변동 있는 스냅샷 1 = 3줄(기준선만 있는 스냅샷은 빠진다).
+    assert kinds == ["challenge", "gameResultPost", "rankingShift"], body
+    assert sorted(r["no"] for r in body["rows"]) == [1, 2, 3]
