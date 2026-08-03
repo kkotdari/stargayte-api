@@ -568,6 +568,7 @@ async def test_rivalries_team_mode_individualizes(client):
 def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
+    building_plays=None, unit_plays=None, skill_plays=None,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
@@ -575,6 +576,8 @@ def _mix(
         "uGround": u_ground, "uAir": u_air, "worker5": worker5,
         "upGw": up_gw, "upGa": up_ga, "upAw": up_aw, "upAa": up_aa, "upSh": up_sh,
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
+        "buildingPlays": building_plays or {}, "unitPlays": unit_plays or {},
+        "skillPlays": skill_plays or {},
     }
 
 
@@ -625,6 +628,10 @@ async def test_stats_sums_build_mix_across_matches(client):
         buildings={"Barracks": 7, "Bunker": 2, "Starport": 1},
         units={"Marine": 65, "Siege Tank (Tank Mode)": 6, "Wraith": 9},
         skills={"Stim Packs": 17, "Yamato Gun": 3},
+        # 판수는 '그 이름이 나온 경기 수'다 — 배럭은 두 판 다, 벙커는 첫 판에만 나왔다.
+        building_plays={"Barracks": 2, "Bunker": 1, "Starport": 1},
+        unit_plays={"Marine": 2, "Siege Tank (Tank Mode)": 1, "Wraith": 1},
+        skill_plays={"Stim Packs": 2, "Yamato Gun": 1},
     )
     # 분모(구성이 실린 경기 수)도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸다.
     assert overall["mixPlays"] == 2

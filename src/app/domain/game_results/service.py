@@ -191,7 +191,10 @@ _BUILD_MIX_FIELDS = (
     "up_gw", "up_ga", "up_aw", "up_aa", "up_sh",
 )
 # 사전으로 쌓이는 갈래(건물·유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
-_BUILD_MIX_TALLIES = ("buildings", "units", "skills")
+# 값과 함께 '그 이름이 나온 판수'도 센다(요청: 목록에 판당 평균) — 화면이 총합을 이 판수로
+# 나눈다. 전체 게임수로 나누면 그 기술을 안 쓴 판까지 분모에 들어가 프로토스만 쓰는 기술의
+# 값이 종족 비율만큼 깎인다.
+_BUILD_MIX_TALLIES = {"buildings": "building_plays", "units": "unit_plays", "skills": "skill_plays"}
 
 
 def _build_mix_agg(rows: list) -> dict[str, object]:
@@ -200,6 +203,7 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
         return {"build_mix": None, "avg_worker5": None, "mix_plays": None}
     total: dict[str, object] = {f: 0 for f in _BUILD_MIX_FIELDS}
     tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
+    tallies.update({p: {} for p in _BUILD_MIX_TALLIES.values()})
     for m in mixes:
         # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
         if not isinstance(m, dict):
@@ -208,13 +212,15 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
             v = m.get(f)
             if isinstance(v, (int, float)) and v >= 0:
                 total[f] = int(total[f]) + int(v)  # type: ignore[arg-type]
-        for t in _BUILD_MIX_TALLIES:
+        for t, plays_key in _BUILD_MIX_TALLIES.items():
             d = m.get(t)
             if not isinstance(d, dict):
                 continue
             for name, v in d.items():
                 if isinstance(name, str) and isinstance(v, (int, float)) and v > 0:
                     tallies[t][name] = tallies[t].get(name, 0) + int(v)
+                    # 이 경기에 그 이름이 나왔다 — 몇 개를 지었든 판수는 하나다.
+                    tallies[plays_key][name] = tallies[plays_key].get(name, 0) + 1
     total.update(tallies)
     return {
         "build_mix": BuildMix(**total),
