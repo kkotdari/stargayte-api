@@ -5,16 +5,29 @@ from app.domain.activity.schemas import (
     ActivityCommentCreate,
     ActivityCommentOut,
     ActivityCommentWrite,
+    ActivityListOut,
     ActivityTargetTypeInput,
     RankingRecomputeResult,
     RankingShiftOut,
 )
-from app.domain.activity.service import ActivityCommentService, RankingShiftService
+from app.domain.activity.service import ActivityCommentService, ActivityListService, RankingShiftService
 
 # 접두어는 여기서 안 붙인다 — api/router.py가 같은 라우터를 /activity와 /feed 두 자리에
 # 매달기 때문이다(아래 파일 끝 주석 참고). 라우터 자신이 접두어를 갖고 있으면 두 번째 자리는
 # /feed/activity/...가 되어 버린다.
 router = APIRouter(tags=["activity"])
+
+
+@router.get("/list", response_model=ActivityListOut)
+async def list_activity_rows(db: DbSession, current: CurrentMember) -> ActivityListOut:
+    """활동 목록의 줄 순서와 번호 — 내용이 아니라 "그 줄이 전체에서 몇 번째인가"만 준다.
+
+    화면이 이 값을 직접 셀 수 없는 이유는 두 가지다. 목록은 세 곳(도전장·게임결과·
+    랭크변동)을 시간순으로 섞어 만드는데 어느 한 엔드포인트도 나머지를 모르고, 게임결과는
+    페이지 단위로 나눠 받으므로 화면은 늘 일부만 쥐고 있다 — 거기서 센 번호는 아직 안
+    받아온 과거만큼 통째로 어긋난다.
+    """
+    return await ActivityListService(db).list_rows(actor=current)
 
 
 @router.get("/comments/all", response_model=list[ActivityCommentOut])

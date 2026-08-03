@@ -110,3 +110,29 @@ class RankingShiftOut(BaseModel):
     # 순위표(standings)는 다음 날 비교의 재료일 뿐이라 내보내지 않는다 — 화면이 쓰는 건
     # 변동분(shifts)뿐이고, 회원 수만큼 긴 배열을 매번 실어 보낼 이유가 없다.
     sections: list[RankingShiftSection]
+
+
+class ActivityListRow(BaseModel):
+    """활동 목록 한 줄 — 화면에 보이는 줄 하나에 번호 하나(요청: "한 줄 = 1번").
+
+    내용은 안 싣는다. 카드에 필요한 값은 이미 각 도메인 엔드포인트가 내려 주고 있고,
+    여기서 또 실으면 같은 데이터가 두 벌이 되어 한쪽만 고쳐지는 순간 어긋난다.
+    이 응답이 답하는 건 하나뿐이다 — "그 줄은 전체에서 몇 번째인가".
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    # 화면이 줄을 알아보는 열쇠. 프론트의 rowKeyOf와 같은 꼴이다:
+    #   c-{도전장id} / rs-{스냅샷id} / ms-{묶음 첫 경기id}
+    key: str
+    kind: Literal["challenge", "rankingShift", "gameResultPost"]
+    # 아래에서부터 센 번호(가장 오래된 줄이 1). 위에서 세면 새 활동이 하나 올라올 때마다
+    # 모든 줄의 번호가 밀린다.
+    no: int
+
+
+class ActivityListOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    total: int
+    rows: list[ActivityListRow]

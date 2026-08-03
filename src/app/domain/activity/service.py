@@ -1,5 +1,5 @@
 import calendar
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -351,3 +351,166 @@ class RankingShiftService:
         ]
         self._session.add(RankingShift(reason="seed", match_ids=[], sections=sections))
         await self._session.commit()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 활동 목록 번호 매기기
+#
+# 화면의 활동 목록은 세 곳(도전장·게임결과·랭크변동)에서 받은 것을 시간순으로 섞은 뒤,
+# 같은 자리에서 이어 친 게임결과를 한 줄로 묶어 만든다. "전체에서 몇 번째 줄인가"는 그
+# 셋을 다 봐야 나오는 값이라, 어느 한 도메인 엔드포인트도 답할 수 없다. 게다가 게임결과는
+# 페이지 단위로 나눠 받으므로 프론트는 늘 일부만 쥐고 있다 — 거기서 센 번호는 아직 안
+# 받아온 과거만큼 통째로 어긋난다. 그래서 전부를 한 번에 보는 이 자리에서 센다(요청).
+#
+# 번호를 DB에 박지 않는 이유(요청): 한참 지난 리플레이를 나중에 등록하는 일이 흔해서,
+# 등록 시점에 번호를 주면 그 줄이 목록 한가운데에 끼어들며 제 번호와 자리가 어긋난다.
+# 이 번호는 이름표가 아니라 "지금 목록에서 몇 번째"라는 표시일 뿐이므로 매번 다시 센다.
+_KST = ZoneInfo("Asia/Seoul")
+# 게임 한 판이 아니라 "한 자리에서 이어 한 묶음"이 줄의 단위다. 밤에 시작한 자리는 자정을
+# 넘겨 이어지는 일이 흔해 달력 날짜로 끊으면 같은 자리가 두 줄로 쪼개진다 — 새벽 경기는
+# 전날 밤의 연장으로 보고 전날에 붙인다. 프론트의 SESSION_DAY_START_HOUR과 같은 값이라야
+# 두 쪽이 같은 묶음을 만든다.
+_SESSION_DAY_START_HOUR = 8
+
+
+def _kst(dt: datetime) -> datetime:
+    """저장된 시각을 KST 벽시계로 — tz가 없으면 UTC로 읽는다(DB에 따라 붙기도 안 붙기도 한다)."""
+    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).astimezone(_KST)
+
+
+class ActivityListService:
+    """활동 목록의 줄 순서와 번호 — 프론트의 sortMsOf/challengeSortMs/sessionDateOf와
+    같은 규칙을 서버에서 한 번 더 계산한다.
+
+    같은 규칙이 두 곳에 있는 건 바람직하지 않지만, 프론트가 계속 카드를 그리는 이상
+    (그쪽은 실제 내용을 쥐고 있어야 한다) 순서 규칙 자체는 양쪽에 있을 수밖에 없다.
+    한쪽만 바뀌면 번호가 줄과 어긋나므로, 규칙을 고칠 때는 반드시 두 곳을 같이 고친다.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_rows(self, *, actor: Member) -> "ActivityListOut":
+        from app.domain.activity.schemas import ActivityListOut, ActivityListRow
+        from app.domain.challenges.service import ChallengeService
+
+        # 도전장은 서비스를 거쳐 받는다 — 상태(pending/confirmed/done/discarded)가 조회
+        # 시점 배치(무응답 폐기 등)까지 거쳐야 확정되고, 정렬이 그 상태에 달려 있다.
+        challenges = await ChallengeService(self._session).list_challenges(actor=actor)
+        games = await self._game_rows()
+        shifts = await self._shift_rows()
+
+        now_ms = datetime.now(UTC).timestamp() * 1000
+        entries: list[tuple[float, str, str, str]] = []  # (정렬키ms, kind, key, 세션날짜)
+        for c in challenges:
+            entries.append((_challenge_sort_ms(c, now_ms), "challenge", f"c-{c.id}", ""))
+        for gid, sort_ms, session_day in games:
+            entries.append((sort_ms, "gameResult", f"ms-{gid}", session_day))
+        for sid, sort_ms in shifts:
+            entries.append((sort_ms, "rankingShift", f"rs-{sid}", ""))
+
+        # 최신이 위. 같은 시각인 것들의 순서는 '넣은 순서'가 정한다 — 파이썬 sort는 안정
+        # 정렬이라 동점끼리는 위에서 담은 차례가 그대로 남는다. 프론트도 [도전장, 게임결과,
+        # 랭크변동] 순으로 배열을 만든 뒤 같은 안정 정렬을 쓰므로(Array.prototype.sort),
+        # 담는 차례만 맞추면 동점 순서까지 똑같아진다. 시각을 모르는 경기는 죄다 자정으로
+        # 잡혀 동점이 흔한데, 여기가 어긋나면 묶음의 '첫 경기'가 달라져 줄 열쇠가 안 맞는다.
+        entries.sort(key=lambda e: -e[0])
+
+        # 잇달아 붙은 같은 세션의 게임결과를 한 줄로 묶는다 — 사이에 다른 종류가 끼면
+        # 거기서 끊긴다(프론트의 displayFeed와 같은 규칙). 줄의 열쇠는 그 묶음의 첫 경기다.
+        rows: list[tuple[str, str]] = []  # (kind, key)
+        i = 0
+        while i < len(entries):
+            _, kind, key, day = entries[i]
+            if kind != "gameResult":
+                rows.append((kind, key))
+                i += 1
+                continue
+            j = i + 1
+            while j < len(entries) and entries[j][1] == "gameResult" and entries[j][3] == day:
+                j += 1
+            rows.append(("gameResultPost", key))
+            i = j
+
+        total = len(rows)
+        return ActivityListOut(
+            total=total,
+            # 아래에서부터 센다 — 위에서 세면 새 활동이 하나 올라올 때마다 모든 줄이 밀린다.
+            rows=[ActivityListRow(key=key, kind=kind, no=total - idx) for idx, (kind, key) in enumerate(rows)],
+        )
+
+    async def _game_rows(self) -> list[tuple[int, float, str]]:
+        """(경기id, 정렬키ms, 세션날짜) — 시각을 아는 경기는 시작 시각, 모르면 그날 자정."""
+        from sqlalchemy import select
+
+        from app.domain.game_results.models import GameOutcome, GameResult
+
+        # match_no 내림차순 — 프론트가 목록을 받는 순서(sort=latest)와 같아야 동점 순서가
+        # 맞는다(위 entries.sort 주석 참고).
+        result = await self._session.execute(
+            select(GameResult.id, GameResult.match_date, GameOutcome.game_started_at)
+            .outerjoin(GameOutcome, GameOutcome.match_id == GameResult.id)
+            .order_by(GameResult.match_no.desc())
+        )
+        out: list[tuple[int, float, str]] = []
+        for gid, match_date, started in result.all():
+            if started is not None:
+                local = _kst(started)
+                # 시각을 모르는 경기(날짜만 등록된 건)는 자정으로 잡혀 있다 — 그걸 새벽으로
+                # 읽고 전날로 밀면 안 되니, 시계가 있는 경기에만 이 보정을 건다.
+                day = local.date()
+                if local.hour < _SESSION_DAY_START_HOUR:
+                    day = date.fromordinal(day.toordinal() - 1)
+                out.append((gid, local.timestamp() * 1000, day.isoformat()))
+            else:
+                midnight = datetime(match_date.year, match_date.month, match_date.day, tzinfo=_KST)
+                out.append((gid, midnight.timestamp() * 1000, match_date.isoformat()))
+        return out
+
+    async def _shift_rows(self) -> list[tuple[int, float]]:
+        """화면에 실제로 뜨는 스냅샷만 — list_events와 같은 잣대여야 한다.
+
+        어느 칸에든 변동이 하나라도 있는 날만 카드가 된다. 기준선만 남은 날(reason="seed",
+        매달 1일과 최초 도입)은 다음 비교의 재료일 뿐이라 목록에 안 보인다. 그런 날까지
+        세면 화면에 없는 줄이 번호를 먹어, 보이는 줄들의 번호가 중간중간 건너뛴다.
+        """
+        from sqlalchemy import select
+
+        # created_at 내림차순 — list_events가 내려주는 순서와 같게(위 entries.sort 주석).
+        result = await self._session.execute(
+            select(RankingShift.id, RankingShift.created_at, RankingShift.sections)
+            .order_by(RankingShift.created_at.desc())
+        )
+        return [
+            (sid, _kst(created).timestamp() * 1000)
+            for sid, created, sections in result.all()
+            if any((sec.get("shifts") or []) for sec in (sections or []))
+        ]
+
+
+def _challenge_sort_ms(c, now_ms: float) -> float:
+    """너 나와가 활동 어디에 꽂히나 — 프론트 challengeSortMs와 같은 규칙.
+
+    · 아직 안 끝난 것(응답대기·성사)은 "지금" 바로 위에 둔다. 약속한 날이 지났어도
+      결과가 안 들어온 이상 그건 여전히 남은 일이다.
+    · 취소·거절·버림·만료로 끝난 것은 '끝난 때'에 꽂는다 — 카드가 적는 시각과 같아야 한다.
+    · 결과까지 들어온 것(완료)은 그날 경기들 아래(오전 8시)로 내린다.
+    """
+    base = _kst(c.scheduled_at or c.created_at).timestamp() * 1000
+    if c.status in ("pending", "confirmed"):
+        end_of_day = (
+            datetime(
+                c.scheduled_date.year, c.scheduled_date.month, c.scheduled_date.day,
+                23, 59, 59, tzinfo=_KST,
+            ).timestamp() * 1000
+            if c.scheduled_date else base
+        )
+        return max(end_of_day, now_ms + 1)
+    if c.status == "discarded" and c.discarded_at:
+        return _kst(c.discarded_at).timestamp() * 1000
+    if not c.scheduled_date:
+        return base
+    return (
+        datetime(c.scheduled_date.year, c.scheduled_date.month, c.scheduled_date.day, tzinfo=_KST).timestamp() * 1000
+        + _SESSION_DAY_START_HOUR * 3_600_000
+    )
