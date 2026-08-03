@@ -1228,6 +1228,35 @@ class GameResultService:
         map_hash = await self._store_replay_map(payload.map_data)
         if map_hash is not None:
             rr.map_hash = map_hash
+        # 요약 말고도 리플레이에서 다시 나오는 값들(요청: 요약뿐 아니라 다른 모든 데이터를
+        # 재분석). 사람이 정한 것(등록자·등록시각·경기번호·날짜·분류·승패·회원 연결)은 안
+        # 건드린다. 값이 None인 항목도 안 덮어쓴다 — 어쩌다 한 지표를 못 읽어도 멀쩡한 기존
+        # 값을 날리지 않게(merge_replay와 같은 원칙).
+        if payload.map_name is not None:
+            rr.map_name = payload.map_name
+        if payload.game_started_at is not None:
+            rr.game_started_at = _to_utc_naive(payload.game_started_at)
+        if payload.duration_seconds is not None:
+            rr.duration_seconds = payload.duration_seconds
+        by_name = {s.raw_name: s for s in (payload.slots or [])}
+        for p in match.participants:
+            s = by_name.get(p.player_name)
+            if s is None:
+                continue
+            if s.race:
+                p.race = s.race
+            if s.apm is not None:
+                p.apm = s.apm
+            if s.eapm is not None:
+                p.eapm = s.eapm
+            if s.cmd_count is not None:
+                p.cmd_count = s.cmd_count
+            if s.effective_cmd_count is not None:
+                p.effective_cmd_count = s.effective_cmd_count
+            if s.build_count is not None:
+                p.build_count = s.build_count
+            if s.build_mix is not None:
+                p.build_mix = _mix_json(s.build_mix)
         await self._session.commit()
 
     async def _store_replay_map(self, data: ReplayMapData | None) -> str | None:

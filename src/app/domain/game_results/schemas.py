@@ -218,6 +218,24 @@ class MinimapImageOut(BaseModel):
     image: str
 
 
+class SummaryRewriteSlot(BaseModel):
+    """재분석이 다시 뽑아낸 한 참가자의 값. 짝은 회원 pk가 아니라 리플레이 원본 게임
+    아이디(rawName)로 맞춘다 — 회원 연결은 사람이 고쳤을 수 있고, rawName은 그 경기 시점의
+    유일한 증거다. 값이 None인 항목은 안 덮어쓴다: 어쩌다 한 지표를 못 읽어도 멀쩡한 기존
+    값을 날리지 않게."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    raw_name: str = Field(alias="rawName")
+    race: Race | None = None
+    apm: int | None = None
+    eapm: int | None = None
+    cmd_count: int | None = Field(default=None, alias="cmdCount")
+    effective_cmd_count: int | None = Field(default=None, alias="effectiveCmdCount")
+    build_count: int | None = Field(default=None, alias="buildCount")
+    build_mix: BuildMix | None = Field(default=None, alias="buildMix")
+
+
 class SummaryRewrite(BaseModel):
     """이미 등록된 경기의 요약만 다시 계산해 덮어쓴다(요청: 요약 재분석).
 
@@ -232,6 +250,14 @@ class SummaryRewrite(BaseModel):
     summary_data: dict | None = Field(default=None, alias="summaryData")
     # 옛 경기에 미니맵 격자가 없을 수 있어 함께 받는다 — 같은 맵이면 서버가 하나만 남긴다.
     map_data: ReplayMapData | None = Field(default=None, alias="mapData")
+    # 요약 말고도 리플레이에서 다시 나오는 값들(요청: 요약뿐 아니라 다른 모든 데이터를 재분석).
+    # 화면은 처음부터 이걸 다 보내고 있었는데 여기 자리가 없어 조용히 버려지고 있었다(지적:
+    # 경기 재분석을 눌러도 새 컬럼이 안 채워진다) — 파서가 새 값을 내기 시작하면 옛 경기는
+    # 재분석으로 따라오는 게 이 기능의 존재 이유다.
+    map_name: str | None = Field(default=None, alias="mapName")
+    game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
+    duration_seconds: int | None = Field(default=None, alias="durationSeconds")
+    slots: list[SummaryRewriteSlot] | None = None
 
 
 class MapCatalogEntry(BaseModel):

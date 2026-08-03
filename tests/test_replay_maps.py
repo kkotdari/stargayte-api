@@ -250,3 +250,48 @@ async def test_rewrite_summary_replaces_only_summary(client):
         f"/api/game-results/{made['id']}/summary", headers=other, json={"summaryData": summary},
     )
     assert denied.status_code == 403, denied.text
+
+
+async def test_rewrite_summary_backfills_replay_metrics(client):
+    """재분석은 요약 말고도 리플레이에서 다시 나오는 값을 전부 채운다(요청).
+
+    파서가 새 값을 내기 시작하면 옛 경기는 재분석으로 따라오는 게 이 기능의 존재 이유다 —
+    한때 서버가 summaryData/mapData만 받고 나머지는 조용히 버려, 재분석을 눌러도 새 컬럼이
+    빈 채로 남았다(지적). 짝은 회원 pk가 아니라 리플레이 원본 게임 아이디(rawName)로 맞춘다.
+    """
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    made = await _create(client, headers, date="2026-07-01", gsa="2026-07-01T03:00:00+00:00", map_data=None)
+    assert made["team1"][0]["buildMix"] is None
+
+    mix = {
+        "bProd": 20, "bDef": 5, "uBasic": 60, "uAdv": 10, "uCaster": 2,
+        "uGround": 65, "uAir": 7, "worker5": 14,
+        "upGw": 3, "upGa": 2, "upAw": 0, "upAa": 0, "upSh": 0,
+        "buildings": {"Barracks": 4}, "units": {"Marine": 40}, "skills": {"Stim Packs": 12},
+    }
+    res = await client.post(
+        f"/api/game-results/{made['id']}/summary", headers=headers,
+        json={
+            "summaryData": {"v": 1, "beats": []},
+            "mapName": "로스트템플", "durationSeconds": 900,
+            "slots": [
+                {"rawName": "player01", "race": "테란", "apm": 120, "buildCount": 300, "buildMix": mix},
+                # 값이 없는 항목은 안 덮어쓴다 — 기존 값을 날리지 않게.
+                {"rawName": "player02", "race": "저그"},
+            ],
+        },
+    )
+    assert res.status_code == 204, res.text
+
+    after = (await client.get(f"/api/game-results/{made['id']}", headers=headers)).json()
+    me = next(s for s in after["team1"] if s["playerName"] == "player01")
+    assert me["buildMix"] == mix
+    assert me["buildCount"] == 300
+    assert me["apm"] == 120
+    assert after["mapName"] == "로스트템플"
+    assert after["durationSeconds"] == 900
+    # 사람이 정한 것은 그대로.
+    assert after["result"] == made["result"]
+    assert [s["memberId"] for s in after["team1"]] == [s["memberId"] for s in made["team1"]]
