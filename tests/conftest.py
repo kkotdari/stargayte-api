@@ -27,7 +27,7 @@ from app.domain.app_version import models as _app_version_models  # noqa: F401
 from app.domain.auth import models as _auth_models  # noqa: F401
 from app.domain.challenges import models as _challenges_models  # noqa: F401
 from app.domain.env_vars import models as _env_vars_models  # noqa: F401
-from app.domain.feed import models as _feed_models  # noqa: F401
+from app.domain.activity import models as _feed_models  # noqa: F401
 from app.domain.leagues import models as _leagues_models  # noqa: F401
 from app.domain.game_results import models as _game_results_models  # noqa: F401
 from app.domain.members import models as _members_models  # noqa: F401

@@ -1,3 +1,8 @@
+# 코드에서는 '활동(activity)'이라고 부르지만 테이블 이름만은 feed_comments /
+# feed_comment_mentions 그대로다(요청: 이름 일괄 변경). 이름을 바꾸자고 이미 쌓인 댓글을
+# 옮길 이유가 없고, 이 저장소에는 마이그레이션 도구가 없어(create_all + 즉석 ALTER) 테이블
+# 이름 변경은 되돌릴 길 없는 한 방이 된다. 클래스 이름과 테이블 이름이 다른 것은 여기 한
+# 곳에만 있는 사실이라 이 주석으로 못 박아 둔다.
 from sqlalchemy import JSON, BigInteger, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -7,10 +12,10 @@ from app.db.types import BigIntPk
 from app.domain.members.models import Member
 
 
-class FeedComment(AuditMixin, TimestampMixin, Base):
-    """피드 요소 하나에 달리는 댓글 — 대상은 (target_type, target_id)로 가리킨다.
+class ActivityComment(AuditMixin, TimestampMixin, Base):
+    """활동 요소 하나에 달리는 댓글 — 대상은 (target_type, target_id)로 가리킨다.
 
-    경기("match")든 너 나와!("challenge")든, 앞으로 추가될 어떤 피드 요소든 같은
+    경기("match")든 너 나와!("challenge")든, 앞으로 추가될 어떤 활동 요소든 같은
     테이블 하나로 담는다. 본문 안 @닉네임 언급은 feed_comment_mentions에 구조적으로
     저장해 현재 닉네임으로 렌더한다. 작성자 본인 또는 운영자만 수정·삭제할 수 있다.
     """
@@ -22,15 +27,15 @@ class FeedComment(AuditMixin, TimestampMixin, Base):
     target_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
-    mentions: Mapped[list["FeedCommentMention"]] = relationship(
+    mentions: Mapped[list["ActivityCommentMention"]] = relationship(
         back_populates="comment", cascade="all, delete-orphan", lazy="selectin",
     )
     creator: Mapped["Member | None"] = relationship(
-        "Member", foreign_keys="FeedComment.created_by", viewonly=True, lazy="selectin",
+        "Member", foreign_keys="ActivityComment.created_by", viewonly=True, lazy="selectin",
     )
 
 
-class FeedCommentMention(Base):
+class ActivityCommentMention(Base):
     """댓글 본문에 언급(@)된 회원 한 명 — (댓글, 회원) 조합은 유일하다."""
 
     __tablename__ = "feed_comment_mentions"
@@ -46,7 +51,7 @@ class FeedCommentMention(Base):
         BigInteger, ForeignKey("members.pk", ondelete="CASCADE"), nullable=False
     )
 
-    comment: Mapped[FeedComment] = relationship(back_populates="mentions")
+    comment: Mapped[ActivityComment] = relationship(back_populates="mentions")
     member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")
 
 
@@ -65,7 +70,7 @@ class RankingShift(TimestampMixin, Base):
     - match_ids: 이 스냅샷을 만든 경기 id들(하루치 집계에서는 빈 배열)
     - reason:    "daily" | "seed"
                  seed = 비교 기준선. 비교할 '같은 달' 스냅샷이 없는 날(매달 첫 집계,
-                 최초 도입)이 여기 해당한다 — 변동 없이 기준선으로만 남아 피드에 안 보인다.
+                 최초 도입)이 여기 해당한다 — 변동 없이 기준선으로만 남아 활동에 안 보인다.
     """
 
     __tablename__ = "ranking_shifts"

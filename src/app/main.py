@@ -36,7 +36,7 @@ async def _ensure_schema() -> None:
     from app.domain.auth import models as _auth_models  # noqa: F401
     from app.domain.challenges import models as _challenges_models  # noqa: F401
     from app.domain.env_vars import models as _env_vars_models  # noqa: F401
-    from app.domain.feed import models as _feed_models  # noqa: F401
+    from app.domain.activity import models as _activity_models  # noqa: F401
     from app.domain.game_results import models as _game_results_models  # noqa: F401
     from app.domain.members import models as _members_models  # noqa: F401
 
@@ -51,7 +51,7 @@ async def _ensure_schema() -> None:
         await _rename_legacy_tables(conn)
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_match_notes(conn)
-        await _migrate_feed_target_types(conn)
+        await _migrate_activity_target_types(conn)
         await _add_match_result_summary(conn)
         await _add_match_result_map_hash(conn)
         await _add_replay_map_resources(conn)
@@ -400,7 +400,7 @@ async def _seed_ranking_shifts() -> None:
     import logging
 
     from app.db.session import AsyncSessionLocal
-    from app.domain.feed.service import RankingShiftService
+    from app.domain.activity.service import RankingShiftService
 
     try:
         async with AsyncSessionLocal() as session:
@@ -456,7 +456,7 @@ async def _ranking_shift_scheduler() -> None:
     import logging
 
     from app.db.session import AsyncSessionLocal
-    from app.domain.feed.service import RankingShiftService
+    from app.domain.activity.service import RankingShiftService
 
     log = logging.getLogger(__name__)
     last_try: date | None = None
@@ -479,8 +479,8 @@ async def _ranking_shift_scheduler() -> None:
         await asyncio.sleep(_RANK_CHECK_INTERVAL_SEC)
 
 
-async def _migrate_feed_target_types(conn) -> None:
-    """feed_comments.target_type에 저장된 옛 값을 지금 이름으로 옮긴다(멱등).
+async def _migrate_activity_target_types(conn) -> None:
+    """activity_comments.target_type에 저장된 옛 값을 지금 이름으로 옮긴다(멱등).
 
     댓글이 가리키는 대상 종류는 문자열 그대로 컬럼에 들어가므로, 이름 정리(요청)로
     match→gameResult·rankshift→rankingShift가 되면서 쌓여 있던 값도 함께 옮겨야 한다.
@@ -491,12 +491,12 @@ async def _migrate_feed_target_types(conn) -> None:
 
     from sqlalchemy import text
 
-    from app.domain.feed.schemas import LEGACY_FEED_TARGET_TYPES
+    from app.domain.activity.schemas import LEGACY_FEED_TARGET_TYPES
 
     try:
         for old, new in LEGACY_FEED_TARGET_TYPES.items():
             res = await conn.execute(
-                text("UPDATE feed_comments SET target_type = :new WHERE target_type = :old"),
+                text("UPDATE activity_comments SET target_type = :new WHERE target_type = :old"),
                 {"new": new, "old": old},
             )
             if res.rowcount:
@@ -508,9 +508,9 @@ async def _migrate_feed_target_types(conn) -> None:
 
 
 async def _migrate_match_notes(conn) -> None:
-    """기존 경기 댓글(match_notes)을 일반화된 피드 댓글(feed_comments)로 1회 이관.
+    """기존 경기 댓글(match_notes)을 일반화된 피드 댓글(activity_comments)로 1회 이관.
 
-    feed_comments가 비어 있고 match_notes에 데이터가 있을 때만 복사한다(멱등).
+    activity_comments가 비어 있고 match_notes에 데이터가 있을 때만 복사한다(멱등).
     id를 그대로 보존해 언급(mentions) 매핑도 함께 옮긴다.
 
     이제 match_notes는 모델에서 빠져 create_all이 만들지 않는다 — 새로 만든 DB에는 아예
@@ -521,27 +521,27 @@ async def _migrate_match_notes(conn) -> None:
     tables = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
     if "match_notes" not in tables:
         return
-    existing = await conn.scalar(text("SELECT COUNT(*) FROM feed_comments"))
+    existing = await conn.scalar(text("SELECT COUNT(*) FROM activity_comments"))
     if existing and existing > 0:
         return
     legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes"))
     if not legacy:
         return
     await conn.execute(text(
-        "INSERT INTO feed_comments (id, target_type, target_id, text, created_at, updated_at, created_by, updated_by) "
+        "INSERT INTO activity_comments (id, target_type, target_id, text, created_at, updated_at, created_by, updated_by) "
         "SELECT id, 'gameResult', match_id, text, created_at, updated_at, created_by, updated_by FROM match_notes"
     ))
     await conn.execute(text(
-        "INSERT INTO feed_comment_mentions (comment_id, member_pk) "
+        "INSERT INTO activity_comment_mentions (comment_id, member_pk) "
         "SELECT note_id, member_pk FROM match_note_mentions"
     ))
     if conn.dialect.name == "postgresql":
         await conn.execute(text(
-            "SELECT setval(pg_get_serial_sequence('feed_comments', 'id'), (SELECT MAX(id) FROM feed_comments))"
+            "SELECT setval(pg_get_serial_sequence('activity_comments', 'id'), (SELECT MAX(id) FROM activity_comments))"
         ))
         await conn.execute(text(
-            "SELECT setval(pg_get_serial_sequence('feed_comment_mentions', 'id'), "
-            "(SELECT COALESCE(MAX(id), 1) FROM feed_comment_mentions))"
+            "SELECT setval(pg_get_serial_sequence('activity_comment_mentions', 'id'), "
+            "(SELECT COALESCE(MAX(id), 1) FROM activity_comment_mentions))"
         ))
 
 
@@ -557,7 +557,7 @@ async def _rebuild_ranking_shifts(conn) -> None:
     리스타트 아이덴티티"). 스냅샷은 그날 순위표의 사진일 뿐이라, 다음 집계가 지금 성적으로
     기준선을 새로 깔면 그대로 복구된다.
 
-    함께 지우는 것 하나 — 그 카드들에 달렸던 댓글(feed_comments의 target_type='rankingShift').
+    함께 지우는 것 하나 — 그 카드들에 달렸던 댓글(activity_comments의 target_type='rankingShift').
     지우지 않으면 id가 1부터 다시 시작하면서 옛 댓글이 엉뚱한 날짜의 새 카드에 가서 붙는다.
 
     멱등: sections 컬럼이 이미 있으면(=이미 갈아엎은 DB) 아무 일도 안 한다.
@@ -580,7 +580,7 @@ async def _rebuild_ranking_shifts(conn) -> None:
             return
         # ① 옛 카드에 달린 댓글부터 — 아래에서 id가 1로 되감기므로 남겨 두면 오배달된다.
         await conn.execute(
-            text("DELETE FROM feed_comments WHERE target_type = 'rankingShift'")
+            text("DELETE FROM activity_comments WHERE target_type = 'rankingShift'")
         )
         # ② 행을 비우고 id를 1로 되돌린다. TRUNCATE … RESTART IDENTITY는 PostgreSQL 전용이라
         #    실패하면 DELETE + SQLite 시퀀스 초기화로 물러선다.
@@ -642,10 +642,10 @@ async def _drop_legacy_match_summary(conn) -> None:
 async def _drop_legacy_match_notes(conn) -> None:
     """이관이 끝난 옛 경기 댓글 테이블을 지운다.
 
-    바로 위 _migrate_match_notes가 같은 트랜잭션에서 먼저 돌아 남은 행을 feed_comments로
+    바로 위 _migrate_match_notes가 같은 트랜잭션에서 먼저 돌아 남은 행을 activity_comments로
     옮긴 뒤라, 여기서 지우는 건 이미 복사된 것뿐이다. 그래도 되돌릴 수 없는 작업이므로
     '이관이 실제로 끝났다'는 증거를 한 번 더 확인한다 — match_notes에 있던 만큼이
-    feed_comments에 들어와 있어야 한다. 하나라도 어긋나면 지우지 않고 그대로 둔다.
+    activity_comments에 들어와 있어야 한다. 하나라도 어긋나면 지우지 않고 그대로 둔다.
 
     자식(match_note_mentions)을 먼저 지워야 외래키가 걸리지 않는다.
     """
@@ -659,11 +659,11 @@ async def _drop_legacy_match_notes(conn) -> None:
     try:
         legacy = await conn.scalar(text("SELECT COUNT(*) FROM match_notes")) or 0
         moved = await conn.scalar(
-            text("SELECT COUNT(*) FROM feed_comments WHERE target_type = 'gameResult'")
+            text("SELECT COUNT(*) FROM activity_comments WHERE target_type = 'gameResult'")
         ) or 0
         if legacy > moved:
             logging.getLogger(__name__).warning(
-                "match_notes(%s건)가 feed_comments(%s건)보다 많아 옛 테이블을 남겨 둔다", legacy, moved,
+                "match_notes(%s건)가 activity_comments(%s건)보다 많아 옛 테이블을 남겨 둔다", legacy, moved,
             )
             return
         await conn.execute(text("DROP TABLE IF EXISTS match_note_mentions"))

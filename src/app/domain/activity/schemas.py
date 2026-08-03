@@ -5,24 +5,24 @@ from pydantic import BaseModel, ConfigDict, Field
 
 COMMENT_MAX_LENGTH = 50
 
-# 댓글을 달 수 있는 피드 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
-FeedTargetType = Literal["gameResult", "challenge", "rankingShift"]
+# 댓글을 달 수 있는 활동 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
+ActivityTargetType = Literal["gameResult", "challenge", "rankingShift"]
 
-# 이름 통일(요청) 전에 쓰던 값 → 지금 값. 이 값은 feed_comments.target_type에 그대로
+# 이름 통일(요청) 전에 쓰던 값 → 지금 값. 이 값은 activity_comments.target_type에 그대로
 #저장되므로 부팅 때 한 번 일괄로 옮기지만(_migrate_feed_target_types), 배포가 어긋난
 # 순간의 옛 프론트가 옛 값을 보낼 수 있어 받는 쪽에서도 계속 받아 준다.
 LEGACY_FEED_TARGET_TYPES = {"match": "gameResult", "rankshift": "rankingShift"}
 
 # 요청으로 들어오는 값 — 위 이유로 옛 이름까지 허용하고, normalize_target_type으로 새
 # 이름 하나로 모아서 저장/조회한다.
-FeedTargetTypeInput = Literal["gameResult", "challenge", "rankingShift", "match", "rankshift"]
+ActivityTargetTypeInput = Literal["gameResult", "challenge", "rankingShift", "match", "rankshift"]
 
 
 def normalize_target_type(value: str) -> str:
     return LEGACY_FEED_TARGET_TYPES.get(value, value)
 
 
-class FeedCommentAuthor(BaseModel):
+class ActivityCommentAuthor(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     member_id: str = Field(alias="memberId")
@@ -30,28 +30,28 @@ class FeedCommentAuthor(BaseModel):
     avatar: str | None = None
 
 
-class FeedCommentMentionOut(BaseModel):
+class ActivityCommentMentionOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     member_id: str = Field(alias="memberId")
     nickname: str
 
 
-class FeedCommentOut(BaseModel):
+class ActivityCommentOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
-    target_type: FeedTargetType = Field(alias="targetType")
+    target_type: ActivityTargetType = Field(alias="targetType")
     target_id: int = Field(alias="targetId")
     text: str
-    author: FeedCommentAuthor
+    author: ActivityCommentAuthor
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     can_edit: bool = Field(alias="canEdit")
-    mentions: list[FeedCommentMentionOut]
+    mentions: list[ActivityCommentMentionOut]
 
 
-class FeedCommentWrite(BaseModel):
+class ActivityCommentWrite(BaseModel):
     """댓글 작성/수정 공용 페이로드."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -62,8 +62,8 @@ class FeedCommentWrite(BaseModel):
     )
 
 
-class FeedCommentCreate(FeedCommentWrite):
-    target_type: FeedTargetTypeInput = Field(alias="targetType")
+class ActivityCommentCreate(ActivityCommentWrite):
+    target_type: ActivityTargetTypeInput = Field(alias="targetType")
     target_id: int = Field(alias="targetId")
 
 

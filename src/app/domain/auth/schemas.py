@@ -20,7 +20,9 @@ from app.domain.members.schemas import MemberOut
 # 관리해 기존 DB의 제약이 갱신되지 않아 새 화면마다 조용히 막히는 사고가 반복됐다 —
 # models.py에서 제약을 걷어내고 검증은 이 한 곳으로 모았다).
 ScreenCode = Literal[
-    "feed", "match", "challenge", "stats", "members", "leagues", "rivalry",
+    # "feed"는 옛 이름이다 — 화면을 '활동'으로 바꿨지만(요청), 프론트와 서버는 따로
+    # 배포되므로 새 서버가 먼저 뜨는 동안 아직 옛 프론트가 "feed"를 보낸다. 둘 다 받는다.
+    "activity", "feed", "match", "challenge", "stats", "members", "leagues", "rivalry",
     # 운영 메뉴로 들어온 화면들 — 프론트 ScreenKey에 추가되고도 여기 빠져 있어 진입 핑이
     # 422로 막혔다(브라우저 콘솔에 그대로 찍혔다). 화면이 늘면 이 줄을 함께 고쳐야 한다.
     "minimaps", "control",

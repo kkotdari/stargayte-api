@@ -160,7 +160,7 @@ class ChallengeService:
         from sqlalchemy import delete as sa_delete, select
 
         from app.domain.challenges.models import Challenge as ChallengeModel
-        from app.domain.feed.models import FeedComment
+        from app.domain.activity.models import ActivityComment
 
         challenge = await self._session.scalar(
             select(ChallengeModel).where(ChallengeModel.id == challenge_id)
@@ -168,8 +168,8 @@ class ChallengeService:
         if challenge is None:
             raise NotFoundError("너 나와!를 찾을 수 없어요.")
         await self._session.execute(
-            sa_delete(FeedComment).where(
-                FeedComment.target_type == "challenge", FeedComment.target_id == challenge_id
+            sa_delete(ActivityComment).where(
+                ActivityComment.target_type == "challenge", ActivityComment.target_id == challenge_id
             )
         )
         await self._session.delete(challenge)

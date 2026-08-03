@@ -5,12 +5,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.feed.models import FeedComment, FeedCommentMention, RankingShift
-from app.domain.feed.repository import FeedCommentRepository
-from app.domain.feed.schemas import (
-    FeedCommentAuthor,
-    FeedCommentMentionOut,
-    FeedCommentOut,
+from app.domain.activity.models import ActivityComment, ActivityCommentMention, RankingShift
+from app.domain.activity.repository import ActivityCommentRepository
+from app.domain.activity.schemas import (
+    ActivityCommentAuthor,
+    ActivityCommentMentionOut,
+    ActivityCommentOut,
     RankingShiftEntry,
     RankingShiftOut,
     RankingShiftSection,
@@ -20,14 +20,14 @@ from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
 
 
-def to_comment_out(comment: FeedComment, *, actor_pk: int | None, is_admin: bool) -> FeedCommentOut:
+def to_comment_out(comment: ActivityComment, *, actor_pk: int | None, is_admin: bool) -> ActivityCommentOut:
     author = comment.creator
-    return FeedCommentOut(
+    return ActivityCommentOut(
         id=comment.id,
         targetType=normalize_target_type(comment.target_type),
         targetId=comment.target_id,
         text=comment.text,
-        author=FeedCommentAuthor(
+        author=ActivityCommentAuthor(
             memberId=author.id if author else "",
             nickname=author.nickname if author else "(탈퇴한 회원)",
             avatar=author.avatar_url if author else None,
@@ -36,7 +36,7 @@ def to_comment_out(comment: FeedComment, *, actor_pk: int | None, is_admin: bool
         updatedAt=comment.updated_at,
         canEdit=is_admin or (actor_pk is not None and comment.created_by == actor_pk),
         mentions=[
-            FeedCommentMentionOut(
+            ActivityCommentMentionOut(
                 memberId=m.member.id if m.member else "",
                 nickname=m.member.nickname if m.member else "(탈퇴한 회원)",
             )
@@ -45,19 +45,19 @@ def to_comment_out(comment: FeedComment, *, actor_pk: int | None, is_admin: bool
     )
 
 
-class FeedCommentService:
+class ActivityCommentService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
-        self._repo = FeedCommentRepository(session)
+        self._repo = ActivityCommentRepository(session)
         self._member_repo = MemberRepository(session)
 
-    async def list_all(self, *, actor: Member) -> list[FeedCommentOut]:
-        """피드가 목록과 함께 한 번에 받아 가는 전체 댓글(위 repository.list_all 주석)."""
+    async def list_all(self, *, actor: Member) -> list[ActivityCommentOut]:
+        """활동가 목록과 함께 한 번에 받아 가는 전체 댓글(위 repository.list_all 주석)."""
         is_admin = actor.has_any_role("0202")
         comments = await self._repo.list_all()
         return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in comments]
 
-    async def list_for_target(self, target_type: str, target_id: int, *, actor: Member) -> list[FeedCommentOut]:
+    async def list_for_target(self, target_type: str, target_id: int, *, actor: Member) -> list[ActivityCommentOut]:
         is_admin = actor.has_any_role("0202")
         comments = await self._repo.list_by_target(normalize_target_type(target_type), target_id)
         return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in comments]
@@ -65,16 +65,16 @@ class FeedCommentService:
     async def create(
         self, target_type: str, target_id: int, text: str,
         target_member_ids: list[str], *, actor: Member,
-    ) -> FeedCommentOut:
+    ) -> ActivityCommentOut:
         cleaned = text.strip()
         if not cleaned:
             raise ValidationError("댓글 내용을 입력해주세요.")
         mentions = await self._resolve_mentions(target_member_ids)
-        comment = FeedComment(
+        comment = ActivityComment(
             target_type=normalize_target_type(target_type), target_id=target_id, text=cleaned,
             created_by=actor.pk, updated_by=actor.pk,
         )
-        comment.mentions = [FeedCommentMention(member_pk=m.pk, member=m) for m in mentions]
+        comment.mentions = [ActivityCommentMention(member_pk=m.pk, member=m) for m in mentions]
         self._session.add(comment)
         await self._session.commit()
         refreshed = await self._repo.get(comment.id)
@@ -83,7 +83,7 @@ class FeedCommentService:
 
     async def update(
         self, comment_id: int, text: str, target_member_ids: list[str], *, actor: Member
-    ) -> FeedCommentOut:
+    ) -> ActivityCommentOut:
         cleaned = text.strip()
         if not cleaned:
             raise ValidationError("댓글 내용을 입력해주세요.")
@@ -97,7 +97,7 @@ class FeedCommentService:
         # 수정 시 실패). 지운 뒤 flush하면 재삽입 충돌이 없다.
         comment.mentions.clear()
         await self._session.flush()
-        comment.mentions = [FeedCommentMention(member_pk=m.pk, member=m) for m in mentions]
+        comment.mentions = [ActivityCommentMention(member_pk=m.pk, member=m) for m in mentions]
         await self._session.commit()
         refreshed = await self._repo.get(comment.id)
         assert refreshed is not None
@@ -108,7 +108,7 @@ class FeedCommentService:
         await self._session.delete(comment)
         await self._session.commit()
 
-    async def _get_for_edit(self, comment_id: int, actor: Member) -> FeedComment:
+    async def _get_for_edit(self, comment_id: int, actor: Member) -> ActivityComment:
         comment = await self._repo.get(comment_id)
         if comment is None:
             raise NotFoundError("댓글을 찾을 수 없어요.")
@@ -174,13 +174,13 @@ def _current_period() -> str:
 
 
 class RankingShiftService:
-    """포인트·순위 스냅샷 — 경기 등록/삭제 때마다 계산해 저장하고, 변동분을 피드에 내보낸다."""
+    """포인트·순위 스냅샷 — 경기 등록/삭제 때마다 계산해 저장하고, 변동분을 활동에 내보낸다."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def list_events(self, limit: int) -> list[RankingShiftOut]:
-        """피드에 보여줄 이벤트 — 변동(shifts)이 실제로 있었던 스냅샷만."""
+        """활동에 보여줄 이벤트 — 변동(shifts)이 실제로 있었던 스냅샷만."""
         from sqlalchemy import select
 
         stmt = select(RankingShift).order_by(RankingShift.created_at.desc()).limit(limit * 3)
@@ -274,7 +274,7 @@ class RankingShiftService:
         """하루 한 번(아침) 순위표를 다시 집계해 변동이 있으면 스냅샷으로 남긴다(요청).
 
         예전에는 경기 등록/삭제 때마다 계산했는데, 그러면 하루에도 여러 번 변동 카드가
-        피드에 떠서 목록이 그 카드로 도배됐다(지적) — 이제 하루치를 모아 한 번만 남긴다.
+        활동에 떠서 목록이 그 카드로 도배됐다(지적) — 이제 하루치를 모아 한 번만 남긴다.
         행도 하루에 하나다(요청): 개인전·팀전을 한 행의 sections에 나란히 담아, 카드도
         댓글도 하나로 묶인다.
 
@@ -307,7 +307,7 @@ class RankingShiftService:
     async def reseed_now(self, compute_entries) -> dict[str, int]:
         """지금 데이터 기준으로 기준선을 다시 깐다 — 제어판에서 손으로 누르는 1회용(요청).
 
-        변동 없이(reason="seed", shifts 빈 배열) 저장되므로 피드 목록에는 안 보인다. 이번 달
+        변동 없이(reason="seed", shifts 빈 배열) 저장되므로 활동 목록에는 안 보인다. 이번 달
         기준선이 이미 있으면 그 행을 갱신한다 — 여러 번 눌러도 행이 쌓이지 않는다.
         돌려주는 값은 유형별로 몇 명이 순위표에 들어갔는지다.
         """
@@ -332,7 +332,7 @@ class RankingShiftService:
     async def seed_if_empty(self, compute_entries) -> None:
         """최초 부팅 시 현재 순위표를 기준선으로 적재 — 다음 집계의 비교 대상이 된다.
 
-        변동분 없이(reason="seed") 저장되므로 피드에는 보이지 않는다. 멱등: 행이 하나라도
+        변동분 없이(reason="seed") 저장되므로 활동에는 보이지 않는다. 멱등: 행이 하나라도
         있으면 아무 일도 안 한다. 예전에는 유형마다 행이 따로 있어 "개인전만 있고 팀전은
         없는" 어중간한 상태를 따로 살펴야 했는데, 이제 한 행이 두 칸을 다 갖는다.
         """
