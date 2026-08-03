@@ -22,6 +22,18 @@ def normalize_target_type(value: str) -> str:
     return LEGACY_FEED_TARGET_TYPES.get(value, value)
 
 
+def stored_target_types(value: str) -> list[str]:
+    """이 대상 종류로 저장돼 있을 수 있는 값 전부 — 지금 이름과 그 옛 이름들.
+
+    저장된 값을 새 이름으로 옮기는 부팅 단계가 따로 있지만(main._migrate_activity_target_types),
+    그게 아직 안 돈 DB나 한 번 실패한 DB에서는 옛 이름이 그대로 남는다. 조회를 새 이름
+    하나로만 걸면 그런 댓글은 통째로 안 보인다 — 실제로 대상별 조회에서 옛 이름으로 달린
+    댓글이 빠졌다(지적: 기존 댓글이 연결 안 됨). 읽을 때는 둘 다 받아 준다.
+    """
+    new_name = normalize_target_type(value)
+    return [new_name, *(old for old, cur in LEGACY_FEED_TARGET_TYPES.items() if cur == new_name)]
+
+
 class ActivityCommentAuthor(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

@@ -466,3 +466,50 @@ async def test_legacy_feed_prefix_still_answers(client) -> None:
     tok = await _signup(client, "legacy1", "레거시#1")
     res = await client.get("/api/feed/comments/all", headers=_h(tok))
     assert res.status_code == 200, res.text
+
+
+async def test_legacy_target_type_rows_are_still_found(client, db_session):
+    """옛 이름(match/rankshift)으로 저장된 댓글도 새 이름으로 조회된다(지적: 기존 댓글 연결 안 됨).
+
+    저장된 값을 새 이름으로 옮기는 부팅 단계가 따로 있지만, 그게 아직 안 돈 DB나 배포가
+    어긋난 순간에 들어온 댓글에는 옛 이름이 남는다. 조회를 새 이름 하나로만 걸면 그런
+    댓글이 통째로 안 보인다 — 대상별 조회에서 실제로 빠졌다.
+    """
+    from sqlalchemy import text
+
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    match = await _register_match(client, _h(a))
+    mid = match["id"]
+
+    # 새 이름으로 한 건 남긴다.
+    res = await client.post(
+        "/api/activity/comments",
+        headers=_h(a),
+        json={"targetType": "gameResult", "targetId": mid, "text": "새 이름"},
+    )
+    assert res.status_code == 201, res.text
+
+    # 옛 이름으로 저장된 한 건을 직접 심는다(마이그레이션 전 상태 재현).
+    await db_session.execute(
+        text(
+            "INSERT INTO feed_comments (target_type, target_id, text, created_by, updated_by,"
+            " created_at, updated_at)"
+            " SELECT 'match', :mid, '옛 이름', pk, pk, created_at, created_at FROM members WHERE id = 'alice'"
+        ),
+        {"mid": mid},
+    )
+    await db_session.commit()
+
+    res = await client.get(
+        "/api/activity/comments",
+        headers=_h(a),
+        params={"targetType": "gameResult", "targetId": mid},
+    )
+    assert res.status_code == 200, res.text
+    items = res.json()
+    texts = sorted(c["text"] for c in items)
+    assert texts == ["새 이름", "옛 이름"], items
+    # 내보낼 때는 둘 다 새 이름으로 통일된다.
+    assert {c["targetType"] for c in items} == {"gameResult"}

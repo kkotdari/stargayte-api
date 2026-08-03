@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.activity.models import ActivityComment
+from app.domain.activity.schemas import stored_target_types
 
 
 class ActivityCommentRepository:
@@ -23,9 +24,13 @@ class ActivityCommentRepository:
         return list((await self._session.scalars(stmt)).all())
 
     async def list_by_target(self, target_type: str, target_id: int) -> list[ActivityComment]:
+        # 옛 이름으로 저장된 댓글도 함께 집는다(stored_target_types 주석 참고).
         stmt = (
             select(ActivityComment)
-            .where(ActivityComment.target_type == target_type, ActivityComment.target_id == target_id)
+            .where(
+                ActivityComment.target_type.in_(stored_target_types(target_type)),
+                ActivityComment.target_id == target_id,
+            )
             .options(selectinload(ActivityComment.mentions), selectinload(ActivityComment.creator))
             .order_by(ActivityComment.created_at)
         )
