@@ -77,6 +77,11 @@ _TABLE_RENAMES = [
     ("match_participants", "game_result_participants"),
     ("match_results", "game_outcomes"),
     ("rank_snapshots", "ranking_shifts"),
+    # 피드 → 활동 이름 일괄 변경(요청)의 마지막 조각. 코드 쪽은 먼저 옮겼고 테이블만
+    # 남겨 뒀었는데, 이제 여기서 함께 옮긴다 — 아래 규칙(옛 이름이 있고 새 이름이 아직
+    # 없을 때만) 덕분에 이미 바뀐 DB에서도, 처음 뜨는 DB에서도 안전하다.
+    ("feed_comments", "activity_comments"),
+    ("feed_comment_mentions", "activity_comment_mentions"),
 ]
 
 
