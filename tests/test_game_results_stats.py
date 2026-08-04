@@ -86,18 +86,18 @@ async def test_stats_aggregates_exact_numbers(client):
     p1_overall = by_id["player01"]["overall"]
     assert p1_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
-        "avgApm": 110, "avgEapm": 85, "avgCmd": 525, "avgEcmd": 410, "avgBuild": 320,
+        "avgApm": 110, "avgEapm": 85, "avgCmd": 52, "avgEcmd": 41, "avgBuild": 32,
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
-        "avgApm": 100, "avgEapm": 80, "avgCmd": 500, "avgEcmd": 400, "avgBuild": 300,
+        "avgApm": 100, "avgEapm": 80, "avgCmd": 50, "avgEcmd": 40, "avgBuild": 30,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
-        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
+        "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
@@ -107,7 +107,7 @@ async def test_stats_aggregates_exact_numbers(client):
     p2_overall = by_id["player02"]["overall"]
     assert p2_overall == {
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
-        "avgApm": 70, "avgEapm": 55, "avgCmd": 325, "avgEcmd": 220, "avgBuild": 165,
+        "avgApm": 70, "avgEapm": 55, "avgCmd": 32, "avgEcmd": 22, "avgBuild": 16,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
@@ -144,10 +144,10 @@ async def test_stats_excludes_extreme_outlier_game_from_eapm_ecmd_average(client
     assert overall["plays"] == 6  # 전적 자체는 이상치 경기도 포함해서 그대로 6전
     # 이상치를 뺀 나머지 5경기만으로 평균 -> eapm 80, ecmd (400+410+390+405+395)/5경기=400
     assert overall["avgEapm"] == 80
-    assert overall["avgEcmd"] == 400
+    assert overall["avgEcmd"] == 40
     by_race = res.json()["members"][0]["byRace"]["테란"]
     assert by_race["avgEapm"] == 80
-    assert by_race["avgEcmd"] == 400
+    assert by_race["avgEcmd"] == 40
 
 
 async def test_stats_excludes_extreme_outlier_game_from_apm_average(client):
@@ -220,9 +220,9 @@ async def test_stats_excludes_too_short_game_even_below_outlier_sample_floor(cli
     # 다섯 지표 모두 정상 두 판만으로 계산된다(단순 평균이었다면 APM 2433, 생산 610).
     assert overall["avgApm"] == 150
     assert overall["avgEapm"] == 120
-    assert overall["avgCmd"] == 1500
-    assert overall["avgEcmd"] == 1200
-    assert overall["avgBuild"] == 900
+    assert overall["avgCmd"] == 150
+    assert overall["avgEcmd"] == 120
+    assert overall["avgBuild"] == 90
 
 
 async def test_stats_keeps_game_at_the_duration_floor(client):
@@ -250,7 +250,7 @@ async def test_stats_keeps_game_at_the_duration_floor(client):
     assert overall["plays"] == 2
     assert overall["avgApm"] == 100  # 120초짜리 한 판만 반영 — 둘 다면 500이었다
     # 생산은 10분당으로 환산된다(요청) — 2분짜리 한 판에서 300이면 10분당 1500이다.
-    assert overall["avgBuild"] == 1500
+    assert overall["avgBuild"] == 150
 
 
 _METRIC_FIELDS = ("avgApm", "avgEapm", "avgCmd", "avgEcmd", "avgBuild")
@@ -296,7 +296,7 @@ async def test_stats_hides_metric_averages_below_min_plays_but_keeps_record(clie
     await _solo_matches(client, headers, 1, start=3)
     overall = (await _solo_stats(client, headers))["overall"]
     assert overall["plays"] == 3
-    assert [overall[f] for f in _METRIC_FIELDS] == [100, 80, 500, 400, 300]
+    assert [overall[f] for f in _METRIC_FIELDS] == [100, 80, 50, 40, 30]
 
 
 async def test_stats_metric_gate_counts_only_the_filtered_race(client):
@@ -413,11 +413,11 @@ async def test_stats_excludes_extreme_outlier_game_from_cmd_and_build_average(cl
     overall = res.json()["members"][0]["overall"]
     assert overall["plays"] == 6  # 전적 자체는 이상치 경기도 포함해서 그대로 6전
     # 튄 판을 뺀 다섯 판의 평균 — 단순 평균이었다면 커맨드 1917, 생산 1450이 됐다.
-    assert overall["avgCmd"] == 500
-    assert overall["avgBuild"] == 300
+    assert overall["avgCmd"] == 50
+    assert overall["avgBuild"] == 30
     by_race = res.json()["members"][0]["byRace"]["테란"]
-    assert by_race["avgCmd"] == 500
-    assert by_race["avgBuild"] == 300
+    assert by_race["avgCmd"] == 50
+    assert by_race["avgBuild"] == 30
 
 
 async def test_stats_race_filter_scopes_overall(client):
@@ -432,7 +432,7 @@ async def test_stats_race_filter_scopes_overall(client):
     overall = res.json()["members"][0]["overall"]
     assert overall == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
-        "avgApm": 120, "avgEapm": 90, "avgCmd": 550, "avgEcmd": 420, "avgBuild": 340,
+        "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
@@ -569,7 +569,7 @@ async def test_rivalries_team_mode_individualizes(client):
 def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
-    building_secs=None, unit_secs=None, skill_secs=None,
+    building_secs=None, unit_secs=None, skill_secs=None, core_seconds=None, core_cmd=0,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
@@ -579,6 +579,8 @@ def _mix(
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
         "buildingSecs": building_secs or {}, "unitSecs": unit_secs or {},
         "skillSecs": skill_secs or {},
+        # 주요시간대(초) — 이름별 시간의 분모다. 파서가 경기마다 재서 실어 보낸다.
+        "coreSeconds": core_seconds, "coreCmd": core_cmd,
     }
 
 
@@ -594,14 +596,14 @@ async def test_stats_sums_build_mix_across_matches(client):
         b_prod=20, b_def=5, u_basic=60, u_adv=10, u_caster=2, u_ground=65, u_air=7,
         worker5=14, up_gw=3, up_ga=2, up_aw=1, up_aa=0,
         buildings={"Barracks": 4, "Bunker": 2}, units={"Marine": 40, "Siege Tank (Tank Mode)": 6},
-        skills={"Stim Packs": 12},
+        skills={"Stim Packs": 12}, core_seconds=600,
     )
     s2 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     s2["buildMix"] = _mix(
         b_prod=10, b_def=15, u_basic=20, u_adv=30, u_caster=8, u_ground=40, u_air=18,
         worker5=8, up_gw=2, up_ga=1, up_aw=3, up_aa=2,
         buildings={"Barracks": 3, "Starport": 1}, units={"Marine": 25, "Wraith": 9},
-        skills={"Stim Packs": 5, "Yamato Gun": 3},
+        skills={"Stim Packs": 5, "Yamato Gun": 3}, core_seconds=600,
     )
     await _create_match(
         client, headers, "2026-07-01",

@@ -117,9 +117,14 @@ _TRIMMED_RATES = (
     ("avg_apm", "apm"),
     ("avg_eapm", "eapm"),
 )
-# 이쪽은 경기당 총합이라 긴 판일수록 그냥 커진다 — 10분당으로 환산한다(요청: 게임시간에
-# 영향을 받는 요소는 모두 10분당 평균). 경기마다 10분당을 내서 평균 내지 않고 '총합 ÷ 총
-# 시간'으로 낸다: 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이
+# 이쪽은 경기당 총합이라 긴 판일수록 그냥 커진다 — 분당으로 환산한다(요청: 게임시간에
+# 영향을 받는 요소는 모두 분당).
+#
+# 분모가 경기 전체 길이인 것은 생산 구성(주요시간대 분당)과 다르다 — 여기 분자로 쓰는
+# screp의 커맨드 수는 경기 하나당 총합 하나뿐이라, 구간을 좁히려면 커맨드 스트림을 한 번
+# 더 훑어 사람별로 다시 세어야 한다. 그 값은 아직 없다.
+#
+# 경기마다 분당을 내서 평균 내지 않고 '총합 ÷ 총 시간'으로 낸다: 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이
 # 그 사람의 값을 통째로 흔든다(생산 구성 비율을 합쳐서 내는 것과 같은 이유).
 _TRIMMED_VOLUMES = (
     ("avg_cmd", "cmd_count"),
@@ -139,13 +144,15 @@ def _trimmed_avg(rows: list, attr: str) -> int | None:
     return round(sum(kept) / len(kept))
 
 
-# 10분(초) — 경기당 총합을 이 길이로 환산한다. 분당은 값이 너무 잘아서(커맨드 200대) 자릿수
-# 차이가 안 읽히고, 경기당은 판 길이에 그대로 끌려간다.
-PER_WINDOW_SECONDS = 600
+# 1분(초) — 시간에 끌려가는 값을 전부 분당으로 통일한다(요청: 단위 표시는 "단위/분").
+# 한때 10분이었는데, 그 자리에 함께 서는 생산·건설·유닛 값이 주요시간대 분당으로 바뀌면서
+# 같은 표 안에 10분당과 분당이 섞이게 됐다 — 자릿수가 커 보이는 것보다 자가 하나인 편이
+# 낫다(프론트 replayBuildMix의 PER_WINDOW_SECONDS와 같은 값).
+PER_WINDOW_SECONDS = 60
 
 
-def _trimmed_per10(rows: list, attr: str) -> int | None:
-    """attr 총합을 총 경기시간으로 나눠 10분당 값으로 낸다(요청). 길이를 안 잰 경기는 환산할
+def _trimmed_per_min(rows: list, attr: str) -> int | None:
+    """attr 총합을 총 경기시간으로 나눠 분당 값으로 낸다(요청). 길이를 안 잰 경기는 환산할
     자가 없으므로 분자·분모 양쪽에서 함께 뺀다 — 한쪽만 빼면 시간 없는 판의 값이 다른 판의
     시간에 얹혀 값이 부풀어 오른다.
 
@@ -212,7 +219,7 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
         if r.duration_seconds is None or r.duration_seconds >= _MIN_DURATION_SECONDS
     ]
     out: dict[str, object] = {field: _trimmed_avg(rows, attr) for field, attr in _TRIMMED_RATES}
-    out.update({field: _trimmed_per10(rows, attr) for field, attr in _TRIMMED_VOLUMES})
+    out.update({field: _trimmed_per_min(rows, attr) for field, attr in _TRIMMED_VOLUMES})
     out.update(_build_mix_agg(rows))
     return out  # type: ignore[return-value]
 
@@ -225,7 +232,7 @@ _BUILD_MIX_FIELDS = (
     "up_gw", "up_ga", "up_aw", "up_aa", "up_sh",
 )
 # 사전으로 쌓이는 갈래(건물·유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
-# 값과 함께 '그 이름이 나온 경기들의 총 시간'도 센다 — 화면이 총합을 이 시간으로 나눠 10분당
+# 값과 함께 '그 이름이 나온 경기들의 주요시간대 합'도 센다 — 화면이 총합을 이 시간으로 나눠 분당
 # 값을 낸다(요청). 전체 경기시간으로 나누지 않는 이유: 그 기술을 안 쓴 판의 시간까지 분모에
 # 들어가면 프로토스만 쓰는 기술의 값이 종족 비율만큼 깎인다.
 _BUILD_MIX_TALLIES = {"buildings": "building_secs", "units": "unit_secs", "skills": "skill_secs"}
@@ -244,7 +251,12 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
         # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
         if not isinstance(m, dict):
             continue
-        dur = int(r.duration_seconds) if r.duration_seconds else 0
+        # 분모는 경기 전체가 아니라 그 판의 주요시간대다(요청) — 분자(위 커맨드 수)도 이미
+        # 그 구간 것만 세어 저장돼 있어서, 전체 길이로 나누면 분자와 분모의 자가 어긋난다.
+        # 옛 경기에는 이 값이 없다(재분석 전) — 그런 판은 0이라 분모에 안 얹히고, 그 결과
+        # 분모가 하나도 안 쌓이면 화면이 그 칸을 비운다.
+        core = m.get("core_seconds")
+        dur = int(core) if isinstance(core, (int, float)) and core > 0 else 0
         seconds += dur
         for f in _BUILD_MIX_FIELDS:
             v = m.get(f)
@@ -263,9 +275,9 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
     return {
         "build_mix": BuildMix(**total),
         "avg_worker5": round(int(total["worker5"]) / len(mixed), 1),  # type: ignore[arg-type]
-        # 합계를 되돌릴 두 분모 — 경기 수(공/방 평균 단계처럼 판마다 하나인 값)와 총 시간
-        # (10분당으로 환산할 값). 무엇을 무엇으로 나눌지가 칸마다 달라서 나눗셈은 화면이
-        # 하고 서버는 분모만 준다.
+        # 합계를 되돌릴 두 분모 — 경기 수(공/방 평균 단계처럼 판마다 하나인 값)와 주요시간대
+        # 총 길이(분당으로 환산할 값). 무엇을 무엇으로 나눌지가 칸마다 달라서 나눗셈은
+        # 화면이 하고 서버는 분모만 준다.
         "mix_plays": len(mixed),
         "mix_seconds": seconds or None,
     }

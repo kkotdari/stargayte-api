@@ -81,6 +81,14 @@ class BuildMix(BaseModel):
     building_secs: dict[str, int] = Field(default_factory=dict, alias="buildingSecs")
     unit_secs: dict[str, int] = Field(default_factory=dict, alias="unitSecs")
     skill_secs: dict[str, int] = Field(default_factory=dict, alias="skillSecs")
+    # 이 경기의 '주요시간대' 길이(초) — 위 수들을 되돌릴 분모다(요청: 모든 시간관련 지표를
+    # 주요시간대 1분당으로). 초반 4분과 막판 1분을 뺀 가운데 구간이고, 그 구간이 3분도 안
+    # 되는 짧은 경기는 None이라 집계에서 자동으로 빠진다. 구간을 정하고 그 안의 커맨드만
+    # 세는 일은 전부 프론트 파서가 한다(replayBuildMix의 coreWindowOf) — 커맨드 스트림이
+    # 거기에만 있다. 옛 경기에는 없다: 재분석을 돌려야 채워진다.
+    core_seconds: int | None = Field(default=None, ge=0, le=100000, alias="coreSeconds")
+    # 그 구간 안의 생산 커맨드 수 — '커맨드' 칸도 같은 자로 잰다.
+    core_cmd: int = Field(default=0, ge=0, le=1000000, alias="coreCmd")
 
     @field_validator(
         "buildings", "units", "skills", "building_secs", "unit_secs", "skill_secs",
