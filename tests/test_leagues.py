@@ -7,6 +7,7 @@
 변경·대진표 규모 변경 차단)은 여전히 살아있는 코드라, 결과 행을 DB에 직접 심어 검증한다
 (_decide_match)."""
 
+import math
 import string
 
 from sqlalchemy import select
@@ -125,8 +126,14 @@ async def _delete_team(client, headers, league_id: int, team_id: int):
 
 
 async def _generate_bracket(client, headers, league_id: int, team_count: int):
+    """이 팀 수가 들어갈 만한 판을 만든다.
+
+    엔드포인트는 이제 '몇 라운드짜리 판인가'를 받는다(요청: 규모를 직접 정하기) — 어느 칸에나
+    팀을 앉힐 수 있게 되면서 팀 수로 판 크기를 정하는 계산이 성립하지 않게 됐다. 테스트는
+    여전히 "N팀짜리 상황"을 말하고 싶으므로, 여기서 N을 담을 최소 라운드로 바꿔 준다."""
+    rounds = max(1, math.ceil(math.log2(max(2, team_count))))
     return await client.post(
-        f"/api/leagues/{league_id}/bracket/generate", headers=headers, json={"teamCount": team_count},
+        f"/api/leagues/{league_id}/bracket/generate", headers=headers, json={"rounds": rounds},
     )
 
 
@@ -286,23 +293,29 @@ async def test_individual_league_roster_locked_to_one(client):
     assert res.status_code == 200, res.text
 
 
-async def test_bracket_generate_team_count_validation(client):
+async def test_bracket_generate_rounds_validation(client):
+    """판 크기는 라운드 수로 직접 받는다(요청) — 1라운드(2칸)부터 열 라운드까지."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers)
     await _add_teams(client, admin_headers, league["id"], 3)
 
-    # teamCount는 스키마 레벨에서 2 이상만 강제한다 — 상한은 없다(요청: "대진표 슬롯
-    # 무제한").
-    res = await _generate_bracket(client, admin_headers, league["id"], 1)
-    assert res.status_code == 422, res.text
+    async def gen(rounds):
+        return await client.post(
+            f"/api/leagues/{league['id']}/bracket/generate",
+            headers=admin_headers, json={"rounds": rounds},
+        )
 
-    # 이미 만들어진 팀(3개)보다 적게는 예약할 수 없다.
-    res = await _generate_bracket(client, admin_headers, league["id"], 2)
-    assert res.status_code == 400, res.text
-
-    # 상한 없이 큰 규모도 허용된다(팀리그라도 더는 6개로 막지 않는다).
-    res = await _generate_bracket(client, admin_headers, league["id"], 25)
+    assert (await gen(0)).status_code == 422
+    assert (await gen(11)).status_code == 422
+    # 팀 수보다 작은 판도 만들 수 있다 — 어느 칸에나 앉힐 수 있게 되면서 "팀 수 = 판 크기"가
+    # 아니게 됐고, 안 쓰는 가지는 확정할 때 사라진다. 담을 자리보다 많은 팀은 팀구성 저장이
+    # 따로 막는다(test_add_team_capped_at_bracket_capacity).
+    res = await gen(1)
     assert res.status_code == 200, res.text
+    assert res.json()["drawSize"] == 2
+    res = await gen(5)
+    assert res.status_code == 200, res.text
+    assert res.json()["drawSize"] == 32
 
 
 async def test_generate_bracket_can_be_resized_before_results_but_not_after(client, db_session):
@@ -391,33 +404,35 @@ async def test_bracket_generates_empty_and_slots_are_assigned_manually(client):
     # 배정 불가(다른 테스트에서 커버) / 존재하지 않는 매치 404 등은 기존 커버리지로 충분.
 
 
-async def test_add_team_capped_at_planned_teams_after_generate(client):
+async def test_add_team_capped_at_bracket_capacity(client):
+    """대진표가 있으면 그 판이 담을 수 있는 인원(draw_size)을 넘는 팀은 둘 수 없다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers)
     await _add_teams(client, admin_headers, league["id"], 2)
-    res = await _generate_bracket(client, admin_headers, league["id"], 3)
+    res = await _generate_bracket(client, admin_headers, league["id"], 3)  # 2라운드 → 4칸
     assert res.status_code == 200, res.text
+    assert res.json()["drawSize"] == 4
 
     league_now = await _get_league(client, admin_headers, league["id"])
     base = _composition_of(league_now)
 
     res = await _save_composition(
-        client, admin_headers, league["id"], base + [{"id": None, "roster": []}],
-    )
-    assert res.status_code == 200, res.text  # 3번째 팀 — 예약된 자리라 허용
-
-    res = await _save_composition(
         client, admin_headers, league["id"], base + [{"id": None, "roster": []}] * 2,
     )
-    assert res.status_code == 400, res.text  # 4번째 — 예약(3) 초과라 거부
+    assert res.status_code == 200, res.text  # 4팀 — 판에 자리가 있다
+
+    res = await _save_composition(
+        client, admin_headers, league["id"], base + [{"id": None, "roster": []}] * 3,
+    )
+    assert res.status_code == 400, res.text  # 5팀 — 4칸짜리 판을 넘는다
 
 
-async def test_three_team_bracket_bye_must_still_play_next_round(client):
-    """3팀(A,B,C) → draw_size=4로 예약, byes=1이라 슬롯0이 부전승 자리(분산 배정 —
-    "각 부전승을 팀별로 분산 배정")다. C를 슬롯0에 혼자 배정하면 반대쪽 자리가
-    구조적으로 영원히 안 채워지므로 그 즉시 부전승 처리된다. A,B는 슬롯1에 실제
-    경기로 배정한다. 하지만 결승에서는 A-vs-B 승자와 C가 실제로 붙어야 한다 — 자동으로
-    우승 처리되면 안 된다(수정한 버그)."""
+async def test_three_team_bye_resolves_on_confirm_and_still_plays_next_round(client):
+    """3팀 — C를 1라운드 슬롯0에 혼자 앉히면 확정 순간 부전승으로 올라간다.
+
+    부전승은 이제 따로 찍는 자리가 아니라 '한 사람만 있는 가지'의 결과다(요청). 그리고
+    결승에서는 A-vs-B 승자와 실제로 붙어야 한다 — 부전승만으로 우승이 되면 안 된다
+    (한 번 고쳤던 버그라 그대로 지킨다)."""
     admin_headers, members = await _bootstrap(client, 3)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
@@ -428,35 +443,30 @@ async def test_three_team_bracket_bye_must_still_play_next_round(client):
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["drawSize"] == 4
-    slot0, slot1 = _match(body, 1, 0), _match(body, 1, 1)
-    assert not slot0["isDead"] and not slot1["isDead"]
+    m0, m1 = _match(body, 1, 0), _match(body, 1, 1)
 
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[2]["id"])
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": m0["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": m1["id"], "side": "a", "teamId": teams[0]["id"]},
+        {"matchId": m1["id"], "side": "b", "teamId": teams[1]["id"]},
+    ])
+    assert res.status_code == 200, res.text
+    # 확정 전에는 아무것도 자동으로 올라가지 않는다 — 어느 가지가 살지 아직 안 정해졌다.
+    assert _match(res.json(), 1, 0)["winnerTeamId"] is None
+
+    res = await _confirm_bracket(client, admin_headers, league["id"])
     assert res.status_code == 200, res.text
     body = res.json()
-    slot0 = _match(body, 1, 0)
+    assert _match(body, 1, 0)["winnerTeamId"] == teams[2]["id"]  # C 부전승
     final = _match(body, 2, 0)
-    assert slot0["winnerTeamId"] == teams[2]["id"]  # C 자동 부전승(슬롯0 = 부전승 자리)
-    # 핵심 회귀 검증: 결승이 C의 부전승만으로 이미 끝나 있으면 안 된다.
-    assert final["winnerTeamId"] is None
+    assert final["winnerTeamId"] is None      # 결승은 아직 안 끝났다
     assert final["teamA"]["label"] == "C"
-    assert final["teamB"] is None  # 아직 A-vs-B 결과를 기다리는 중
-
-    await _assign_slot(client, admin_headers, league["id"], slot1["id"], "a", teams[0]["id"])
-    res = await _assign_slot(client, admin_headers, league["id"], slot1["id"], "b", teams[1]["id"])
-    assert res.status_code == 200, res.text
-    slot1 = _match(res.json(), 1, 1)
-    assert slot1["teamA"]["label"] == "A" and slot1["teamB"]["label"] == "B"
-    assert slot1["winnerTeamId"] is None  # 실제 경기라 자동 처리 안 됨
+    assert final["teamB"] is None             # A-vs-B 결과를 기다리는 중
 
 
-async def test_six_team_bracket_byes_spread_and_round2_is_real_match(client):
-    """6팀 예약(draw_size=8, byes=2)이면 부전승 두 자리가 한 칸에 몰리지 않고 슬롯0,1에
-    하나씩 분산 배정된다("각 부전승을 팀별로 분산 배정") — 슬롯2,3은 완전히 실제 경기가
-    필요한 자리다. 어느 라운드1 매치도 완전히 죽지(is_dead) 않는다. 두 부전승 팀(A,B)이
-    라운드2에서 만나면 그건 자동 진출이 아니라 진짜 경기여야 하고, 마찬가지로
-    (C-vs-D 승자) vs (E-vs-F 승자)도 진짜 경기다 — 라운드2는 항상 4팀이 실제로 채워지는
-    정상적인 준결승으로 기능해야 한다(부전승 팀이 결승까지 자동 진출해버리면 안 됨)."""
+async def test_six_team_two_byes_meet_in_a_real_round2(client):
+    """6팀 — A·B를 1라운드에 혼자 앉히면 둘 다 부전승으로 올라가고, 2라운드에서 서로
+    실제로 붙는다(자동 진출로 결승까지 새어 나가면 안 된다)."""
     admin_headers, members = await _bootstrap(client, 6)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 6)  # A..F
@@ -467,34 +477,27 @@ async def test_six_team_bracket_byes_spread_and_round2_is_real_match(client):
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["drawSize"] == 8
-    slots = {i: _match(body, 1, i) for i in range(4)}
-    for i in range(4):
-        assert not slots[i]["isDead"]  # 부전승이 분산 배정되니 완전히 죽는 슬롯이 없다
-    r2_0, r2_1 = _match(body, 2, 0), _match(body, 2, 1)
-    assert not r2_0["isDead"] and not r2_1["isDead"]
+    ms = {i: _match(body, 1, i) for i in range(4)}
 
-    # 슬롯0,1은 부전승 자리(A, B가 각각 혼자 배정돼 즉시 진출) — 슬롯2,3은 실제 경기.
-    res = await _assign_slot(client, admin_headers, league["id"], slots[0]["id"], "a", teams[0]["id"])
+    res = await _seed(client, admin_headers, league["id"], [
+        {"matchId": ms[0]["id"], "side": "a", "teamId": teams[0]["id"]},   # A 혼자
+        {"matchId": ms[1]["id"], "side": "a", "teamId": teams[1]["id"]},   # B 혼자
+        {"matchId": ms[2]["id"], "side": "a", "teamId": teams[2]["id"]},
+        {"matchId": ms[2]["id"], "side": "b", "teamId": teams[3]["id"]},
+        {"matchId": ms[3]["id"], "side": "a", "teamId": teams[4]["id"]},
+        {"matchId": ms[3]["id"], "side": "b", "teamId": teams[5]["id"]},
+    ])
     assert res.status_code == 200, res.text
-    a_bye = _match(res.json(), 1, 0)
-    assert a_bye["winnerTeamId"] == teams[0]["id"]  # A 자동 부전승
-
-    res = await _assign_slot(client, admin_headers, league["id"], slots[1]["id"], "a", teams[1]["id"])
+    res = await _confirm_bracket(client, admin_headers, league["id"])
     assert res.status_code == 200, res.text
-    b_bye = _match(res.json(), 1, 1)
-    assert b_bye["winnerTeamId"] == teams[1]["id"]  # B 자동 부전승
-
-    for slot_idx, ta, tb in [(2, teams[2], teams[3]), (3, teams[4], teams[5])]:
-        await _assign_slot(client, admin_headers, league["id"], slots[slot_idx]["id"], "a", ta["id"])
-        res = await _assign_slot(client, admin_headers, league["id"], slots[slot_idx]["id"], "b", tb["id"])
-        assert res.status_code == 200, res.text
     body = res.json()
-    cd, ef = _match(body, 1, 2), _match(body, 1, 3)
-    assert cd["winnerTeamId"] is None and ef["winnerTeamId"] is None  # 실제 경기라 자동 처리 안 됨
 
+    assert _match(body, 1, 0)["winnerTeamId"] == teams[0]["id"]
+    assert _match(body, 1, 1)["winnerTeamId"] == teams[1]["id"]
     r2_0 = _match(body, 2, 0)
-    assert r2_0["teamA"]["label"] == "A" and r2_0["teamB"]["label"] == "B"
-    assert r2_0["winnerTeamId"] is None  # 둘 다 부전승으로 왔어도 라운드2는 진짜 경기가 필요
+    assert {r2_0["teamA"]["label"], r2_0["teamB"]["label"]} == {"A", "B"}
+    assert r2_0["winnerTeamId"] is None        # 진짜 경기다
+    assert _match(body, 3, 0)["winnerTeamId"] is None
 
 
 async def test_slot_reassign_moves_team_and_blocks_after_decided(client, db_session):
@@ -534,34 +537,28 @@ async def test_slot_reassign_moves_team_and_blocks_after_decided(client, db_sess
     assert res.status_code == 400, res.text
 
 
-async def test_bye_seed_reassignable_before_confirm_and_cascade_clears_propagation(client):
-    """대진 확정 전에는 부전승으로 이미 결정된 자리도 자유롭게 다시 배정할 수 있고
-    (요청: "그전엔 부전승팀도 수정 가능해야해"), 그 결정이 이미 다음 라운드로
-    전파돼 있었다면 슬롯을 바꾸는 순간 그 전파도 함께 취소된다."""
+async def test_nothing_advances_before_confirm(client):
+    """확정 전에는 아무것도 자동으로 올라가지 않는다 — 대진 모양은 확정 순간에 굳는다(요청).
+
+    예전에는 '부전승 자리'에 팀이 앉는 순간 바로 진출 처리돼서, 시드를 고치는 동안에도
+    다음 라운드가 채워졌다 지워졌다 했다. 이제 그 판단은 확정 한 곳에서만 한다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
     res = await _generate_bracket(client, admin_headers, league["id"], 3)
-    body = res.json()
-    slot0 = _match(body, 1, 0)  # byes=1이라 슬롯0이 부전승 자리
+    m0 = _match(res.json(), 1, 0)
 
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[0]["id"])
+    res = await _assign_slot(client, admin_headers, league["id"], m0["id"], "a", teams[0]["id"])
     assert res.status_code == 200, res.text
     body = res.json()
-    assert _match(body, 1, 0)["winnerTeamId"] == teams[0]["id"]  # A 자동 부전승
-    final = _match(body, 2, 0)
-    assert final["teamA"]["label"] == "A"  # 결승까지 전파돼 있음
+    assert _match(body, 1, 0)["teamA"]["label"] == "A"
+    assert _match(body, 1, 0)["winnerTeamId"] is None   # 아직 부전승이 아니다
+    assert _match(body, 2, 0)["teamA"] is None          # 결승도 비어 있다
 
-    # A 대신 C를 그 부전승 자리에 다시 배정하면, A의 부전승 결정과 결승으로의 전파가
-    # 함께 취소되고 C가 새로 부전승을 받는다.
-    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[2]["id"])
+    # 다른 팀으로 바꿔 앉히는 것도 그대로 된다(확정 전이라 잠긴 것이 없다).
+    res = await _assign_slot(client, admin_headers, league["id"], m0["id"], "a", teams[2]["id"])
     assert res.status_code == 200, res.text
-    body = res.json()
-    slot0 = _match(body, 1, 0)
-    assert slot0["teamA"]["label"] == "C" and slot0["winnerTeamId"] == teams[2]["id"]
-    final = _match(body, 2, 0)
-    assert final["teamA"]["label"] == "C"
-    assert final["winnerTeamId"] is None
+    assert _match(res.json(), 1, 0)["teamA"]["label"] == "C"
 
 
 async def test_confirm_bracket_locks_seed_changes(client):
@@ -574,6 +571,13 @@ async def test_confirm_bracket_locks_seed_changes(client):
     body = res.json()
     assert body["bracketLocked"] is False
     slot0 = _match(body, 1, 0)
+
+    # 아무도 안 앉은 판은 확정할 수 없다 — 확정은 대진 모양을 굳히는 일이라, 굳힐 것이
+    # 없으면 판이 통째로 죽는다.
+    res = await _confirm_bracket(client, admin_headers, league["id"])
+    assert res.status_code == 400, res.text
+    res = await _assign_slot(client, admin_headers, league["id"], slot0["id"], "a", teams[1]["id"])
+    assert res.status_code == 200, res.text
 
     res = await _confirm_bracket(client, admin_headers, league["id"])
     assert res.status_code == 200, res.text
@@ -648,15 +652,14 @@ async def test_bracket_seeding_batch_atomic_swap(client):
     assert _match(lg, 1, 1)["teamB"]["id"] == teams[3]["id"]
 
 
-async def test_bracket_seeding_batch_resolves_bye(client):
-    """일괄 저장에서도 부전승 자동 처리가 마지막에 한 번 돌아 다음 라운드로 전파되는지."""
+async def test_bracket_seeding_batch_then_confirm_resolves_bye(client):
+    """일괄 저장은 배정만 하고, 부전승은 확정에서 한 번에 정리된다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, mode="team")
     teams = await _add_teams(client, admin_headers, league["id"], 3)  # A, B, C
     res = await _generate_bracket(client, admin_headers, league["id"], 3)
     assert res.status_code == 200, res.text
     lg = res.json()
-    # draw_size=4, byes=1 → slot0은 부전 자리(side a만 실제팀), slot1은 실제 경기.
     m0, m1 = _match(lg, 1, 0), _match(lg, 1, 1)
     res = await _seed(client, admin_headers, league["id"], [
         {"matchId": m0["id"], "side": "a", "teamId": teams[0]["id"]},
@@ -664,9 +667,12 @@ async def test_bracket_seeding_batch_resolves_bye(client):
         {"matchId": m1["id"], "side": "b", "teamId": teams[2]["id"]},
     ])
     assert res.status_code == 200, res.text
+    assert _match(res.json(), 1, 0)["winnerTeamId"] is None   # 저장만으로는 안 올라간다
+
+    res = await _confirm_bracket(client, admin_headers, league["id"])
+    assert res.status_code == 200, res.text
     lg = res.json()
-    # A는 부전승으로 결승 진출.
-    assert _match(lg, 1, 0)["winnerTeamId"] == teams[0]["id"]
+    assert _match(lg, 1, 0)["winnerTeamId"] == teams[0]["id"]  # A 부전승
     assert _match(lg, 2, 0)["teamA"]["id"] == teams[0]["id"]
 
 

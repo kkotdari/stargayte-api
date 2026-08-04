@@ -52,8 +52,6 @@ class LeagueMatchOut(BaseModel):
     team_a: LeagueMatchTeamRefOut | None = Field(alias="teamA")
     team_b: LeagueMatchTeamRefOut | None = Field(alias="teamB")
     is_dead: bool = Field(alias="isDead")
-    # 이 칸의 어느 쪽이 영구 공백(부전승)인가 — 'a'/'b'/None. 1라운드에만 쓴다.
-    bye_side: str | None = Field(alias="byeSide", default=None)
     scheduled_at: datetime | None = Field(alias="scheduledAt")
     sets_won_a: int | None = Field(alias="setsWonA")
     sets_won_b: int | None = Field(alias="setsWonB")
@@ -129,14 +127,16 @@ class LeagueTeamCompositionIn(BaseModel):
 
 
 class LeagueBracketGenerateIn(BaseModel):
-    """대진표를 몇 팀(개인리그면 몇 명)짜리로 잡을지 — 실제 지금 만들어진 팀 수
-    (len(teams))와 달라도 된다(요청: "대진표는 팀이 있건 없건 생성 가능하게, 팀수 미리
-    설정 가능"). 이미 있는 팀보다 작게는 잡을 수 없다. 상한은 없다(요청: "팀수 무제한
-    개인전 선수 무제한 대진표 슬롯 무제한")."""
+    """대진표를 몇 라운드짜리로 잡을지(요청: 규모를 직접 정하기).
+
+    예전에는 팀 수를 받아 다음 2의 거듭제곱으로 판을 잡았는데, 이제는 어느 칸에나 팀을
+    앉힐 수 있어서(라운드 무관) '팀 수 → 판 크기'가 성립하지 않는다 — 여덟 칸짜리 판에
+    여섯을 앉히든 셋을 앉히든 관리자 마음이고, 안 쓰는 가지는 확정할 때 사라진다.
+    그래서 판의 크기를 라운드 수로 직접 받는다. 3이면 8강(1·2·3라운드), 4면 16강이다."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    team_count: int = Field(alias="teamCount", ge=2)
+    rounds: int = Field(ge=1, le=10)
 
 
 class LeagueSeedSlotIn(BaseModel):
@@ -148,27 +148,6 @@ class LeagueSeedSlotIn(BaseModel):
     match_id: int = Field(alias="matchId")
     side: LeagueMatchSide
     team_id: int | None = Field(alias="teamId")
-
-
-class LeagueByeSlotIn(BaseModel):
-    """부전승 자리 하나 — 어느 경기(match_id)의 어느 쪽(side)이 영원히 빈 자리인가."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    match_id: int = Field(alias="matchId")
-    side: LeagueMatchSide
-
-
-class LeagueBracketByesIn(BaseModel):
-    """부전승 자리를 한 번에 정한다(요청: 관리자가 부전승 자리를 고른다).
-
-    slots는 '전체' 부전승 자리를 담는다 — 서버는 기존 부전승 배치를 모두 지우고 이 목록
-    그대로 다시 깐다(시드 저장과 같은 방식). 개수는 draw_size - planned_teams와 정확히
-    같아야 한다: 모자라면 대진표가 안 닫히고, 넘치면 있지도 않은 부전승이 생긴다."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    slots: list[LeagueByeSlotIn]
 
 
 class LeagueBracketSeedIn(BaseModel):

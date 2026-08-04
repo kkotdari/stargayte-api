@@ -100,7 +100,6 @@ async def _ensure_schema() -> None:
             ("add challenge time note", _add_challenge_time_note),
             ("add challenge canceled_by", _add_challenge_canceled_by),
             ("add participant build_mix", _add_participant_build_mix),
-            ("add league match bye_side", _add_league_match_bye_side),
             ("drop challenge time", _drop_challenge_time),
             ("drop challenge revenge chain", _drop_challenge_revenge_chain),
             ("drop challenge from match request", _drop_challenge_from_match_request),
@@ -335,32 +334,6 @@ async def _add_challenge_canceled_by(conn: object) -> None:
             return
         except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
             logging.getLogger(__name__).debug("challenges.canceled_by_pk 추가 시도 실패: %s", sql, exc_info=True)
-
-
-async def _add_league_match_bye_side(conn: object) -> None:
-    """league_matches.bye_side 컬럼을 더한다(멱등).
-
-    그 1라운드 칸의 어느 쪽이 영구 공백(부전승)인가 — 예전에는 "앞쪽 byes개 슬롯"이라고
-    코드가 정했는데, 이제 관리자가 고른다(요청: 한쪽은 토너먼트, 다른 쪽은 단판인 구조).
-
-    이미 있는 리그의 옛 행은 NULL로 남는다 — 그러면 부전승 자리가 하나도 없는 것으로
-    읽히므로, 대진표를 다시 생성하거나(기본값이 깔린다) 부전승 자리를 한 번 저장해야 한다.
-    대진이 이미 확정·진행 중인 리그라면 그 대진은 이미 다 정해진 뒤라 영향이 없다.
-    """
-    import logging
-
-    from sqlalchemy import text
-
-    # SQLite는 ADD COLUMN IF NOT EXISTS를 모른다(위 _add_challenge_canceled_by 참고).
-    for sql in (
-        "ALTER TABLE league_matches ADD COLUMN IF NOT EXISTS bye_side VARCHAR(1)",
-        "ALTER TABLE league_matches ADD COLUMN bye_side VARCHAR(1)",
-    ):
-        try:
-            await conn.execute(text(sql))  # type: ignore[attr-defined]
-            return
-        except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
-            logging.getLogger(__name__).debug("bye_side 추가 시도 실패: %s", sql, exc_info=True)
 
 
 async def _add_participant_build_mix(conn: object) -> None:

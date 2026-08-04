@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from app.api.deps import CurrentAdmin, DbSession
 from app.domain.leagues.schemas import (
-    LeagueBracketByesIn,
     LeagueBracketGenerateIn,
     LeagueBracketSeedIn,
     LeagueCreateIn,
@@ -54,15 +53,6 @@ async def generate_bracket(
 @router.post("/{league_id}/bracket/confirm", response_model=LeagueOut)
 async def confirm_bracket(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
     return await LeagueService(db).confirm_bracket(league_id, actor=current)
-
-
-# 부전승 자리 — 관리자가 직접 고른다(요청: "한쪽은 토너먼트, 그 승자가 다른 두 명의
-# 승자와 결승"). 같은 대진 규모라도 부전승을 어느 칸에 두느냐로 그 모양이 갈린다.
-@router.put("/{league_id}/bracket/byes", response_model=LeagueOut)
-async def set_bracket_byes(
-    league_id: int, payload: LeagueBracketByesIn, db: DbSession, current: CurrentAdmin,
-) -> LeagueOut:
-    return await LeagueService(db).set_bracket_byes(league_id, payload, actor=current)
 
 
 @router.put("/{league_id}/bracket/seeding", response_model=LeagueOut)
