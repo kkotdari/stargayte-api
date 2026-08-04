@@ -204,7 +204,12 @@ class ActivityFeedOut(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    # 목록 전체의 줄 수(페이지가 아니라).
     total: int
+    # 활동 낱개의 수 — 줄이 아니라 '건'이다. 한 자리에서 이어 친 경기 아홉 판은 줄로는
+    # 하나지만 건으로는 아홉이라, 필터 바에 적는 건수는 이 값이어야 한다(지적: 묶는 건
+    # 보여주는 방식일 뿐이고 그 안의 판도 각각 한 건이다).
+    total_activities: int = Field(alias="totalActivities")
     items: list[ActivityItemOut]
     # 다음 페이지를 부를 때 그대로 돌려주는 값 — 이 페이지 마지막 줄의 열쇠다. 없으면 끝.
     next_cursor: str | None = Field(default=None, alias="nextCursor")

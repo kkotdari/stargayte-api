@@ -8,6 +8,8 @@
 여기서 지키는 것: ① 최신이 위 ② 한 자리에서 이어 친 게임결과는 한 줄 ③ 번호는 아래에서
 부터(가장 오래된 줄이 1) ④ 화면에 안 뜨는 스냅샷은 세지 않는다.
 """
+import pytest
+
 
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
@@ -354,3 +356,54 @@ async def test_feed_cursor_pointing_at_a_deleted_row_restarts(client):
 async def test_feed_requires_login(client):
     res = await client.get("/api/activity/feed")
     assert res.status_code in (401, 403), res.text
+
+
+@pytest.mark.parametrize("status", ["pending", "confirmed", "done", "expired", "rejected", "canceled"])
+def test_challenge_sort_reads_iso_string_dates(status):
+    """약속한 날은 ChallengeOut에 ISO '문자열'로 담긴다 — date로 넘겨짚으면 안 된다.
+
+    운영에서 활동 목록이 통째로 500이었다('str' object has no attribute 'year').
+    로컬에서 안 잡힌 건 순전히 데이터 탓이다: 개발 DB의 도전장이 전부 폐기 상태라 이
+    함수가 그 갈래에서 먼저 돌아왔고, 아래 e2e 테스트도 지난 날짜를 써서 무응답 폐기
+    배치에 걸려 같은 갈래로 빠졌다. 그래서 상태별로 직접 부른다.
+    """
+    from datetime import UTC, datetime
+
+    from app.domain.activity.service import _challenge_sort_ms
+
+    class C:
+        pass
+
+    c = C()
+    c.status = status
+    c.scheduled_at = None
+    c.created_at = datetime(2026, 4, 1, tzinfo=UTC)
+    c.scheduled_date = "2026-04-05"
+    c.discarded_at = None
+    assert isinstance(_challenge_sort_ms(c, datetime.now(UTC).timestamp() * 1000), float)
+
+
+async def test_feed_with_a_live_scheduled_challenge(client):
+    """앞으로의 날짜가 잡힌 도전장이 목록에 뜬다 — 지난 날짜를 쓰면 무응답 폐기 배치가
+    먼저 걸어가서 날짜를 읽는 갈래를 아예 안 지난다(그래서 이 버그를 못 잡았다)."""
+    from datetime import UTC, datetime, timedelta
+
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    soon = (datetime.now(UTC) + timedelta(days=30)).date().isoformat()
+    res = await client.post(
+        "/api/challenges",
+        headers=_h(a),
+        json={"targetMemberIds": ["bob"], "ownTeamMemberIds": [], "message": "곧 붙자",
+              "scheduledDate": soon},
+    )
+    assert res.status_code in (200, 201), res.text
+
+    res = await client.get("/api/activity/feed", headers=_h(a))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 1, body
+    item = body["items"][0]
+    assert item["kind"] == "challenge"
+    assert item["challenge"]["scheduledDate"] == soon

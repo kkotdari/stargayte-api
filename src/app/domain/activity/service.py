@@ -549,6 +549,8 @@ class ActivityListService:
         has_more = start + limit < total
         return ActivityFeedOut(
             total=total,
+            # 줄이 아니라 '건' — 게임결과 묶음은 그 안의 판 수만큼 센다.
+            total_activities=sum(len(r.ids) for r in rows),
             items=await self._hydrate(page, start=start, total=total, challenges=challenges,
                                       actor=actor, storage=storage),
             next_cursor=page[-1].key if has_more and page else None,
@@ -669,6 +671,29 @@ class ActivityListService:
         ]
 
 
+def _sched_date(value: object) -> date | None:
+    """약속한 날 — ChallengeOut은 이 값을 ISO 문자열로 담는다(to_challenge_out의 isoformat()).
+
+    date가 올 것으로 넘겨짚고 .year를 바로 읽었다가 운영에서 활동 목록이 통째로 500이었다
+    ('str' object has no attribute 'year'). 로컬에서 안 잡힌 건 순전히 데이터 탓이다:
+    개발 DB의 도전장이 전부 폐기 상태라 이 함수가 그 갈래에서 먼저 돌아왔고, 테스트도
+    날짜를 실제로 읽는 갈래까지 가는 것이 없었다.
+
+    모양이 어느 쪽이든 받아 준다 — 문자열이면 파싱하고, 이미 date면 그대로, 못 읽으면
+    None(날짜를 모르는 것과 같게 다룬다). 여기서 예외를 내면 그 한 줄이 목록 전체를 죽인다.
+    """
+    if value is None or isinstance(value, datetime):
+        return value.date() if isinstance(value, datetime) else None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
 def _challenge_sort_ms(c, now_ms: float) -> float:
     """너 나와가 활동 어디에 꽂히나 — 프론트 challengeSortMs와 같은 규칙.
 
@@ -678,20 +703,18 @@ def _challenge_sort_ms(c, now_ms: float) -> float:
     · 결과까지 들어온 것(완료)은 그날 경기들 아래(오전 8시)로 내린다.
     """
     base = _kst(c.scheduled_at or c.created_at).timestamp() * 1000
+    day = _sched_date(c.scheduled_date)
     if c.status in ("pending", "confirmed"):
         end_of_day = (
-            datetime(
-                c.scheduled_date.year, c.scheduled_date.month, c.scheduled_date.day,
-                23, 59, 59, tzinfo=_KST,
-            ).timestamp() * 1000
-            if c.scheduled_date else base
+            datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=_KST).timestamp() * 1000
+            if day else base
         )
         return max(end_of_day, now_ms + 1)
     if c.status == "discarded" and c.discarded_at:
         return _kst(c.discarded_at).timestamp() * 1000
-    if not c.scheduled_date:
+    if day is None:
         return base
     return (
-        datetime(c.scheduled_date.year, c.scheduled_date.month, c.scheduled_date.day, tzinfo=_KST).timestamp() * 1000
+        datetime(day.year, day.month, day.day, tzinfo=_KST).timestamp() * 1000
         + _SESSION_DAY_START_HOUR * 3_600_000
     )
