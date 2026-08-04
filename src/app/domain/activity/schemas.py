@@ -132,45 +132,6 @@ class RankingShiftOut(BaseModel):
     sections: list[RankingShiftSection]
 
 
-class ActivityListRow(BaseModel):
-    """활동 목록 한 줄 — 화면에 보이는 줄 하나에 번호 하나(요청: "한 줄 = 1번").
-
-    내용은 안 싣는다. 카드에 필요한 값은 이미 각 도메인 엔드포인트가 내려 주고 있고,
-    여기서 또 실으면 같은 데이터가 두 벌이 되어 한쪽만 고쳐지는 순간 어긋난다.
-    이 응답이 답하는 건 하나뿐이다 — "그 줄은 전체에서 몇 번째인가".
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    # 화면이 줄을 알아보는 열쇠. 프론트의 rowKeyOf와 같은 꼴이다:
-    #   c-{도전장id} / rs-{스냅샷id} / ms-{묶음 첫 경기id}
-    key: str
-    kind: Literal["challenge", "rankingShift", "gameResultPost"]
-    # 아래에서부터 센 번호(가장 오래된 줄이 1). 위에서 세면 새 활동이 하나 올라올 때마다
-    # 모든 줄의 번호가 밀린다.
-    no: int
-
-
-class ActivityListOut(BaseModel):
-    """활동 화면이 목록을 그리는 데 필요한 것 한 벌 — 줄 번호와 댓글(요청: 단일 API로 통합).
-
-    댓글을 여기 함께 싣는 이유는 두 가지다. 화면 쪽에서 보면 목록 하나를 그리는 데 요청이
-    둘이라 어느 하나가 늦거나 실패하면 목록이 반쯤 그려진 채로 남는다 — 실제로 운영에서
-    그 두 요청이 나란히 500이었다. 서버 쪽에서 보면 둘은 늘 같은 순간의 같은 화면을 위한
-    값이라 따로 받을 이유가 없다.
-
-    카드 내용(경기·도전장·스냅샷)은 여전히 안 싣는다. 그건 저마다 페이지 단위로 나눠
-    받아야 하는 것들이고, 여기 실으면 같은 데이터가 두 벌이 되어 한쪽만 고쳐지는 순간
-    어긋난다.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    total: int
-    rows: list[ActivityListRow]
-    comments: list[ActivityCommentOut] = Field(default_factory=list)
-
-
 class ActivityItemOut(BaseModel):
     """활동 목록의 아이템 하나 — 너 나와·랭크 변동·게임결과를 같은 것으로 취급한다(요청).
 

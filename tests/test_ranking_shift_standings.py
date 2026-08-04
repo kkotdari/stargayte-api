@@ -58,14 +58,14 @@ async def _solo(client, headers, winner: str, loser: str) -> None:
 
 
 async def _recompute(client, headers) -> None:
-    res = await client.post("/api/activity/ranking-shifts/recompute", headers=headers)
+    res = await client.post("/api/activities/ranking-shifts/recompute", headers=headers)
     assert res.status_code == 200, res.text
 
 
 async def _shifts(client, headers, match_type: str = "0101") -> dict[str, dict]:
     """가장 최근 변동 스냅샷의 변동 목록(회원별). 피드 목록은 변동이 실제로 있었던 것만
     내려주므로, 부르는 쪽에서 먼저 기준선(_recompute 1회)을 깔아 둬야 한다."""
-    res = await client.get("/api/activity/ranking-shifts", headers=headers, params={"limit": 50})
+    res = await client.get("/api/activities/ranking-shifts", headers=headers, params={"limit": 50})
     assert res.status_code == 200, res.text
     rows = res.json()
     assert rows, "변동 스냅샷이 남지 않았다"

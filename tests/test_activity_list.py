@@ -1,4 +1,4 @@
-"""활동 목록의 줄 순서와 번호(GET /api/activity/list).
+"""활동 목록의 줄 순서와 번호(GET /api/activities).
 
 화면이 이 값을 직접 셀 수 없어서 서버가 센다(요청). 목록은 세 곳(도전장·게임결과·
 랭크변동)을 시간순으로 섞어 만드는데 어느 한 엔드포인트도 나머지를 모르고, 게임결과는
@@ -55,10 +55,9 @@ async def _register_match(client, headers: dict, day: str) -> dict:
 
 async def test_empty_list(client):
     a = await _signup(client, "alice", "Alice#1001")
-    res = await client.get("/api/activity/list", headers=_h(a))
+    res = await client.get("/api/activities", headers=_h(a))
     assert res.status_code == 200, res.text
-    # 댓글 칸은 비어 있어도 늘 있다 — 없으면 화면이 매번 있는지부터 확인해야 한다.
-    assert res.json() == {"total": 0, "rows": [], "comments": []}
+    assert res.json() == {"total": 0, "totalActivities": 0, "items": [], "nextCursor": None}
 
 
 async def test_same_day_games_collapse_into_one_row(client):
@@ -70,9 +69,9 @@ async def test_same_day_games_collapse_into_one_row(client):
     await _register_match(client, _h(a), "2026-04-01")
     last = await _register_match(client, _h(a), "2026-04-01")
 
-    body = (await client.get("/api/activity/list", headers=_h(a))).json()
+    body = (await client.get("/api/activities", headers=_h(a))).json()
     assert body["total"] == 1, body
-    row = body["rows"][0]
+    row = body["items"][0]
     assert row["kind"] == "gameResultPost"
     assert row["no"] == 1
     # 줄의 열쇠는 묶음의 첫(=가장 최근) 경기다. 시각이 없는 같은 날 경기끼리는 목록을
@@ -91,11 +90,11 @@ async def test_different_days_are_separate_rows_and_numbered_from_the_bottom(cli
     await _register_match(client, _h(a), "2026-04-02")
     await _register_match(client, _h(a), "2026-04-03")
 
-    body = (await client.get("/api/activity/list", headers=_h(a))).json()
+    body = (await client.get("/api/activities", headers=_h(a))).json()
     assert body["total"] == 3, body
     # 최신이 위 → 번호는 위에서부터 3, 2, 1.
-    assert [r["no"] for r in body["rows"]] == [3, 2, 1]
-    assert all(r["kind"] == "gameResultPost" for r in body["rows"])
+    assert [r["no"] for r in body["items"]] == [3, 2, 1]
+    assert all(r["kind"] == "gameResultPost" for r in body["items"])
 
 
 async def test_challenge_and_games_share_one_numbering(client):
@@ -111,13 +110,13 @@ async def test_challenge_and_games_share_one_numbering(client):
     )
     assert res.status_code in (200, 201), res.text
 
-    body = (await client.get("/api/activity/list", headers=_h(a))).json()
+    body = (await client.get("/api/activities", headers=_h(a))).json()
     assert body["total"] == 2, body
-    kinds = [r["no"] for r in body["rows"]]
+    kinds = [r["no"] for r in body["items"]]
     assert kinds == [2, 1]
-    assert {r["kind"] for r in body["rows"]} == {"challenge", "gameResultPost"}
+    assert {r["kind"] for r in body["items"]} == {"challenge", "gameResultPost"}
     # 아직 안 끝난 도전장은 "지금" 위에 서므로 맨 위다.
-    assert body["rows"][0]["kind"] == "challenge"
+    assert body["items"][0]["kind"] == "challenge"
 
 
 async def test_numbers_are_unique_and_contiguous(client):
@@ -128,14 +127,14 @@ async def test_numbers_are_unique_and_contiguous(client):
     for day in ("2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04"):
         await _register_match(client, _h(a), day)
 
-    body = (await client.get("/api/activity/list", headers=_h(a))).json()
-    nos = sorted(r["no"] for r in body["rows"])
+    body = (await client.get("/api/activities", headers=_h(a))).json()
+    nos = sorted(r["no"] for r in body["items"])
     assert nos == list(range(1, body["total"] + 1))
-    assert len({r["key"] for r in body["rows"]}) == body["total"]
+    assert len({r["key"] for r in body["items"]}) == body["total"]
 
 
 async def test_requires_login(client):
-    res = await client.get("/api/activity/list")
+    res = await client.get("/api/activities")
     assert res.status_code in (401, 403), res.text
 
 
@@ -177,13 +176,13 @@ async def test_survives_odd_shapes(client, db_session):
     )
     await db_session.commit()
 
-    res = await client.get("/api/activity/list", headers=_h(a))
+    res = await client.get("/api/activities", headers=_h(a))
     assert res.status_code == 200, res.text
     body = res.json()
-    kinds = sorted(r["kind"] for r in body["rows"])
+    kinds = sorted(r["kind"] for r in body["items"])
     # 도전장 1 + 게임결과 1 + 변동 있는 스냅샷 1 = 3줄(기준선만 있는 스냅샷은 빠진다).
     assert kinds == ["challenge", "gameResultPost", "rankingShift"], body
-    assert sorted(r["no"] for r in body["rows"]) == [1, 2, 3]
+    assert sorted(r["no"] for r in body["items"]) == [1, 2, 3]
 
 
 async def test_survives_legacy_snapshot_sections(client, db_session):
@@ -218,46 +217,18 @@ async def test_survives_legacy_snapshot_sections(client, db_session):
         )
     await db_session.commit()
 
-    res = await client.get("/api/activity/list", headers=_h(a))
+    res = await client.get("/api/activities", headers=_h(a))
     assert res.status_code == 200, res.text
     body = res.json()
     # 옛 줄 셋은 안 뜨고 게임결과 한 줄만 — 번호도 1번 하나다.
     assert body["total"] == 1, body
-    assert [r["no"] for r in body["rows"]] == [1], body
+    assert [r["no"] for r in body["items"]] == [1], body
 
     # 이벤트 목록도 같은 줄에 안 걸려야 한다(같은 잣대를 쓴다).
-    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
     assert res.json() == []
 
-
-async def test_list_carries_comments_too(client):
-    """목록 한 벌은 한 번에 온다(요청: 목록·댓글 단일 API로 통합).
-
-    요청이 둘이면 하나가 늦거나 실패할 때 목록이 반쯤 그려진 채로 남는다 — 실제로 운영에서
-    /activity/list와 /activity/comments/all이 나란히 500이었다.
-    """
-    a = await _signup(client, "alice", "Alice#1001")
-    b = await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
-    mid = (await _register_match(client, _h(a), "2026-04-01"))["id"]
-
-    res = await client.post(
-        "/api/activity/comments",
-        headers=_h(a),
-        json={"targetType": "gameResult", "targetId": mid, "text": "좋은 경기"},
-    )
-    assert res.status_code == 201, res.text
-
-    body = (await client.get("/api/activity/list", headers=_h(a))).json()
-    assert body["total"] == 1, body
-    assert [c["text"] for c in body["comments"]] == ["좋은 경기"], body
-    assert body["comments"][0]["targetType"] == "gameResult"
-    assert body["comments"][0]["targetId"] == mid
-
-    # 옛 경로도 아직 같은 값을 준다 — 프론트/API 배포가 어긋나는 순간을 위해 남겨 뒀다.
-    old = (await client.get("/api/activity/comments/all", headers=_h(a))).json()
-    assert [c["id"] for c in old] == [c["id"] for c in body["comments"]]
 
 
 
@@ -279,13 +250,13 @@ async def test_feed_is_one_list_of_items_with_content_and_comments(client):
     )
     assert res.status_code in (200, 201), res.text
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         json={"targetType": "gameResult", "targetId": mid, "text": "좋은 경기"},
     )
     assert res.status_code == 201, res.text
 
-    body = (await client.get("/api/activity/feed", headers=_h(a))).json()
+    body = (await client.get("/api/activities", headers=_h(a))).json()
     assert body["total"] == 2, body
     assert [i["no"] for i in body["items"]] == [2, 1], body
     assert body["nextCursor"] is None
@@ -319,7 +290,7 @@ async def test_feed_pages_without_gaps_or_repeats(client):
     cursor = None
     for _ in range(10):
         params = {"limit": 2, **({"cursor": cursor} if cursor else {})}
-        body = (await client.get("/api/activity/feed", headers=_h(a), params=params)).json()
+        body = (await client.get("/api/activities", headers=_h(a), params=params)).json()
         nos += [i["no"] for i in body["items"]]
         keys += [i["key"] for i in body["items"]]
         cursor = body["nextCursor"]
@@ -338,7 +309,7 @@ async def test_feed_groups_one_session_into_one_item(client):
     await _approve(client, a["accessToken"], "bob")
     ids = [(await _register_match(client, _h(a), "2026-04-01"))["id"] for _ in range(3)]
 
-    body = (await client.get("/api/activity/feed", headers=_h(a))).json()
+    body = (await client.get("/api/activities", headers=_h(a))).json()
     assert body["total"] == 1, body
     item = body["items"][0]
     assert item["kind"] == "gameResultPost"
@@ -349,12 +320,12 @@ async def test_feed_cursor_pointing_at_a_deleted_row_restarts(client):
     """커서가 가리키던 줄이 사라졌으면 처음부터 준다 — 같은 줄을 다시 받는 편이 조용히
     건너뛰어 목록에 구멍이 나는 것보다 낫다."""
     a = await _signup(client, "alice", "Alice#1001")
-    body = (await client.get("/api/activity/feed", headers=_h(a), params={"cursor": "ms-99999"})).json()
+    body = (await client.get("/api/activities", headers=_h(a), params={"cursor": "ms-99999"})).json()
     assert body["total"] == 0 and body["items"] == []
 
 
 async def test_feed_requires_login(client):
-    res = await client.get("/api/activity/feed")
+    res = await client.get("/api/activities")
     assert res.status_code in (401, 403), res.text
 
 
@@ -400,7 +371,7 @@ async def test_feed_with_a_live_scheduled_challenge(client):
     )
     assert res.status_code in (200, 201), res.text
 
-    res = await client.get("/api/activity/feed", headers=_h(a))
+    res = await client.get("/api/activities", headers=_h(a))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["total"] == 1, body
@@ -410,12 +381,17 @@ async def test_feed_with_a_live_scheduled_challenge(client):
 
 
 async def test_activities_is_the_endpoint(client):
-    """목록은 GET /api/activities다(요청) — 옛 경로는 배포 시차용 별칭으로만 남는다."""
+    """목록은 GET /api/activities다(요청)."""
     a = await _signup(client, "alice", "Alice#1001")
-    for path in ("/api/activities", "/api/activity/feed", "/api/feed/feed"):
-        res = await client.get(path, headers=_h(a))
-        assert res.status_code == 200, (path, res.text)
-        assert res.json() == {"total": 0, "totalActivities": 0, "items": [], "nextCursor": None}
+    res = await client.get("/api/activities", headers=_h(a))
+    assert res.status_code == 200, res.text
+    assert res.json() == {"total": 0, "totalActivities": 0, "items": [], "nextCursor": None}
+    # 옛 경로는 지웠다 — 프론트가 새 경로로 넘어간 뒤라 남겨 둘 이유가 없다(요청).
+    assert (await client.get("/api/activity/feed", headers=_h(a))).status_code == 404
+    assert (await client.get("/api/activities/list", headers=_h(a))).status_code == 404
+    # 댓글 일괄 조회도 지웠다 — 이제 목록 응답 안에 댓글이 들어 있다. 이 주소는
+    # /comments/{comment_id} 자리에만 걸려(GET 핸들러가 없어) 405로 답한다.
+    assert (await client.get("/api/activities/comments/all", headers=_h(a))).status_code == 405
 
 
 def test_comment_tables_are_named_for_activity():

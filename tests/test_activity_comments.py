@@ -56,7 +56,7 @@ async def test_activity_comment_crud_on_match(client):
 
     # 작성(언급 포함).
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         json={"targetType": "gameResult", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
     )
@@ -69,7 +69,7 @@ async def test_activity_comment_crud_on_match(client):
 
     # 대상별 조회.
     res = await client.get(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(b),
         params={"targetType": "gameResult", "targetId": mid},
     )
@@ -82,23 +82,23 @@ async def test_activity_comment_crud_on_match(client):
     # 작성자 아닌 회원의 수정은 거부된다.
     cid = comment["id"]
     res = await client.patch(
-        f"/api/activity/comments/{cid}", headers=_h(b), json={"text": "고쳐쓰기"},
+        f"/api/activities/comments/{cid}", headers=_h(b), json={"text": "고쳐쓰기"},
     )
     assert res.status_code == 403
 
     # 작성자 본인 수정.
     res = await client.patch(
-        f"/api/activity/comments/{cid}", headers=_h(a), json={"text": "정정합니다"},
+        f"/api/activities/comments/{cid}", headers=_h(a), json={"text": "정정합니다"},
     )
     assert res.status_code == 200
     assert res.json()["text"] == "정정합니다"
 
     # 작성자 본인 삭제.
-    res = await client.delete(f"/api/activity/comments/{cid}", headers=_h(a))
+    res = await client.delete(f"/api/activities/comments/{cid}", headers=_h(a))
     assert res.status_code == 204
 
     res = await client.get(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         params={"targetType": "gameResult", "targetId": mid},
     )
@@ -120,7 +120,7 @@ async def test_activity_comment_edit_keeps_same_mention(client):
     mid = match["id"]
 
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         json={"targetType": "gameResult", "targetId": mid, "text": "@bob 좋은 경기!", "targetMemberIds": ["bob"]},
     )
@@ -129,7 +129,7 @@ async def test_activity_comment_edit_keeps_same_mention(client):
 
     # 같은 언급 유지 — 예전 버그 재현 지점.
     res = await client.patch(
-        f"/api/activity/comments/{cid}",
+        f"/api/activities/comments/{cid}",
         headers=_h(a),
         json={"text": "@bob 수정했어요", "targetMemberIds": ["bob"]},
     )
@@ -138,7 +138,7 @@ async def test_activity_comment_edit_keeps_same_mention(client):
 
     # 언급 제거.
     res = await client.patch(
-        f"/api/activity/comments/{cid}",
+        f"/api/activities/comments/{cid}",
         headers=_h(a),
         json={"text": "언급 없앰", "targetMemberIds": []},
     )
@@ -147,7 +147,7 @@ async def test_activity_comment_edit_keeps_same_mention(client):
 
     # 다른 유저로 언급 교체.
     res = await client.patch(
-        f"/api/activity/comments/{cid}",
+        f"/api/activities/comments/{cid}",
         headers=_h(a),
         json={"text": "@choi 로 바꿈", "targetMemberIds": ["choi"]},
     )
@@ -170,14 +170,14 @@ async def test_activity_comment_on_challenge_target(client):
     challenge_id = res.json()["id"]
 
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(b),
         json={"targetType": "challenge", "targetId": challenge_id, "text": "기대되는 매치"},
     )
     assert res.status_code == 201, res.text
 
     res = await client.get(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         params={"targetType": "challenge", "targetId": challenge_id},
     )
@@ -227,7 +227,7 @@ async def test_register_no_longer_creates_snapshot(client):
 
     m1 = await _register_match_today(client, _h(a))
     assert m1["id"]  # 등록 자체는 정상
-    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
     assert res.json() == []
 
@@ -242,14 +242,14 @@ async def test_daily_recompute_first_run_is_silent_baseline(client):
 
     await _register_match_today(client, _h(a))
     await _recompute(client)
-    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.json() == []  # 기준선만 깔린다
 
     # 그다음 경기부터는 이 기준선과 비교돼 변동이 잡힌다 — 아무도 '신규'가 아니다.
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     events = res.json()
     assert len(events) >= 1
     assert events[0]["reason"] == "daily"
@@ -273,7 +273,7 @@ async def test_shift_carries_point_change(client):
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
 
-    events = (await client.get("/api/activity/ranking-shifts", headers=_h(a))).json()
+    events = (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json()
     shifts = [s for ev in events for sec in ev["sections"] for s in sec["shifts"]]
     assert shifts
     assert all(s["fromPoints"] is not None and s["toPoints"] is not None for s in shifts)
@@ -290,10 +290,10 @@ async def test_daily_recompute_is_idempotent(client):
     await _recompute(client)
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    before = (await client.get("/api/activity/ranking-shifts", headers=_h(a))).json()
+    before = (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json()
 
     await _recompute(client)  # 경기 변화 없이 한 번 더
-    after = (await client.get("/api/activity/ranking-shifts", headers=_h(a))).json()
+    after = (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json()
     assert [e["id"] for e in after] == [e["id"] for e in before]
 
 
@@ -345,13 +345,13 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
 
     await _register_match_today(client, _h(a))
     await _recompute(client)
-    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.json() == []  # 월초 '전원 신규' 카드가 뜨지 않는다
 
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    events = (await client.get("/api/activity/ranking-shifts", headers=_h(a))).json()
+    events = (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json()
     assert len(events) >= 1
     assert all(
         s["from"] is not None
@@ -371,12 +371,12 @@ async def test_activity_comment_on_rankshift_target(client):
     await _register_match_today(client, _h(a), result="team2")
     await _register_match_today(client, _h(a), result="team2")
     await _recompute(client)
-    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
     snap_id = res.json()[0]["id"]
 
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         json={
             "targetType": "rankingShift", "targetId": snap_id,
@@ -388,7 +388,7 @@ async def test_activity_comment_on_rankshift_target(client):
     assert created["targetType"] == "rankingShift"
 
     res = await client.get(
-        f"/api/activity/comments?targetType=rankingShift&targetId={snap_id}", headers=_h(a)
+        f"/api/activities/comments?targetType=rankingShift&targetId={snap_id}", headers=_h(a)
     )
     assert res.status_code == 200, res.text
     listed = res.json()
@@ -398,7 +398,7 @@ async def test_activity_comment_on_rankshift_target(client):
     # 이름을 통일하기 전 값(rankshift)으로 물어봐도 같은 댓글이 나와야 한다 — 프론트와
     # 백엔드 배포가 어긋나는 순간에 옛 프론트가 옛 값을 보낼 수 있다.
     res = await client.get(
-        f"/api/activity/comments?targetType=rankshift&targetId={snap_id}", headers=_h(a)
+        f"/api/activities/comments?targetType=rankshift&targetId={snap_id}", headers=_h(a)
     )
     assert res.status_code == 200, res.text
     assert [c["id"] for c in res.json()] == [created["id"]]
@@ -413,7 +413,7 @@ async def test_legacy_target_type_is_normalized(client):
     mid = match["id"]
 
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         json={"targetType": "match", "targetId": mid, "text": "옛 이름으로 달린 댓글"},
     )
@@ -421,7 +421,7 @@ async def test_legacy_target_type_is_normalized(client):
     assert res.json()["targetType"] == "gameResult"
 
     res = await client.get(
-        "/api/activity/comments", headers=_h(b),
+        "/api/activities/comments", headers=_h(b),
         params={"targetType": "gameResult", "targetId": mid},
     )
     assert res.status_code == 200, res.text
@@ -446,26 +446,17 @@ async def test_challenge_delete_admin_only(client):
 
     # 운영자(첫 가입자)는 삭제 가능 — 달린 피드 댓글도 함께 사라진다.
     await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(b),
         json={"targetType": "challenge", "targetId": cid, "text": "곧 사라질 댓글"},
     )
     res = await client.delete(f"/api/challenges/{cid}", headers=_h(a))
     assert res.status_code == 204
     res = await client.get(
-        "/api/activity/comments", headers=_h(a),
+        "/api/activities/comments", headers=_h(a),
         params={"targetType": "challenge", "targetId": cid},
     )
     assert res.json() == []
-
-
-async def test_legacy_feed_prefix_still_answers(client) -> None:
-    """옛 경로(/api/feed/...)도 그대로 받는다 — 프론트와 서버는 따로 배포되므로 새 서버가
-    먼저 뜨는 동안 아직 옛 프론트가 이 주소를 부른다(api/router.py 주석 참고). 이 별칭을
-    지우려면 이 테스트부터 지워야 한다는 표시이기도 하다."""
-    tok = await _signup(client, "legacy1", "레거시#1")
-    res = await client.get("/api/feed/comments/all", headers=_h(tok))
-    assert res.status_code == 200, res.text
 
 
 async def test_legacy_target_type_rows_are_still_found(client, db_session):
@@ -485,7 +476,7 @@ async def test_legacy_target_type_rows_are_still_found(client, db_session):
 
     # 새 이름으로 한 건 남긴다.
     res = await client.post(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         json={"targetType": "gameResult", "targetId": mid, "text": "새 이름"},
     )
@@ -503,7 +494,7 @@ async def test_legacy_target_type_rows_are_still_found(client, db_session):
     await db_session.commit()
 
     res = await client.get(
-        "/api/activity/comments",
+        "/api/activities/comments",
         headers=_h(a),
         params={"targetType": "gameResult", "targetId": mid},
     )
@@ -514,40 +505,3 @@ async def test_legacy_target_type_rows_are_still_found(client, db_session):
     # 내보낼 때는 둘 다 새 이름으로 통일된다.
     assert {c["targetType"] for c in items} == {"gameResult"}
 
-
-async def test_all_comments_survive_an_unknown_target_type(client, db_session):
-    """지금 안 쓰는 대상 종류로 저장된 줄 하나가 전체 목록을 죽이면 안 된다.
-
-    대상 종류는 그냥 문자열 칸이라 무엇이든 들어갈 수 있는데, 내보내는 스키마는 셋 중
-    하나만 받는다 — 운영 DB에 남아 있던 옛 이름 한 줄 때문에 GET /activity/comments/all이
-    통째로 500이었고, 그래서 활동 화면의 댓글 미리받기가 매번 실패했다. 그 줄만 빠지고
-    나머지는 그대로 나와야 한다.
-    """
-    from sqlalchemy import text
-
-    a = await _signup(client, "alice", "Alice#1001")
-    b = await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
-    mid = (await _register_match(client, _h(a)))["id"]
-
-    res = await client.post(
-        "/api/activity/comments",
-        headers=_h(a),
-        json={"targetType": "gameResult", "targetId": mid, "text": "멀쩡한 댓글"},
-    )
-    assert res.status_code == 201, res.text
-
-    await db_session.execute(
-        text(
-            "INSERT INTO activity_comments (target_type, target_id, text, created_by, updated_by,"
-            " created_at, updated_at)"
-            " SELECT 'post', :mid, '없어진 종류', pk, pk, created_at, created_at FROM members WHERE id = 'alice'"
-        ),
-        {"mid": mid},
-    )
-    await db_session.commit()
-
-    res = await client.get("/api/activity/comments/all", headers=_h(a))
-    assert res.status_code == 200, res.text
-    items = res.json()
-    assert [c["text"] for c in items] == ["멀쩡한 댓글"], items

@@ -515,23 +515,6 @@ class ActivityListService:
             i = j
         return rows, challenges
 
-    async def list_rows(self, *, actor: Member) -> "ActivityListOut":
-        """줄 번호와 댓글만 — 내용은 안 싣는 옛 응답.
-
-        내용까지 함께 주는 list_feed가 생긴 뒤로는 이 경로를 프론트가 쓰지 않지만,
-        프론트와 API가 동시에 배포되지 않으므로 한동안 남겨 둔다.
-        """
-        from app.domain.activity.schemas import ActivityListOut, ActivityListRow
-
-        rows, _ = await self._ordered_rows(actor=actor)
-        total = len(rows)
-        return ActivityListOut(
-            total=total,
-            # 아래에서부터 센다 — 위에서 세면 새 활동이 하나 올라올 때마다 모든 줄이 밀린다.
-            rows=[ActivityListRow(key=r.key, kind=r.kind, no=total - idx) for idx, r in enumerate(rows)],
-            comments=await ActivityCommentService(self._session).list_all(actor=actor),
-        )
-
     async def list_feed(
         self, *, actor: Member, storage, cursor: str | None, limit: int,
     ) -> "ActivityFeedOut":
