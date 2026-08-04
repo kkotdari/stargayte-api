@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.domain.activity.models import ActivityComment, ActivityCommentMention, RankingShift
 from app.domain.activity.repository import ActivityCommentRepository
@@ -226,6 +227,11 @@ class RankingShiftService:
     async def list_events(self, limit: int) -> list[RankingShiftOut]:
         """활동에 보여줄 이벤트 — 변동(shifts)이 실제로 있었던 스냅샷만."""
         from sqlalchemy import select
+
+        # 기능이 꺼져 있으면 남아 있는 행이 있어도 카드로 내보내지 않는다(요청) — 끄는 것과
+        # 지우는 것은 다른 일이라, 저장된 행은 그대로 두고 화면에서만 사라지게 한다.
+        if not settings.ranking_shift_enabled:
+            return []
 
         stmt = select(RankingShift).order_by(RankingShift.created_at.desc()).limit(limit * 3)
         rows = list((await self._session.scalars(stmt)).all())
@@ -661,6 +667,9 @@ class ActivityListService:
         """
         from sqlalchemy import select
 
+        # 카드가 안 나가면 번호를 먹을 줄도 없다 — list_events와 같은 잣대다(위 주석).
+        if not settings.ranking_shift_enabled:
+            return []
         # created_at 내림차순 — list_events가 내려주는 순서와 같게(위 entries.sort 주석).
         result = await self._session.execute(
             select(RankingShift.id, RankingShift.created_at, RankingShift.sections)

@@ -510,6 +510,9 @@ async def _seed_ranking_shifts() -> None:
     from app.db.session import AsyncSessionLocal
     from app.domain.activity.service import RankingShiftService
 
+    # 기능이 꺼져 있으면 기준선도 안 깐다(요청) — 손으로 비운 표가 다음 부팅에 다시 찬다.
+    if not settings.ranking_shift_enabled:
+        return
     try:
         async with AsyncSessionLocal() as session:
             await RankingShiftService(session).seed_if_empty(await _rank_entries_computer(session))
@@ -575,6 +578,11 @@ async def _ranking_shift_scheduler() -> None:
     from app.domain.activity.service import RankingShiftService
 
     log = logging.getLogger(__name__)
+    # 꺼져 있으면 루프를 아예 안 돈다(요청) — 여기서 막아 두면 부르는 쪽(lifespan)이 켜짐
+    # 여부를 몰라도 되고, 스케줄러를 직접 부르는 테스트도 그대로 이 규칙을 따른다.
+    if not settings.ranking_shift_enabled:
+        log.info("랭크 변동 집계가 꺼져 있어 스케줄러를 띄우지 않는다")
+        return
     # 이 프로세스에서 마지막으로 집계를 마친 구간. DB만 보면 안 되는 이유: 순위표가 그대로인
     # 구간은 recompute_daily가 아무 행도 남기지 않으므로 '아직 안 했다'로 계속 읽혀 10분마다
     # 헛돌게 된다.

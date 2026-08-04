@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
+from app.core.config import settings
 from app.domain.activity.schemas import (
     ActivityCommentCreate,
     ActivityCommentOut,
@@ -89,6 +90,8 @@ async def list_ranking_shifts(
 async def recompute_ranking_shifts(db: DbSession, current: CurrentAdmin) -> RankingRecomputeResult:
     from app.main import _rank_entries_computer
 
+    _require_ranking_shift_enabled()
+
     service = RankingShiftService(db)
     before = await service.latest_snapshot_at()
     await service.recompute_daily(await _rank_entries_computer(db))
@@ -104,4 +107,18 @@ async def recompute_ranking_shifts(db: DbSession, current: CurrentAdmin) -> Rank
 async def reseed_ranking_shifts(db: DbSession, current: CurrentAdmin) -> dict[str, int]:
     from app.main import _rank_entries_computer
 
+    _require_ranking_shift_enabled()
     return await RankingShiftService(db).reseed_now(await _rank_entries_computer(db))
+
+
+def _require_ranking_shift_enabled() -> None:
+    """랭크 변동을 쓰는 손잡이들의 공통 관문 — 꺼져 있으면 아무 행도 남기지 않는다(요청).
+
+    조용히 성공한 척하지 않고 막는 이유는, 누른 사람이 "돌았는데 카드가 안 뜬다"로 읽으면
+    그 다음에 찾아볼 곳이 없어서다. 화면에서도 이 버튼들을 감추지만, 서버가 마지막 문이다.
+    """
+    if not settings.ranking_shift_enabled:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "랭크 변동 집계가 꺼져 있습니다(RANKING_SHIFT_ENABLED).",
+        )

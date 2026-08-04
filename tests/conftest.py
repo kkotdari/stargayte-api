@@ -15,6 +15,10 @@ os.environ["PUBLIC_BASE_URL"] = "http://testserver"
 # 테스트가 검증하는 건 해시 강도가 아니라 "맞는 비밀번호는 통과하고 틀린 건 막힌다"라
 # 라운드 수와 무관하다. 운영 기본값(12)은 Settings에 그대로 있고 여기서만 덮는다.
 os.environ["PASSWORD_HASH_ROUNDS"] = "4"
+# 랭크 변동은 운영에서 꺼 두었지만(요청: 지금 구조가 깔끔하지 않아 일단 멈춘다) 기계 자체는
+# 그대로 있다 — 여기서 켜 두어야 그 기계를 검사하는 테스트들이 계속 제 일을 한다. 꺼진 쪽
+# 동작은 이 값을 그 테스트 안에서 되돌려 따로 본다(test_ranking_shift_disabled.py).
+os.environ["RANKING_SHIFT_ENABLED"] = "true"
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
