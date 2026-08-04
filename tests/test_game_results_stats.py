@@ -89,16 +89,19 @@ async def test_stats_aggregates_exact_numbers(client):
         "avgApm": 110, "avgEapm": 85, "avgCmd": 52, "avgEcmd": 41, "avgBuild": 32,
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
+        "upPlays": None,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 50, "avgEcmd": 40, "avgBuild": 30,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
+        "upPlays": None,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
+        "upPlays": None,
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -109,6 +112,7 @@ async def test_stats_aggregates_exact_numbers(client):
         "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 70, "avgEapm": 55, "avgCmd": 32, "avgEcmd": 22, "avgBuild": 16,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
+        "upPlays": None,
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -434,6 +438,7 @@ async def test_stats_race_filter_scopes_overall(client):
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
+        "upPlays": None,
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -449,6 +454,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
         "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
+        "upPlays": None,
     }
     assert entry["mostPlayedRace"] is None
 
@@ -611,17 +617,17 @@ async def test_stats_sums_build_mix_across_matches(client):
     )
     await _create_match(
         client, headers, "2026-07-01",
-        team1=[s1], team2=[_slot("player02", "저그")], result="team1", duration_seconds=900,
+        team1=[s1], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
     )
     await _create_match(
         client, headers, "2026-07-02",
-        team1=[s2], team2=[_slot("player02", "저그")], result="team1", duration_seconds=900,
+        team1=[s2], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
     )
     # 최소 판수(개인전 3판)를 채워야 지표가 나온다 — 구성도 지표라 같은 문을 지난다.
     s3 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     await _create_match(
         client, headers, "2026-07-03",
-        team1=[s3], team2=[_slot("player02", "저그")], result="team1", duration_seconds=900,
+        team1=[s3], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
     )
 
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
@@ -638,18 +644,83 @@ async def test_stats_sums_build_mix_across_matches(client):
         # 구간 커맨드 수도 합계로 쌓인다 — 도넛 옆 분당 값의 분자다.
         core_build=16, core_unit=54,
         # 이름별 분모는 '그 이름이 나온 경기들의 총 길이'다 — 주요시간대(600초)가 아니라
-        # 경기 전체 길이(900초)를 쓴다(요청: Top5는 전체 경기 기준이라 분자와 자를 맞춘다).
-        # 두 판 다 900초라 배럭은 1800, 첫 판에만 나온 벙커는 900이다.
-        building_secs={"Barracks": 1800, "Bunker": 900, "Starport": 900},
-        unit_secs={"Marine": 1800, "Siege Tank (Tank Mode)": 900, "Wraith": 900},
-        skill_secs={"Stim Packs": 1800, "Yamato Gun": 900},
+        # 경기 전체 길이(1500초)를 쓴다(요청: Top5는 전체 경기 기준이라 분자와 자를 맞춘다).
+        # 두 판 다 1500초라 배럭은 3000, 첫 판에만 나온 벙커는 1500이다.
+        building_secs={"Barracks": 3000, "Bunker": 1500, "Starport": 1500},
+        unit_secs={"Marine": 3000, "Siege Tank (Tank Mode)": 1500, "Wraith": 1500},
+        skill_secs={"Stim Packs": 3000, "Yamato Gun": 1500},
     )
     # 두 분모도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸고, 그 두 판의 주요시간대는
     # 600초씩이다(경기 길이 900초와 다르다 — 분당 지표의 분모는 주요시간대 쪽이다).
     assert overall["mixPlays"] == 2
     assert overall["mixSeconds"] == 1200
+    # 공/방/실드만의 분모 — 두 판 다 25분이라 20분 문턱을 넘어 둘 다 셌다.
+    assert overall["upPlays"] == 2
     # 구성이 실린 경기는 둘뿐이다 — 없는 경기까지 세면 초반 일꾼이 실제보다 낮아진다.
     assert overall["avgWorker5"] == 11.0
+
+
+async def test_stats_upgrade_average_skips_short_and_dataless_matches(client):
+    """공/방/실드 평균은 '충분히 긴 경기'만 센다.
+
+    3단계까지 올리는 데 필요한 연구 시간만 11분이 넘어서, 짧은 판은 구조적으로 3이 될 수
+    없다 — 그런 판을 분모에 넣으면 평균이 실제보다 낮게 나온다(지적: 공방업이 너무 낮게
+    나온다). 업그레이드 값을 아예 안 실은 옛 기록을 빼는 규칙은 아래 단위 테스트에서 본다
+    (지금 저장 경로는 스키마 기본값 0을 채우므로 API로는 그 상태를 만들 수 없다)."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    # (1) 25분 — 세는 판. 3-3까지 올렸다.
+    long_slot = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    long_slot["buildMix"] = _mix(b_prod=10, up_gw=3, up_ga=3, core_seconds=600)
+    await _create_match(
+        client, headers, "2026-07-01",
+        team1=[long_slot], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
+    )
+    # (2) 10분 — 짧아서 안 센다. 여기 값이 분모에 얹히면 평균이 절반으로 깎인다.
+    short_slot = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    short_slot["buildMix"] = _mix(b_prod=10, up_gw=0, up_ga=0, core_seconds=300)
+    await _create_match(
+        client, headers, "2026-07-02",
+        team1=[short_slot], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+    )
+    # (3) 표본 문턱(개인전 3판)을 채우는 판 하나 — 25분이지만 업그레이드는 안 올렸다.
+    plain = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    plain["buildMix"] = _mix(b_prod=10, core_seconds=600)
+    await _create_match(
+        client, headers, "2026-07-03",
+        team1=[plain], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    overall = res.json()["members"][0]["overall"]
+    # 구성 자체는 세 판 다 실렸다 — 도넛·Top5의 분모는 그대로 셋이다.
+    assert overall["mixPlays"] == 3
+    # 그러나 공/방은 20분을 넘긴 두 판만 센다 — 10분짜리 (2)는 분모에서 빠진다.
+    # 그 판까지 세면 3+0+0을 셋으로 나눠 1.0이 되어 실제(1.5)보다 낮게 나온다.
+    assert overall["upPlays"] == 2
+    assert overall["buildMix"]["upGw"] == 3
+    assert overall["buildMix"]["upGa"] == 3
+
+
+def test_build_mix_agg_skips_records_without_upgrade_keys():
+    """업그레이드 값을 아예 안 실은 옛 기록은 공/방 분모에서 뺀다 — 0으로 세면 평균이
+    그만큼 깎인다(실측: 한 사람의 열네 판 중 여섯 판이 그런 기록이었다). 지금 저장 경로는
+    스키마 기본값으로 0을 채우므로, 그 시절 모양을 직접 만들어 집계 함수에 넣어 본다."""
+    from app.domain.game_results.service import _build_mix_agg
+
+    class _Row:
+        def __init__(self, mix, dur):
+            self.build_mix = mix
+            self.duration_seconds = dur
+
+    full = {"b_prod": 10, "core_seconds": 600, "up_gw": 3, "up_ga": 3, "up_aw": 0, "up_aa": 0, "up_sh": 0}
+    legacy = {"b_prod": 10, "core_seconds": 600}  # 그 시절엔 up_* 키 자체가 없었다
+    out = _build_mix_agg([_Row(full, 1500), _Row(legacy, 1500)])
+    assert out["mix_plays"] == 2      # 도넛·Top5는 두 판 다 센다
+    assert out["up_plays"] == 1       # 공/방은 값을 실은 한 판만
+    assert out["build_mix"].up_gw == 3
 
 
 async def test_stats_build_mix_is_none_without_replay_matches(client):

@@ -456,6 +456,11 @@ class RaceStatsEntry(BaseModel):
     mix_plays: int | None = Field(default=None, alias="mixPlays")
     # 구성이 실린 경기들의 총 길이(초) — 10분당 값으로 되돌릴 분모다.
     mix_seconds: int | None = Field(default=None, alias="mixSeconds")
+    # 공/방/실드 평균 단계만의 분모 — 위 mix_plays와 따로 둔다(요청: 일정 시간 이상 경기만).
+    # 3단계까지 올리는 데 필요한 연구 시간만 11분이 넘어서, 짧은 판은 구조적으로 3이 될 수
+    # 없다. 그런 판까지 분모에 넣으면 평균이 실제 실력보다 낮게 나온다(지적).
+    # 업그레이드 값을 아예 안 실은 옛 기록도 여기서 빠진다 — 0으로 세면 같은 이유로 깎인다.
+    up_plays: int | None = Field(default=None, alias="upPlays")
 
 
 class MemberStatsEntry(BaseModel):

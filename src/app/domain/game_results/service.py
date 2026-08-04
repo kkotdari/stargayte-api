@@ -227,13 +227,19 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
 # 생산 구성 합계(요청: 도넛 셋 + 초반 일꾼) — 경기마다 비율을 내서 평균 내지 않고 통째로
 # 더한다. 3분짜리 판과 40분짜리 판의 비율을 같은 무게로 섞으면 짧은 판 한 번이 그 사람의
 # 그림을 흔들기 때문이다. 초반 일꾼만은 '경기당 몇 기'라야 뜻이 서서 따로 나눠 낸다.
+# 공/방/실드는 다른 항목과 분모가 다르다(아래 _UPGRADE_FIELDS) — 여기서는 뺀다.
 _BUILD_MIX_FIELDS = (
     "b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air", "worker5",
-    "up_gw", "up_ga", "up_aw", "up_aa", "up_sh",
     # 주요시간대 안에서만 센 건물·유닛 커맨드 수 — 도넛 옆 "분당 몇 채/몇 기"의 분자다.
     # 위 구성비 항목들과 자가 다르다: 그쪽은 경기 전체, 이쪽은 주요시간대(요청).
     "core_build", "core_unit",
 )
+# 공/방/실드 단계 — 이것만 '충분히 긴 경기'에서만 센다(요청: 일정 시간 이상 경기 대상).
+# 브루드워에서 한 줄을 3단계까지 올리는 연구 시간만 11분이 넘고, 그 연구는 건물과 가스가
+# 갖춰진 뒤에야 시작된다 — 20분이 안 되는 판은 구조적으로 3이 나올 수 없어서, 분모에 넣으면
+# 평균이 실제보다 낮게 나온다(지적: 공방업이 너무 낮게 나온다).
+_UPGRADE_FIELDS = ("up_gw", "up_ga", "up_aw", "up_aa", "up_sh")
+_MIN_UPGRADE_SECONDS = 20 * 60
 # 사전으로 쌓이는 갈래(건물·유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
 # 값과 함께 '그 이름이 나온 경기들의 길이 합'도 센다 — 화면이 총합을 이 시간으로 나눠 분당
 # 값을 낸다(요청). 그 이름이 안 나온 판의 시간은 안 얹는다: 얹으면 프로토스만 쓰는 기술의
@@ -246,11 +252,15 @@ _BUILD_MIX_TALLIES = {"buildings": "building_secs", "units": "unit_secs", "skill
 def _build_mix_agg(rows: list) -> dict[str, object]:
     mixed = [r for r in rows if getattr(r, "build_mix", None)]
     if not mixed:
-        return {"build_mix": None, "avg_worker5": None, "mix_plays": None, "mix_seconds": None}
-    total: dict[str, object] = {f: 0 for f in _BUILD_MIX_FIELDS}
+        return {
+            "build_mix": None, "avg_worker5": None,
+            "mix_plays": None, "mix_seconds": None, "up_plays": None,
+        }
+    total: dict[str, object] = {f: 0 for f in (*_BUILD_MIX_FIELDS, *_UPGRADE_FIELDS)}
     tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
     tallies.update({k: {} for k in _BUILD_MIX_TALLIES.values()})
     seconds = 0
+    up_plays = 0
     for r in mixed:
         m = r.build_mix
         # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
@@ -269,6 +279,13 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
             v = m.get(f)
             if isinstance(v, (int, float)) and v >= 0:
                 total[f] = int(total[f]) + int(v)  # type: ignore[arg-type]
+        # 공/방/실드는 충분히 긴 경기만, 그리고 그 값을 실제로 실은 기록만 센다.
+        # 값을 안 실은 옛 기록(재분석 전)을 0으로 세면 평균이 그만큼 깎인다 — 실측으로
+        # 그런 기록이 한 사람의 절반 가까이였다.
+        if all(isinstance(m.get(f), (int, float)) for f in _UPGRADE_FIELDS) and full >= _MIN_UPGRADE_SECONDS:
+            up_plays += 1
+            for f in _UPGRADE_FIELDS:
+                total[f] = int(total[f]) + int(m[f])  # type: ignore[arg-type,index]
         for t, secs_key in _BUILD_MIX_TALLIES.items():
             d = m.get(t)
             if not isinstance(d, dict):
@@ -287,6 +304,8 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
         # 화면이 하고 서버는 분모만 준다.
         "mix_plays": len(mixed),
         "mix_seconds": seconds or None,
+        # 공/방/실드만의 분모 — 조건을 넘긴 판이 하나도 없으면 None이라 화면이 그 칸을 비운다.
+        "up_plays": up_plays or None,
     }
 
 
@@ -479,7 +498,10 @@ def _gate_metrics_by_plays(entry: RaceStatsEntry, min_plays: int) -> RaceStatsEn
     }
     # 생산 구성도 지표다 — 표본이 모자라면 같이 내린다(안 그러면 한 판만 뛴 사람의 도넛이
     # 다른 지표는 '-'인 채로 혼자 그려진다).
-    blanks.update({"build_mix": None, "avg_worker5": None, "mix_plays": None, "mix_seconds": None})
+    blanks.update({
+        "build_mix": None, "avg_worker5": None,
+        "mix_plays": None, "mix_seconds": None, "up_plays": None,
+    })
     return entry.model_copy(update=blanks)
 
 
