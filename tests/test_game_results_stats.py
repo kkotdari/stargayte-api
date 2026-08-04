@@ -570,6 +570,7 @@ def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
     building_secs=None, unit_secs=None, skill_secs=None, core_seconds=None, core_cmd=0,
+    core_build=0, core_unit=0,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
@@ -579,8 +580,11 @@ def _mix(
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
         "buildingSecs": building_secs or {}, "unitSecs": unit_secs or {},
         "skillSecs": skill_secs or {},
-        # 주요시간대(초) — 이름별 시간의 분모다. 파서가 경기마다 재서 실어 보낸다.
+        # 주요시간대(초)와 그 구간 안의 커맨드 수 — 도넛 옆 "분당 몇 채/몇 기"의 분모와
+        # 분자다. 파서가 경기마다 재서 실어 보낸다. 위 도넛 구성비·Top5 원장은 경기 전체로
+        # 세므로 자가 다르다(요청).
         "coreSeconds": core_seconds, "coreCmd": core_cmd,
+        "coreBuild": core_build, "coreUnit": core_unit,
     }
 
 
@@ -596,28 +600,28 @@ async def test_stats_sums_build_mix_across_matches(client):
         b_prod=20, b_def=5, u_basic=60, u_adv=10, u_caster=2, u_ground=65, u_air=7,
         worker5=14, up_gw=3, up_ga=2, up_aw=1, up_aa=0,
         buildings={"Barracks": 4, "Bunker": 2}, units={"Marine": 40, "Siege Tank (Tank Mode)": 6},
-        skills={"Stim Packs": 12}, core_seconds=600,
+        skills={"Stim Packs": 12}, core_seconds=600, core_build=9, core_unit=31,
     )
     s2 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     s2["buildMix"] = _mix(
         b_prod=10, b_def=15, u_basic=20, u_adv=30, u_caster=8, u_ground=40, u_air=18,
         worker5=8, up_gw=2, up_ga=1, up_aw=3, up_aa=2,
         buildings={"Barracks": 3, "Starport": 1}, units={"Marine": 25, "Wraith": 9},
-        skills={"Stim Packs": 5, "Yamato Gun": 3}, core_seconds=600,
+        skills={"Stim Packs": 5, "Yamato Gun": 3}, core_seconds=600, core_build=7, core_unit=23,
     )
     await _create_match(
         client, headers, "2026-07-01",
-        team1=[s1], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+        team1=[s1], team2=[_slot("player02", "저그")], result="team1", duration_seconds=900,
     )
     await _create_match(
         client, headers, "2026-07-02",
-        team1=[s2], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+        team1=[s2], team2=[_slot("player02", "저그")], result="team1", duration_seconds=900,
     )
     # 최소 판수(개인전 3판)를 채워야 지표가 나온다 — 구성도 지표라 같은 문을 지난다.
     s3 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     await _create_match(
         client, headers, "2026-07-03",
-        team1=[s3], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
+        team1=[s3], team2=[_slot("player02", "저그")], result="team1", duration_seconds=900,
     )
 
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
@@ -631,13 +635,17 @@ async def test_stats_sums_build_mix_across_matches(client):
         buildings={"Barracks": 7, "Bunker": 2, "Starport": 1},
         units={"Marine": 65, "Siege Tank (Tank Mode)": 6, "Wraith": 9},
         skills={"Stim Packs": 17, "Yamato Gun": 3},
-        # 이름별 분모는 '그 이름이 나온 경기들의 총 길이'다 — 두 판 다 600초라 배럭은 1200,
-        # 첫 판에만 나온 벙커는 600이다. 화면은 이 시간으로 10분당 값을 낸다.
-        building_secs={"Barracks": 1200, "Bunker": 600, "Starport": 600},
-        unit_secs={"Marine": 1200, "Siege Tank (Tank Mode)": 600, "Wraith": 600},
-        skill_secs={"Stim Packs": 1200, "Yamato Gun": 600},
+        # 구간 커맨드 수도 합계로 쌓인다 — 도넛 옆 분당 값의 분자다.
+        core_build=16, core_unit=54,
+        # 이름별 분모는 '그 이름이 나온 경기들의 총 길이'다 — 주요시간대(600초)가 아니라
+        # 경기 전체 길이(900초)를 쓴다(요청: Top5는 전체 경기 기준이라 분자와 자를 맞춘다).
+        # 두 판 다 900초라 배럭은 1800, 첫 판에만 나온 벙커는 900이다.
+        building_secs={"Barracks": 1800, "Bunker": 900, "Starport": 900},
+        unit_secs={"Marine": 1800, "Siege Tank (Tank Mode)": 900, "Wraith": 900},
+        skill_secs={"Stim Packs": 1800, "Yamato Gun": 900},
     )
-    # 두 분모도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸고, 그 두 판은 600초씩이다.
+    # 두 분모도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸고, 그 두 판의 주요시간대는
+    # 600초씩이다(경기 길이 900초와 다르다 — 분당 지표의 분모는 주요시간대 쪽이다).
     assert overall["mixPlays"] == 2
     assert overall["mixSeconds"] == 1200
     # 구성이 실린 경기는 둘뿐이다 — 없는 경기까지 세면 초반 일꾼이 실제보다 낮아진다.

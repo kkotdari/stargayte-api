@@ -230,11 +230,16 @@ def _trimmed_avgs(rows: list) -> dict[str, int | None]:
 _BUILD_MIX_FIELDS = (
     "b_prod", "b_def", "u_basic", "u_adv", "u_caster", "u_ground", "u_air", "worker5",
     "up_gw", "up_ga", "up_aw", "up_aa", "up_sh",
+    # 주요시간대 안에서만 센 건물·유닛 커맨드 수 — 도넛 옆 "분당 몇 채/몇 기"의 분자다.
+    # 위 구성비 항목들과 자가 다르다: 그쪽은 경기 전체, 이쪽은 주요시간대(요청).
+    "core_build", "core_unit",
 )
 # 사전으로 쌓이는 갈래(건물·유닛·스킬 원장) — 수를 더하는 위 항목들과 달리 이름별로 더한다.
-# 값과 함께 '그 이름이 나온 경기들의 주요시간대 합'도 센다 — 화면이 총합을 이 시간으로 나눠 분당
-# 값을 낸다(요청). 전체 경기시간으로 나누지 않는 이유: 그 기술을 안 쓴 판의 시간까지 분모에
-# 들어가면 프로토스만 쓰는 기술의 값이 종족 비율만큼 깎인다.
+# 값과 함께 '그 이름이 나온 경기들의 길이 합'도 센다 — 화면이 총합을 이 시간으로 나눠 분당
+# 값을 낸다(요청). 그 이름이 안 나온 판의 시간은 안 얹는다: 얹으면 프로토스만 쓰는 기술의
+# 값이 종족 비율만큼 깎인다.
+# 분모가 주요시간대가 아니라 경기 전체 길이인 이유: 이 원장들은 경기 전체로 세기 때문이다
+# (요청: 도넛·Top5는 전체 경기) — 분자와 분모의 자가 같아야 한다.
 _BUILD_MIX_TALLIES = {"buildings": "building_secs", "units": "unit_secs", "skills": "skill_secs"}
 
 
@@ -258,6 +263,8 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
         core = m.get("core_seconds")
         dur = int(core) if isinstance(core, (int, float)) and core > 0 else 0
         seconds += dur
+        # Top5 원장의 분모는 경기 전체 길이다 — 그 원장이 경기 전체로 세어 담기기 때문이다.
+        full = r.duration_seconds if isinstance(r.duration_seconds, int) and r.duration_seconds > 0 else 0
         for f in _BUILD_MIX_FIELDS:
             v = m.get(f)
             if isinstance(v, (int, float)) and v >= 0:
@@ -270,7 +277,7 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
                 if isinstance(name, str) and isinstance(v, (int, float)) and v > 0:
                     tallies[t][name] = tallies[t].get(name, 0) + int(v)
                     # 이 경기에 그 이름이 나왔다 — 그 판의 길이를 이 이름의 분모에 얹는다.
-                    tallies[secs_key][name] = tallies[secs_key].get(name, 0) + dur
+                    tallies[secs_key][name] = tallies[secs_key].get(name, 0) + full
     total.update(tallies)
     return {
         "build_mix": BuildMix(**total),

@@ -89,6 +89,11 @@ class BuildMix(BaseModel):
     core_seconds: int | None = Field(default=None, ge=0, le=100000, alias="coreSeconds")
     # 그 구간 안의 생산 커맨드 수 — '커맨드' 칸도 같은 자로 잰다.
     core_cmd: int = Field(default=0, ge=0, le=1000000, alias="coreCmd")
+    # 그 구간 안의 건물·유닛 커맨드 수 — 도넛 옆 "분당 몇 채/몇 기"가 이 값을 core_seconds로
+    # 나눈 것이다(요청: 분당 지표는 주요시간대). 위 도넛 구성비·Top5 원장은 경기 전체로
+    # 세므로(요청) 그것들과 자를 따로 둔다.
+    core_build: int = Field(default=0, ge=0, le=1000000, alias="coreBuild")
+    core_unit: int = Field(default=0, ge=0, le=1000000, alias="coreUnit")
 
     @field_validator(
         "buildings", "units", "skills", "building_secs", "unit_secs", "skill_secs",
