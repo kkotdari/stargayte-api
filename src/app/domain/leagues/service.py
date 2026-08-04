@@ -14,6 +14,7 @@ from app.domain.leagues.models import (
 from app.domain.leagues.repository import LeagueRepository
 from app.domain.leagues.schemas import (
     LeagueBracketGenerateIn,
+    LeagueBracketByesIn,
     LeagueBracketSeedIn,
     LeagueCreateIn,
     LeagueListItemOut,
@@ -109,7 +110,7 @@ def to_match_out(match: LeagueMatch) -> LeagueMatchOut:
     return LeagueMatchOut(
         id=match.id, round=match.round, slotInRound=match.slot_in_round,
         teamA=_team_ref(match.team_a), teamB=_team_ref(match.team_b),
-        isDead=match.is_dead, scheduledAt=match.scheduled_at,
+        isDead=match.is_dead, byeSide=match.bye_side, scheduledAt=match.scheduled_at,
         setsWonA=match.sets_won_a, setsWonB=match.sets_won_b,
         winnerTeamId=match.winner_team_id,
         substitutions=[_to_sub_out(s) for s in match.substitutions],
@@ -381,6 +382,7 @@ class LeagueService:
                 )
                 league.matches.append(m)
             by_round_slot[(1, slot)] = m
+        self._default_byes(by_round_slot, draw_size, team_count, actor)
         # 규모가 줄어들어 더는 필요 없어진 1라운드 슬롯은(있었다면) 배정된 팀째로 버려진다.
         for leftover in old_round1_by_slot.values():
             league.matches.remove(leftover)
@@ -410,6 +412,38 @@ class LeagueService:
         await self._refresh_match_relations(league.matches)
         return to_league_out(league)
 
+    def _default_byes(
+        self, by_round_slot: dict[tuple[int, int], LeagueMatch],
+        draw_size: int, team_count: int, actor: Member,
+    ) -> None:
+        """대진표를 만들 때 부전승 자리를 기본값으로 깐다 — 관리자가 나중에 옮긴다(요청).
+
+        자리는 앞쪽부터 고르되 '이미 두 팀이 다 찬 칸'은 건너뛴다. 규모를 다시 잡아도 이미
+        해 둔 1라운드 배정은 그대로 둔다는 약속이 있어서다(요청: "참가팀수 늘릴 때 기존
+        지정된 건 리셋하지 말아줘") — 다 찬 칸에 부전승을 얹으면 그 약속을 깨고 한 팀을
+        쫓아내야 한다. 빈 자리 쪽에 얹고, 양쪽 다 비었으면 b쪽이다(a에 실제 팀이 선다).
+
+        비켜 갈 자리가 모자라면(모든 칸이 다 차 있는데 부전승이 더 필요한 경우) 앞쪽 칸을
+        쓰고 그 자리의 b팀을 비운다 — 부전승 개수가 안 맞는 대진표를 남기는 것보다는 낫다.
+        """
+        need = draw_size - team_count
+        slots = [by_round_slot[(1, s)] for s in range(draw_size // 2)]
+        for m in slots:
+            m.bye_side = None
+        if need <= 0:
+            return
+        free = [m for m in slots if m.team_a_id is None or m.team_b_id is None]
+        picked = free[:need]
+        if len(picked) < need:
+            picked += [m for m in slots if m not in picked][: need - len(picked)]
+        for m in picked:
+            if m.team_a_id is None:
+                m.bye_side = "a" if m.team_b_id is not None else "b"
+            else:
+                m.bye_side = "b"
+                m.team_b_id = None  # 다 찬 칸을 어쩔 수 없이 쓴 경우
+            m.updated_by = actor.pk
+
     def _propagate_winner(
         self, by_round_slot: dict[tuple[int, int], LeagueMatch], total_rounds: int,
         from_round: int, from_slot: int, winner_team_id: int,
@@ -428,11 +462,14 @@ class LeagueService:
         self, league: League, by_round_slot: dict[tuple[int, int], LeagueMatch],
         total_rounds: int, match: LeagueMatch,
     ) -> None:
-        """1라운드 전용 부전승 자동 처리 — set_match_slot으로 실제 팀이 슬롯에 배정되는
-        순간 호출된다. 부전승은 앞쪽 byes(=draw_size-planned_teams)개 슬롯에 한 경기당
-        하나씩 분산 배정돼 있다(generate_bracket 참고) — 이 슬롯이 그 부전승 자리이고
-        한쪽만 채워졌다면 그 즉시 부전승 처리하고, 부전승 자리가 아니면(양쪽 다 실제
-        경기가 필요한 자리) 한쪽만 채워졌어도 반대쪽 실제 팀 배정을 기다린다."""
+        """1라운드 전용 부전승 자동 처리 — 실제 팀이 슬롯에 배정되는 순간 호출된다.
+        어느 칸의 어느 쪽이 부전승인지는 칸에 적혀 있다(match.bye_side) — 예전에는
+        "앞쪽 byes개 슬롯"이라고 코드가 정했는데, 그러면 대진 모양이 하나로 고정돼
+        "한쪽은 토너먼트, 다른 쪽은 단판" 같은 구조를 만들 수 없었다(요청).
+
+        부전승 자리가 아니면(양쪽 다 실제 경기가 필요한 자리) 한쪽만 채워졌어도 반대쪽
+        실제 팀 배정을 기다린다."""
+        del league  # 이제 리그 전체를 안 봐도 된다 — 판정에 필요한 건 칸에 다 적혀 있다.
         if match.is_dead or match.winner_team_id is not None:
             return
         a, b = match.team_a_id, match.team_b_id
@@ -440,12 +477,13 @@ class LeagueService:
             return
         if a is None and b is None:
             return
-        planned = league.planned_teams or 0
-        byes = (league.draw_size or 0) - planned
-        is_bye_slot = match.slot_in_round < byes
+        # 부전승 자리의 '반대쪽'에 팀이 서야 그 팀이 올라간다 — 빈 자리 쪽에 팀을 놓는 건
+        # 애초에 막지만(set_bracket_seeding), 여기서도 잘못된 조합에는 손대지 않는다.
         winner = None
-        if is_bye_slot:
-            winner = a if a is not None else b
+        if match.bye_side == "b":
+            winner = a
+        elif match.bye_side == "a":
+            winner = b
         if winner is not None:
             match.winner_team_id = winner
             match.result_entered_at = datetime.now(UTC)
@@ -524,6 +562,78 @@ class LeagueService:
             await self._session.refresh(league, attribute_names=["teams", "matches"])
         return to_league_out(league)
 
+    async def set_bracket_byes(
+        self, league_id: int, payload: LeagueBracketByesIn, *, actor: Member,
+    ) -> LeagueOut:
+        """부전승 자리를 관리자가 고른다(요청).
+
+        같은 8강 대진이라도 부전승을 어디에 두느냐로 대진 모양이 달라진다 — 앞쪽 두 칸에
+        두면 "두 팀이 4강 직행 + 네 팀이 8강"이고, 뒤쪽 두 칸에 두면 "네 팀 토너먼트 +
+        두 팀 단판, 그 둘이 결승"이다. 후자가 요청받은 구조이고, 그건 자료구조를 바꾸지
+        않고 부전승 자리만 옮기면 나오는 모양이다.
+
+        slots는 '전체' 부전승 자리를 담는다 — 기존 배치를 모두 지우고 이 목록대로 다시
+        깐다(시드 저장과 같은 방식). 자리가 바뀌면 그 자리에서 이미 올라갔던 부전승 결정도
+        함께 되돌린다: 안 그러면 부전승이 아니게 된 칸의 팀이 그대로 다음 라운드에 남는다.
+        """
+        league = await self._get_or_404(league_id)
+        if league.bracket_locked_at is not None:
+            raise ConflictError("대진이 확정돼 부전승 자리를 바꿀 수 없습니다.")
+        if league.draw_size is None:
+            raise ValidationError("아직 대진표가 없습니다.")
+
+        need = league.draw_size - (league.planned_teams or 0)
+        if len(payload.slots) != need:
+            raise ValidationError(f"부전승 자리는 정확히 {need}개여야 합니다.")
+
+        total_rounds = _total_rounds(league.draw_size)
+        by_round_slot = {(m.round, m.slot_in_round): m for m in league.matches}
+        round1 = {m.id: m for m in league.matches if m.round == 1 and not m.is_dead}
+
+        # 실제로 치른 경기가 하나라도 있으면 대진 모양 자체를 바꿀 수 없다 — 부전승 자리를
+        # 옮기는 건 "누가 누구와 붙나"를 다시 짜는 일이라, 이미 붙은 판이 있으면 앞뒤가 안 맞다.
+        if any(m.sets_won_a is not None for m in round1.values()):
+            raise ValidationError("이미 결과가 입력된 경기가 있어 부전승 자리를 바꿀 수 없습니다.")
+
+        wanted: dict[int, str] = {}
+        for slot in payload.slots:
+            if slot.match_id not in round1:
+                raise ValidationError("부전승은 1라운드 자리에만 둘 수 있습니다.")
+            if slot.match_id in wanted:
+                raise ValidationError("한 경기에 부전승을 둘 이상 둘 수 없습니다.")
+            wanted[slot.match_id] = slot.side
+
+        # 1) 부전승으로 이미 올라간 결정을 되돌린다(전파된 다음 라운드까지 함께).
+        for m in round1.values():
+            if m.winner_team_id is not None:
+                self._undo_decided(m, by_round_slot, total_rounds, actor)
+
+        # 2) 새 배치를 깐다. 부전승이 된 자리에 팀이 서 있으면 반대쪽으로 옮기고(반대쪽이
+        #    비어 있을 때만), 옮길 데가 없으면 비운다 — 영구 공백에 선 팀은 영원히 안 붙는다.
+        for m in round1.values():
+            side = wanted.get(m.id)
+            m.bye_side = side
+            if side == "b" and m.team_b_id is not None:
+                if m.team_a_id is None:
+                    m.team_a_id = m.team_b_id
+                m.team_b_id = None
+            elif side == "a" and m.team_a_id is not None:
+                if m.team_b_id is None:
+                    m.team_b_id = m.team_a_id
+                m.team_a_id = None
+            m.updated_by = actor.pk
+        await self._repo.flush()
+
+        # 3) 새 배치 기준으로 부전승을 다시 태운다.
+        for m in round1.values():
+            if m.team_a_id is not None or m.team_b_id is not None:
+                self._maybe_auto_resolve_round1(league, by_round_slot, total_rounds, m)
+
+        await self._session.commit()
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        await self._refresh_match_relations(league.matches)
+        return to_league_out(league)
+
     async def set_bracket_seeding(
         self, league_id: int, payload: LeagueBracketSeedIn, *, actor: Member,
     ) -> LeagueOut:
@@ -559,6 +669,11 @@ class LeagueService:
             if a.match_id not in editable:
                 raise ValidationError("이 자리는 시드를 바꿀 수 없습니다(부전·결과 입력됨·1라운드 아님).")
             if a.team_id is not None:
+                # 부전승(영구 공백) 자리에는 팀을 놓을 수 없다 — 놓아 봐야 그 팀은 영원히
+                # 안 붙는데 화면에는 배정된 것처럼 보인다. 부전승을 받게 하려면 같은 칸의
+                # 반대쪽에 놓으면 된다.
+                if editable[a.match_id].bye_side == a.side:
+                    raise ValidationError("부전승 자리에는 팀을 배정할 수 없습니다.")
                 self._get_team_or_404(league, a.team_id)  # 존재 검증
                 if a.team_id in seen_teams:
                     raise ValidationError("한 팀을 두 자리에 배정할 수 없습니다.")

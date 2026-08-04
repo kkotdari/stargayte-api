@@ -52,6 +52,8 @@ class LeagueMatchOut(BaseModel):
     team_a: LeagueMatchTeamRefOut | None = Field(alias="teamA")
     team_b: LeagueMatchTeamRefOut | None = Field(alias="teamB")
     is_dead: bool = Field(alias="isDead")
+    # 이 칸의 어느 쪽이 영구 공백(부전승)인가 — 'a'/'b'/None. 1라운드에만 쓴다.
+    bye_side: str | None = Field(alias="byeSide", default=None)
     scheduled_at: datetime | None = Field(alias="scheduledAt")
     sets_won_a: int | None = Field(alias="setsWonA")
     sets_won_b: int | None = Field(alias="setsWonB")
@@ -146,6 +148,27 @@ class LeagueSeedSlotIn(BaseModel):
     match_id: int = Field(alias="matchId")
     side: LeagueMatchSide
     team_id: int | None = Field(alias="teamId")
+
+
+class LeagueByeSlotIn(BaseModel):
+    """부전승 자리 하나 — 어느 경기(match_id)의 어느 쪽(side)이 영원히 빈 자리인가."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    match_id: int = Field(alias="matchId")
+    side: LeagueMatchSide
+
+
+class LeagueBracketByesIn(BaseModel):
+    """부전승 자리를 한 번에 정한다(요청: 관리자가 부전승 자리를 고른다).
+
+    slots는 '전체' 부전승 자리를 담는다 — 서버는 기존 부전승 배치를 모두 지우고 이 목록
+    그대로 다시 깐다(시드 저장과 같은 방식). 개수는 draw_size - planned_teams와 정확히
+    같아야 한다: 모자라면 대진표가 안 닫히고, 넘치면 있지도 않은 부전승이 생긴다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    slots: list[LeagueByeSlotIn]
 
 
 class LeagueBracketSeedIn(BaseModel):

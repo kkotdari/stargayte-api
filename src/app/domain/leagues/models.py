@@ -139,6 +139,9 @@ class LeagueMatch(AuditMixin, TimestampMixin, Base):
         UniqueConstraint("league_id", "round", "slot_in_round", name="uq_league_matches_league_round_slot"),
         CheckConstraint("round >= 1", name="ck_league_matches_round_positive"),
         CheckConstraint("slot_in_round >= 0", name="ck_league_matches_slot_nonneg"),
+        CheckConstraint(
+            "bye_side IS NULL OR bye_side IN ('a', 'b')", name="ck_league_matches_bye_side_valid",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
@@ -154,6 +157,18 @@ class LeagueMatch(AuditMixin, TimestampMixin, Base):
         BigInteger, ForeignKey("league_teams.id", ondelete="SET NULL"), nullable=True
     )
     is_dead: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 이 1라운드 칸의 어느 쪽이 '영원히 빈 자리(부전승)'인가 — 'a' / 'b' / NULL(둘 다 실제
+    # 경기). is_dead가 칸 전체의 공백이라면 이쪽은 반쪽만의 공백이다.
+    #
+    # 예전에는 이 자리를 "앞쪽 byes개 슬롯"으로 코드가 정했다(slot_in_round < byes). 그러면
+    # 대진 모양이 하나로 고정된다 — 6팀이면 늘 "두 팀이 4강 직행 + 네 팀이 8강"이다. 요청은
+    # 그게 아니라 "한쪽은 4팀 토너먼트, 다른 쪽은 두 팀의 단판, 그 둘이 결승"이었고, 그건
+    # 같은 8강 대진에서 부전승을 앞쪽이 아니라 뒤쪽 두 칸에 두면 그대로 나오는 모양이다.
+    # 그래서 자리를 계산하지 않고 칸에 적어 둔다 — 관리자가 고른다(요청).
+    #
+    # 2라운드 이상에는 쓰지 않는다: 그쪽 공백은 "먹여 주는 이전 라운드 경기가 is_dead인가"로
+    # 이미 판별되고(_maybe_auto_resolve), 그 판별이 이 값보다 언제나 옳다.
+    bye_side: Mapped[str | None] = mapped_column(String(1), nullable=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 세트 스코어(요청: "세트 스코어 기록 — 예: 2:1") — 둘 다 NULL이면 아직 실제로
     # 치러지지 않은 경기(부전승으로 승자가 정해졌더라도 이 두 값은 NULL로 남는다).
