@@ -19,13 +19,18 @@ from app.domain.activity.service import ActivityCommentService, ActivityListServ
 router = APIRouter(tags=["activity"])
 
 
-@router.get("/feed", response_model=ActivityFeedOut)
+# 목록은 접두어 그 자체다 — GET /api/activities(요청). /feed 꼬리말은 옛 프론트를 위해
+# 별칭으로만 남긴다.
+@router.get("", response_model=ActivityFeedOut)
+@router.get("/feed", response_model=ActivityFeedOut, include_in_schema=False)
 async def list_activity_feed(
     db: DbSession, storage: StorageDep, current: CurrentMember,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> ActivityFeedOut:
     """활동 목록 — 화면이 부르는 API는 이것 하나다(요청: API 딱 하나만 호출하게).
+
+    GET /api/activities. 활동 하나하나가 아이템이고, 이 경로가 곧 그 목록이다.
 
     너 나와·랭크 변동·게임결과를 같은 아이템으로 취급하고, 내용도 댓글도 그 안에 담아
     보낸다. 예전에는 화면이 세 곳을 따로 받아 제 손으로 섞었는데, 그러면 섞는 규칙이

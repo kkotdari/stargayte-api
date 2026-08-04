@@ -407,3 +407,25 @@ async def test_feed_with_a_live_scheduled_challenge(client):
     item = body["items"][0]
     assert item["kind"] == "challenge"
     assert item["challenge"]["scheduledDate"] == soon
+
+
+async def test_activities_is_the_endpoint(client):
+    """목록은 GET /api/activities다(요청) — 옛 경로는 배포 시차용 별칭으로만 남는다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    for path in ("/api/activities", "/api/activity/feed", "/api/feed/feed"):
+        res = await client.get(path, headers=_h(a))
+        assert res.status_code == 200, (path, res.text)
+        assert res.json() == {"total": 0, "totalActivities": 0, "items": [], "nextCursor": None}
+
+
+def test_comment_tables_are_named_for_activity():
+    """댓글 테이블 이름도 활동이다 — 코드에서 feed/post 표현을 다 걷어냈다(요청).
+
+    이 이름이 모델과 운영 DB에서 갈라진 순간 활동 목록이 통째로 500이었다
+    (UndefinedTableError: relation "feed_comments" does not exist). 이름은 SQL 문자열이
+    아니라 모델에서 나오므로(main._COMMENTS), 여기만 지키면 둘이 갈라질 수 없다.
+    """
+    from app.domain.activity.models import ActivityComment, ActivityCommentMention
+
+    assert ActivityComment.__tablename__ == "activity_comments"
+    assert ActivityCommentMention.__tablename__ == "activity_comment_mentions"

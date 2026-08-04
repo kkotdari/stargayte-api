@@ -32,13 +32,22 @@ class GameResultRepository:
         stmt = self._base_query().where(GameResult.id == match_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    # IN 목록을 이만큼씩 끊어 묻는다. asyncpg는 바인드 파라미터가 32767개를 넘으면 질의를
+    # 준비(prepare)하는 단계에서 통째로 실패한다(실측: 32767 통과, 33000 InterfaceError).
+    # 한 줄에 담기는 경기가 그만큼 많을 일은 없지만, 목록이 커질수록 이 목록도 같이
+    # 길어지는 구조라 상한을 코드가 아니라 데이터가 정하게 두면 안 된다.
+    _IN_CHUNK = 5000
+
     async def get_many(self, match_ids: list[int]) -> list[GameResult]:
         """여러 경기를 한 번에 — 활동 목록이 한 줄(한 자리에서 이어 친 묶음)을 채울 때 쓴다.
         하나씩 부르면 줄에 담긴 경기 수만큼 질의가 나간다."""
         if not match_ids:
             return []
-        stmt = self._base_query().where(GameResult.id.in_(match_ids))
-        return list((await self._session.execute(stmt)).scalars().unique().all())
+        out: list[GameResult] = []
+        for i in range(0, len(match_ids), self._IN_CHUNK):
+            stmt = self._base_query().where(GameResult.id.in_(match_ids[i:i + self._IN_CHUNK]))
+            out.extend((await self._session.execute(stmt)).scalars().unique().all())
+        return out
 
     async def get_by_match_no(self, match_no: str) -> GameResult | None:
         stmt = self._base_query().where(GameResult.match_no == match_no)

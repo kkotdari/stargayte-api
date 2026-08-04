@@ -494,7 +494,7 @@ async def test_legacy_target_type_rows_are_still_found(client, db_session):
     # 옛 이름으로 저장된 한 건을 직접 심는다(마이그레이션 전 상태 재현).
     await db_session.execute(
         text(
-            "INSERT INTO feed_comments (target_type, target_id, text, created_by, updated_by,"
+            "INSERT INTO activity_comments (target_type, target_id, text, created_by, updated_by,"
             " created_at, updated_at)"
             " SELECT 'match', :mid, '옛 이름', pk, pk, created_at, created_at FROM members WHERE id = 'alice'"
         ),
@@ -539,7 +539,7 @@ async def test_all_comments_survive_an_unknown_target_type(client, db_session):
 
     await db_session.execute(
         text(
-            "INSERT INTO feed_comments (target_type, target_id, text, created_by, updated_by,"
+            "INSERT INTO activity_comments (target_type, target_id, text, created_by, updated_by,"
             " created_at, updated_at)"
             " SELECT 'post', :mid, '없어진 종류', pk, pk, created_at, created_at FROM members WHERE id = 'alice'"
         ),

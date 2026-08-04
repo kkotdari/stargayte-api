@@ -73,7 +73,20 @@ async def _ensure_schema() -> None:
         # 반드시 먼저 돌려야 한다. 나중에 돌리면 create_all이 새 이름의 빈 테이블을 먼저
         # 만들어 버려서, 옛 테이블은 데이터를 안은 채 이름을 못 바꾸고 남는다.
         await step("rename legacy tables", lambda: _rename_legacy_tables(conn))
-        await step("create_all", lambda: conn.run_sync(Base.metadata.create_all))
+        # 테이블을 하나씩 만든다 — create_all 한 번으로 몰면 한 테이블의 DDL이 실패할 때
+        # 그 사바포인트가 통째로 되돌아가, 죄 없는 나머지 테이블까지 하나도 안 생긴다.
+        #
+        # 한 테이블이 세워도 나머지는 만들어져야 한다. 이번 사고에서 부딪힌 문제는 아니지만
+        # (그건 이름이 갈라진 것이었다) 사바포인트를 단계마다 두는 이 파일의 취지가
+        # create_all 한 덩어리에는 안 걸려 있었다 — 여기만 예외로 둘 이유가 없다.
+        #
+        # sorted_tables는 외래키 의존 순서라, 앞 것이 실패해도 뒤 것은 제 부모가 이미 있는
+        # 한 정상적으로 만들어진다. checkfirst=True(기본)라 이미 있는 테이블은 건너뛴다.
+        for table in Base.metadata.sorted_tables:
+            await step(
+                f"create table {table.name}",
+                lambda t=table: conn.run_sync(t.create, checkfirst=True),
+            )
         for name, fn in (
             ("migrate match notes", _migrate_match_notes),
             ("migrate activity target types", _migrate_activity_target_types),
@@ -114,9 +127,12 @@ _TABLE_RENAMES = [
     ("match_participants", "game_result_participants"),
     ("match_results", "game_outcomes"),
     ("rank_snapshots", "ranking_shifts"),
-    # (되돌림) 활동 댓글 두 테이블의 이름 변경 — 운영(PostgreSQL)에서 부팅이 통째로
-    # 실패했다. 아래 _ensure_schema의 사바포인트 주석 참고: 이 목록에 줄을 더하기 전에
-    # 진짜 실패 원인을 PostgreSQL에서 먼저 확인해야 한다.
+    # 활동 댓글 두 테이블 — 코드에서 feed/post 표현을 다 걷어내면서 이름을 맞춘다(요청).
+    # 한 번 되돌린 적이 있는데, 그 되돌림이 오히려 코드(feed_comments)와 운영
+    # DB(activity_comments)를 갈라놓아 활동 목록이 통째로 500이었다. 운영은 이미 새 이름을
+    # 쓰고 있으므로 여기서는 아무 일도 안 일어나고(멱등), 옛 이름으로 남은 DB만 옮겨진다.
+    ("feed_comments", "activity_comments"),
+    ("feed_comment_mentions", "activity_comment_mentions"),
 ]
 
 

@@ -1,4 +1,5 @@
 import calendar
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
@@ -21,6 +22,8 @@ from app.domain.activity.schemas import (
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
+
+logger = logging.getLogger(__name__)
 
 
 def snapshot_sections(sections: object) -> list[dict]:
@@ -173,12 +176,16 @@ def _to_ranking_shift_out(snap: RankingShift) -> RankingShiftOut:
         reason=snap.reason,
         createdAt=snap.created_at,
         matchIds=list(snap.match_ids or []),
+        # 옛 모양으로 남은 칸은 여기서도 걸러 낸다(snapshot_sections) — 이 함수만 그냥
+        # `for sec in snap.sections`를 돌고 있었다. 지금은 부르는 쪽이 변동 있는 스냅샷만
+        # 넘겨 주어 안 걸리지만, 잣대가 한 곳만 다르면 다음에 부르는 자리가 생기는 순간
+        # 같은 사고가 다시 난다(운영 500을 이미 그렇게 겪었다).
         sections=[
             RankingShiftSection(
                 matchType=sec.get("matchType", ""),
                 shifts=[RankingShiftEntry.model_validate(e) for e in sec.get("shifts") or []],
             )
-            for sec in snap.sections or []
+            for sec in snapshot_sections(snap.sections)
         ],
     )
 
@@ -586,14 +593,26 @@ class ActivityListService:
         for offset, r in enumerate(page):
             # 아래에서부터 센 번호(가장 오래된 줄이 1) — 위에서 세면 새 활동 하나에 전부 밀린다.
             no = total - (start + offset)
-            items.append(ActivityItemOut(
-                key=r.key, kind=r.kind, no=no,
-                challenge=challenge_by_id.get(r.ids[0]) if r.kind == "challenge" else None,
-                ranking_shift=shift_by_id.get(r.ids[0]) if r.kind == "rankingShift" else None,
-                game_results=[game_by_id[i] for i in r.ids if i in game_by_id]
-                if r.kind == "gameResultPost" else [],
-                comments=mine(r.kind, r.ids),
-            ))
+            try:
+                items.append(ActivityItemOut(
+                    key=r.key, kind=r.kind, no=no,
+                    challenge=challenge_by_id.get(r.ids[0]) if r.kind == "challenge" else None,
+                    ranking_shift=shift_by_id.get(r.ids[0]) if r.kind == "rankingShift" else None,
+                    game_results=[game_by_id[i] for i in r.ids if i in game_by_id]
+                    if r.kind == "gameResultPost" else [],
+                    comments=mine(r.kind, r.ids),
+                ))
+            except Exception:
+                # 한 줄이 못 그려져도 목록 전체를 죽이지 않는다. 이 엔드포인트는 이제 활동
+                # 화면의 유일한 입구라 500이 나면 화면이 통째로 빈다 — 운영에서 옛 모양
+                # 데이터 한 줄 때문에 그런 일을 세 번 겪었다(스냅샷 sections, 댓글 옛
+                # target_type, 문자열로 담긴 약속한 날).
+                # 빈 껍데기라도 번호를 달아 남긴다: 줄을 아예 빼면 아래 줄들의 번호가
+                # 화면에서 한 칸씩 건너뛰어, 무엇이 빠졌는지조차 안 보인다.
+                # 무엇이 걸렸는지는 열쇠와 함께 로그에 남긴다 — 조용히 삼키면 다음에도
+                # 똑같이 원인을 못 찾는다.
+                logger.exception("활동 목록에서 줄 하나를 못 그렸습니다 — key=%s kind=%s", r.key, r.kind)
+                items.append(ActivityItemOut(key=r.key, kind=r.kind, no=no))
         return items
 
     async def _shifts_by_id(self, ids: list[int]) -> dict[int, "RankingShiftOut"]:
