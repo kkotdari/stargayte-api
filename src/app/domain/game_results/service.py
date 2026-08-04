@@ -261,6 +261,11 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
     tallies.update({k: {} for k in _BUILD_MIX_TALLIES.values()})
     seconds = 0
     up_plays = 0
+    # 업그레이드 줄별 합과 '그 줄이 실린 경기 수' — 줄이 종족마다 다르므로 분모도 줄마다
+    # 따로 세야 한다(요청: 종족별로 보여주기). 하나로 세면 종족이 섞인 기간에 한 줄의
+    # 평균이 다른 종족 경기 수만큼 눌린다.
+    up_lines: dict[str, int] = {}
+    up_line_plays: dict[str, int] = {}
     for r in mixed:
         m = r.build_mix
         # 저장은 JSON이라 무엇이든 들어올 수 있다 — 아는 키의 숫자만 더한다.
@@ -286,6 +291,15 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
             up_plays += 1
             for f in _UPGRADE_FIELDS:
                 total[f] = int(total[f]) + int(m[f])  # type: ignore[arg-type,index]
+        # 줄별 값도 같은 시간 조건을 건다 — 3단계까지 올리려면 그만큼 시간이 필요하다는
+        # 사실은 줄이 갈려도 그대로다. 줄이 실린 판만 그 줄의 분모에 얹는다.
+        ups = m.get("ups")
+        if isinstance(ups, dict) and full >= _MIN_UPGRADE_SECONDS:
+            for name, v in ups.items():
+                if not isinstance(name, str) or not isinstance(v, (int, float)):
+                    continue
+                up_lines[name] = up_lines.get(name, 0) + int(v)
+                up_line_plays[name] = up_line_plays.get(name, 0) + 1
         for t, secs_key in _BUILD_MIX_TALLIES.items():
             d = m.get(t)
             if not isinstance(d, dict):
@@ -296,6 +310,8 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
                     # 이 경기에 그 이름이 나왔다 — 그 판의 길이를 이 이름의 분모에 얹는다.
                     tallies[secs_key][name] = tallies[secs_key].get(name, 0) + full
     total.update(tallies)
+    total["ups"] = up_lines
+    total["up_counts"] = up_line_plays
     return {
         "build_mix": BuildMix(**total),
         "avg_worker5": round(int(total["worker5"]) / len(mixed), 1),  # type: ignore[arg-type]

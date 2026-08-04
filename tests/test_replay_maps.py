@@ -269,6 +269,9 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
         "bProd": 20, "bDef": 5, "uBasic": 60, "uAdv": 10, "uCaster": 2,
         "uGround": 65, "uAir": 7, "worker5": 14,
         "upGw": 3, "upGa": 2, "upAw": 0, "upAa": 0, "upSh": 0,
+        # 업그레이드 줄별 값 — 경기 하나짜리에는 파서가 그 판 종족의 줄을 싣는데, 여기서는
+        # 그 자리가 비어 있어도 되는지(옛 기록과 같은 모양) 함께 확인한다.
+        "ups": {}, "upCounts": {},
         "buildings": {"Barracks": 4}, "units": {"Marine": 40}, "skills": {"Stim Packs": 12},
         # 이름별 시간은 기간 합계를 낼 때만 세는 값이라, 경기 하나짜리에는 빈 사전으로 남는다.
         "buildingSecs": {}, "unitSecs": {}, "skillSecs": {},

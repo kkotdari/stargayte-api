@@ -63,6 +63,14 @@ class BuildMix(BaseModel):
     up_aw: int = Field(default=0, ge=0, le=100000, alias="upAw")
     up_aa: int = Field(default=0, ge=0, le=100000, alias="upAa")
     up_sh: int = Field(default=0, ge=0, le=100000, alias="upSh")
+    # 업그레이드 줄별 단계(0~3) — 그 판의 종족 줄만 담긴다(프론트 UP_BY_RACE와 짝).
+    # 위 다섯 자리는 종족을 지운 값이라 뜻이 어긋난다(지적: 종족마다 줄이 다른데 max로
+    # 뭉개서, 보병 3업 + 메카닉 0업이 "지상 3"이 됐다). 이쪽이 그 자리를 대신하고, 위
+    # 다섯은 옛 기록을 읽기 위해 남겨 둔다.
+    # 집계에서는 줄마다 '그 줄이 실린 경기 수'를 따로 세어(up_counts) 그 수로 나눈다 —
+    # 종족이 섞인 기간에도 한 줄의 평균이 다른 종족 경기 수에 눌리지 않는다.
+    ups: dict[str, int] = Field(default_factory=dict)
+    up_counts: dict[str, int] = Field(default_factory=dict, alias="upCounts")
     # 건물·유닛·스킬 원장(요청: 통계에 Top5 칸) — 이름은 screp 영문 키 그대로 두고 한국어
     # 표기는 화면이 붙인다. 표기를 고치면 이미 등록된 경기도 다음 조회부터 새 표기로
     # 읽히게 하기 위해서다.
@@ -97,6 +105,7 @@ class BuildMix(BaseModel):
 
     @field_validator(
         "buildings", "units", "skills", "building_secs", "unit_secs", "skill_secs",
+        "ups", "up_counts",
     )
     @classmethod
     def _sane_tally(cls, v: dict[str, int]) -> dict[str, int]:

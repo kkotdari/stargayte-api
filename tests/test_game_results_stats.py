@@ -576,13 +576,16 @@ def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
     building_secs=None, unit_secs=None, skill_secs=None, core_seconds=None, core_cmd=0,
-    core_build=0, core_unit=0,
+    core_build=0, core_unit=0, ups=None, up_counts=None,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
         "uBasic": u_basic, "uAdv": u_adv, "uCaster": u_caster,
         "uGround": u_ground, "uAir": u_air, "worker5": worker5,
         "upGw": up_gw, "upGa": up_ga, "upAw": up_aw, "upAa": up_aa, "upSh": up_sh,
+        # 업그레이드 줄별 합·분모(요청: 종족마다 줄이 달라 종족별로 보여준다) — 줄이 실린
+        # 경기가 없으면 빈 사전이다.
+        "ups": ups or {}, "upCounts": up_counts or {},
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
         "buildingSecs": building_secs or {}, "unitSecs": unit_secs or {},
         "skillSecs": skill_secs or {},
