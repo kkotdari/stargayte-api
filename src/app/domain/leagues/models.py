@@ -23,8 +23,9 @@ class League(AuditMixin, TimestampMixin, Base):
     """공식 리그(토너먼트) 하나 — 팀 구성/대진표/결과를 관리한다. 상태(setup/active/
     completed)는 컬럼으로 저장하지 않고 draw_size/최종전 결과로 매번 계산한다
     (Challenge의 _status_of와 같은 원칙 — 필드가 하나 늘 때마다 동기화를 신경 쓸
-    필요가 없다). draw_size는 bracket/generate 전엔 NULL, 이후 참가 팀 수 기준
-    다음 2의 거듭제곱(최대 8)으로 확정된다.
+    필요가 없다). draw_size는 대진표를 시작하기 전엔 NULL, 이후 판의 깊이(라운드 수)
+    D에 대해 2^D다 — 실제 칸 수가 아니라 "결승까지 몇 겹인가"의 다른 표현일 뿐이다.
+    판은 필요한 데만 가지를 친 나무라 칸이 그만큼 있지는 않다.
 
     mode(team/individual)는 생성 시 확정되는 실제 설정값이라 status와 달리 컬럼으로
     저장한다 — "리그가 팀전인지 개인전인지"는 결과로부터 계산될 수 있는 값이 아니다.
@@ -38,11 +39,10 @@ class League(AuditMixin, TimestampMixin, Base):
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="team")
     best_of: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=3)
     draw_size: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    # 대진표 생성 시 "몇 팀짜리로 잡을지" 미리 정한 값(요청: "대진표는 팀이 있건 없건
-    # 생성 가능하게, 팀수 미리 설정 가능") — 실제 참가 팀 수(len(teams))와 별개다. 팀이
-    # 아직 이만큼 안 채워졌어도 나머지 자리는 "예약됨(아직 비었지만 나중에 채워질 수
-    # 있음)"으로 두고, draw_size(2의 거듭제곱)를 채우기 위한 패딩만 진짜 부전승(is_dead)
-    # 처리한다. bracket/generate 전엔 NULL.
+    # 이 판에 팀을 앉힐 수 있는 자리 수 — 아래 경기가 달린 쪽은 그 승자가 채우니 빼고
+    # 센다. 팀구성 저장이 이 값으로 상한을 건다(요청: "대진표는 팀이 있건 없건 생성
+    # 가능하게"). 실제 참가 팀 수(len(teams))와는 별개로, 아직 안 채운 자리는 "예약됨"
+    # 으로 남는다. 가지를 치거나 지울 때마다 다시 센다. 대진표를 시작하기 전엔 NULL.
     planned_teams: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     # 대진(시드) 확정 시각 — NULL이면 아직 관리자가 1라운드 시드를 자유롭게 바꿀 수
     # 있고(부전승으로 이미 결정된 자리도 포함), 값이 있으면 그 뒤로는 시드 변경 API
@@ -129,9 +129,16 @@ class LeagueTeamMember(Base):
 class LeagueMatch(AuditMixin, TimestampMixin, Base):
     """대진표 자체 — 별도 "슬롯" 테이블 없이 이 테이블 한 줄 한 줄이 곧 대진판의 한 칸이다
     (team_a_id/team_b_id가 그 칸을 채운 두 팀). round 1이 첫 라운드, 숫자가 커질수록
-    결승에 가깝다. is_dead는 팀 수가 2의 거듭제곱이 아니어서(요청: "3/5/6팀일 때 자동
-    부전승") 구조적으로 영원히 열리지 않는 칸을 표시한다 — team_a_id/team_b_id가 둘 다
-    NULL인 것만으로는 "아직 안 정해짐"과 "영구 공백"을 구분할 수 없어서 이 컬럼이
+    결승에 가깝다.
+
+    (round, slot_in_round)는 꽉 찬 이진 나무의 좌표지만, 실제로 있는 줄은 그 나무의 일부다
+    — 판은 우승 자리에서 시작해 필요한 데만 왼쪽으로 가지를 쳐 만든다(요청). (r, s)의 a쪽을
+    먹이는 아래 경기는 (r-1, 2s), b쪽은 (r-1, 2s+1)이고, 그 줄이 없으면 그 자리는 팀을
+    직접 앉히는 자리다. round는 '결승까지의 거리'라 판이 자라거나 얕아지면 전체를 다시
+    매긴다 — 결승은 늘 맨 끝 라운드에 혼자 있다.
+
+    is_dead는 확정할 때 아무도 안 앉은 것으로 판명난 가지를 표시한다 — team_a_id/team_b_id가
+    둘 다 NULL인 것만으로는 "아직 안 정해짐"과 "영구 공백"을 구분할 수 없어서 이 컬럼이
     반드시 필요하다(서비스의 진출 전파 로직 참고)."""
 
     __tablename__ = "league_matches"

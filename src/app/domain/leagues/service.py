@@ -13,7 +13,6 @@ from app.domain.leagues.models import (
 )
 from app.domain.leagues.repository import LeagueRepository
 from app.domain.leagues.schemas import (
-    LeagueBracketGenerateIn,
     LeagueBracketSeedIn,
     LeagueCreateIn,
     LeagueListItemOut,
@@ -48,6 +47,29 @@ def _team_label(index: int) -> str:
 
 def _total_rounds(draw_size: int) -> int:
     return draw_size.bit_length() - 1
+
+
+# 판이 아래로 자랄 수 있는 한계 — 라운드 수(=결승까지의 거리)로 센다. 열 겹이면 1024자리다.
+_MAX_DEPTH = 10
+
+
+def _index(league: League) -> dict[tuple[int, int], LeagueMatch]:
+    """(라운드, 슬롯) → 경기. 판은 이제 꽉 찬 나무가 아니라서 없는 칸은 그냥 없다."""
+    return {(m.round, m.slot_in_round): m for m in league.matches}
+
+
+def _child_key(match: LeagueMatch, side: str) -> tuple[int, int]:
+    """이 자리를 채워 줄 아래 경기의 좌표 — a쪽은 짝수, b쪽은 홀수 슬롯이 먹인다."""
+    return (match.round - 1, match.slot_in_round * 2 + (0 if side == "a" else 1))
+
+
+def _seat_count(league: League) -> int:
+    """팀을 앉힐 수 있는 자리 수 — 아래 경기가 달린 쪽은 그 승자가 채우니 빼고 센다.
+
+    꽉 찬 판에서는 이 값이 예전의 draw_size와 같다(리프 경기 × 2). 가지를 필요한 데만
+    친 판에서는 그보다 작고, 그게 실제로 이 판이 담을 수 있는 팀 수다."""
+    by = _index(league)
+    return sum(1 for m in league.matches for side in ("a", "b") if _child_key(m, side) not in by)
 
 
 def _status_of(league: League) -> str:
@@ -203,11 +225,10 @@ class LeagueService:
         리그를 다시 불러와 대진표도 새 팀 구성으로 갱신한다."""
         league = await self._get_or_404(league_id)
 
-        # 대진표가 이미 있으면 예약된 자리(planned_teams)를 넘는 팀은 담을 수 없다(add_team과
-        # 같은 규칙 — 대진판에 자리가 없다).
-        if league.draw_size is not None and len(payload.teams) > (league.planned_teams or 0):
-            raise ValidationError("이 대진표에 예약된 자리보다 많은 팀을 둘 수 없습니다.")
-
+        # 자리 수로 팀 수를 막지 않는다. 판을 미리 정해 놓고 시작하던 때는 "예약된 자리보다
+        # 많은 팀"이 곧 모순이었지만, 이제 판은 우승 자리 하나에서 시작해 필요한 만큼 자란다
+        # (요청) — 시작하자마자 자리가 둘뿐이라 그 규칙을 그대로 두면 팀을 먼저 짜는 순서가
+        # 통째로 막힌다. 앉히는 자리는 시드 저장이 따로 검사하고, 안 앉은 팀은 그냥 안 뛴다.
         existing_by_id = {t.id: t for t in league.teams}
         payload_ids = [e.id for e in payload.teams if e.id is not None]
         if len(set(payload_ids)) != len(payload_ids):
@@ -305,62 +326,162 @@ class LeagueService:
         await self._refresh_match_relations(league.matches)
         return to_league_out(league)
 
-    async def generate_bracket(
-        self, league_id: int, payload: LeagueBracketGenerateIn, *, actor: Member,
-    ) -> LeagueOut:
-        """빈 대진표를 만든다 — 크기는 라운드 수로 직접 받는다(요청).
+    async def _shift_rounds(self, league: League, delta: int, actor: Member) -> None:
+        """판 전체의 라운드 번호를 delta만큼 민다 — 모양은 그대로다.
 
-        예전에는 팀 수에서 다음 2의 거듭제곱을 골라 판을 잡고, 모자란 자리를 부전승으로
-        메웠다. 이제는 어느 라운드의 칸에나 팀을 앉힐 수 있어서(set_bracket_seeding) 그
-        계산이 성립하지 않는다 — 여덟 칸짜리 판에 여섯을 앉히든 셋을 앉히든 관리자 마음이고,
-        아무도 안 앉은 가지는 확정할 때 사라진다(confirm_bracket). 부전승은 그 결과로
-        저절로 생긴다: 한 사람만 있는 가지는 그대로 다음 라운드로 올라간다.
-        """
+        라운드는 '결승까지의 거리'다. 그래서 가장 깊은 칸에 가지를 쳐서 판이 한 겹 자라거나,
+        가지를 잘라 얕아질 때마다 번호를 다시 매겨야 결승이 늘 맨 끝 라운드에 있다.
+        (league_id, round, slot) 유니크 때문에 제자리에서 한 칸씩 밀 수는 없다 — 겹칠 일이
+        없는 먼 번호로 피했다가 내려놓는다."""
+        if delta == 0:
+            return
+        park = 1000
+        for m in league.matches:
+            m.round += park
+        await self._repo.flush()
+        for m in league.matches:
+            m.round += delta - park
+            m.updated_by = actor.pk
+        await self._repo.flush()
+
+    def _resync_size(self, league: League) -> None:
+        """판 크기 표시를 실제 나무에 맞춘다 — 깊이(draw_size)와 앉힐 자리 수(planned_teams)."""
+        depth = max((m.round for m in league.matches), default=0)
+        league.draw_size = 2 ** depth if depth else None
+        league.planned_teams = _seat_count(league) if depth else None
+
+    async def _bracket_editable(self, league_id: int) -> League:
+        """대진 모양을 고칠 수 있는 상태인지 보고 리그를 돌려준다 — 확정 뒤엔 못 고친다."""
         league = await self._get_or_404(league_id)
         if league.bracket_locked_at is not None:
-            raise ConflictError("대진이 확정돼 규모를 바꿀 수 없습니다.")
-        rounds = payload.rounds
-        draw_size = 2 ** rounds
+            raise ConflictError("대진이 확정돼 대진표 모양을 바꿀 수 없습니다.")
+        return league
 
-        # 이미 결과가 들어간 경기가 있으면 판을 다시 잡을 수 없다 — 재생성이 그 진행 상황을
-        # 지운다. 결과가 하나도 없으면 배정만 남으므로, 새 판에도 있는 칸은 그대로 살린다
-        # (요청: "참가팀수 늘릴 때 기존 지정된 건 리셋하지 말아줘").
-        old_by_key: dict[tuple[int, int], LeagueMatch] = {}
+    def _match_or_404(self, league: League, match_id: int) -> LeagueMatch:
+        m = next((m for m in league.matches if m.id == match_id), None)
+        if m is None:
+            raise NotFoundError("대진표에 없는 경기입니다.")
+        return m
+
+    async def start_bracket(self, league_id: int, *, actor: Member) -> LeagueOut:
+        """우승 자리 하나에서 판을 시작한다(요청: 시드 수를 정하고 시작하는 게 아니라
+        최종 승리자 한 칸에서 역으로).
+
+        만들어지는 건 결승 한 경기뿐이다 — 그 두 자리에서 왼쪽으로 가지를 쳐 나가며
+        (branch_slot) 필요한 데만 판을 늘린다. 예전처럼 라운드 수를 미리 받아 꽉 찬 판을
+        깔지 않으므로, 안 쓰는 칸이 애초에 생기지 않는다."""
+        league = await self._bracket_editable(league_id)
         if league.draw_size is not None:
-            if any(m.winner_team_id is not None for m in league.matches):
-                raise ValidationError("이미 결과가 입력된 경기가 있어 대진표 규모를 바꿀 수 없습니다.")
-            for m in list(league.matches):
-                old_by_key[(m.round, m.slot_in_round)] = m
-            await self._repo.flush()
-
-        league.draw_size = draw_size
-        # 이 판이 담을 수 있는 최대 인원 — 팀구성 저장이 이 값으로 상한을 건다.
-        league.planned_teams = draw_size
+            raise ConflictError("이미 대진표가 있습니다.")
+        m = LeagueMatch(
+            league_id=league.id, round=1, slot_in_round=0, is_dead=False,
+            created_by=actor.pk, updated_by=actor.pk,
+        )
+        league.matches.append(m)
         league.updated_by = actor.pk
-
-        by_round_slot: dict[tuple[int, int], LeagueMatch] = {}
-        for r in range(1, rounds + 1):
-            for slot in range(draw_size // (2 ** r)):
-                m = old_by_key.pop((r, slot), None)
-                if m is not None:
-                    # 확정 전에는 죽은 칸이 없다 — 어느 가지가 살아남을지는 확정 때 정해진다.
-                    m.is_dead = False
-                    m.updated_by = actor.pk
-                else:
-                    m = LeagueMatch(
-                        league_id=league.id, round=r, slot_in_round=slot, is_dead=False,
-                        created_by=actor.pk, updated_by=actor.pk,
-                    )
-                    league.matches.append(m)
-                by_round_slot[(r, slot)] = m
-        # 판이 줄어 더는 없는 칸은 배정째로 버려진다.
-        for leftover in old_by_key.values():
-            league.matches.remove(leftover)
         await self._repo.flush()
-        # 방금 만든 LeagueMatch는 관계가 아직 로드된 적이 없어(새 객체라 selectin이 안 걸린다)
-        # to_match_out에서 지연 로딩이 걸리면 MissingGreenlet이 난다 — 미리 채워 둔다.
-        await self._refresh_match_relations(list(by_round_slot.values()))
+        self._resync_size(league)
+        # 새로 만든 행은 관계가 로드된 적이 없어 직렬화에서 지연 로딩이 걸린다 — 미리 채운다.
+        await self._refresh_match_relations([m])
+        await self._session.commit()
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        await self._refresh_match_relations(league.matches)
+        return to_league_out(league)
 
+    async def delete_bracket(self, league_id: int, *, actor: Member) -> LeagueOut:
+        """판을 통째로 없앤다 — 우승 칸의 '가지 지우기'가 이걸 부른다.
+
+        우승 자리에 달린 가지가 곧 판 전체라서, 다른 칸의 가지 지우기와 같은 동작이다."""
+        league = await self._bracket_editable(league_id)
+        if any(m.sets_won_a is not None for m in league.matches):
+            raise ValidationError("이미 결과가 입력된 경기가 있어 대진표를 지울 수 없습니다.")
+        for m in list(league.matches):
+            league.matches.remove(m)
+        league.updated_by = actor.pk
+        await self._repo.flush()
+        self._resync_size(league)
+        await self._session.commit()
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        return to_league_out(league)
+
+    async def branch_slot(
+        self, league_id: int, match_id: int, side: str, *, actor: Member,
+    ) -> LeagueOut:
+        """이 자리 왼쪽에 가지를 친다 — 한 칸이 두 칸으로 갈라진다(요청).
+
+        이 자리를 누가 채울지가 '앉히는 것'에서 '아래 경기에서 이기고 올라오는 것'으로
+        바뀐다. 그래서 여기 배정돼 있던 팀이 있으면 자리를 비운다 — 그 팀은 새로 생긴
+        아래 두 자리 중 한 곳에 다시 앉히면 된다.
+
+        가장 깊은 칸(1라운드)에 치면 판이 한 겹 자란다 — 결승은 늘 맨 끝 라운드에 있어야
+        하므로 나머지 번호를 한 칸씩 밀고 새 가지를 1라운드에 놓는다."""
+        league = await self._bracket_editable(league_id)
+        match = self._match_or_404(league, match_id)
+        if match.sets_won_a is not None:
+            raise ValidationError("이미 결과가 입력된 경기에는 가지를 칠 수 없습니다.")
+        if _child_key(match, side) in _index(league):
+            raise ValidationError("이 자리엔 이미 가지가 있습니다.")
+
+        if match.round == 1:
+            depth = max(m.round for m in league.matches)
+            if depth + 1 > _MAX_DEPTH:
+                raise ValidationError(f"대진표는 {_MAX_DEPTH}라운드까지만 만들 수 있습니다.")
+            await self._shift_rounds(league, 1, actor)
+
+        child_round, child_slot = _child_key(match, side)
+        setattr(match, f"team_{side}_id", None)
+        match.updated_by = actor.pk
+        child = LeagueMatch(
+            league_id=league.id, round=child_round, slot_in_round=child_slot, is_dead=False,
+            created_by=actor.pk, updated_by=actor.pk,
+        )
+        league.matches.append(child)
+        league.updated_by = actor.pk
+        await self._repo.flush()
+        self._resync_size(league)
+        await self._refresh_match_relations([child])
+        await self._session.commit()
+        await self._session.refresh(league, attribute_names=["teams", "matches"])
+        await self._refresh_match_relations(league.matches)
+        return to_league_out(league)
+
+    async def unbranch_slot(
+        self, league_id: int, match_id: int, side: str, *, actor: Member,
+    ) -> LeagueOut:
+        """이 자리에 달린 가지를 통째로 지운다(요청: 가지 친 상태에선 버튼이 −로 바뀌어
+        가지를 삭제).
+
+        아래로 매달린 것 전부가 함께 사라진다 — 그 안에 앉아 있던 팀들은 배정이 풀릴 뿐
+        리그에서 없어지지는 않는다. 가지가 사라지면 그 자리는 다시 팀을 앉힐 수 있는
+        자리가 된다. 판이 얕아지면 라운드 번호를 다시 매겨 결승을 맨 끝에 둔다."""
+        league = await self._bracket_editable(league_id)
+        match = self._match_or_404(league, match_id)
+        by = _index(league)
+        child = by.get(_child_key(match, side))
+        if child is None:
+            raise ValidationError("이 자리엔 지울 가지가 없습니다.")
+
+        doomed: list[LeagueMatch] = []
+        stack = [child]
+        while stack:
+            node = stack.pop()
+            doomed.append(node)
+            for s in ("a", "b"):
+                below = by.get(_child_key(node, s))
+                if below is not None:
+                    stack.append(below)
+        if any(m.sets_won_a is not None for m in doomed):
+            raise ValidationError("이미 결과가 입력된 경기가 딸려 있어 가지를 지울 수 없습니다.")
+
+        for node in doomed:
+            league.matches.remove(node)
+        match.updated_by = actor.pk
+        league.updated_by = actor.pk
+        await self._repo.flush()
+        # 가장 깊은 가지가 사라졌으면 판이 얕아진다 — 1라운드부터 다시 세도록 번호를 당긴다.
+        low = min((m.round for m in league.matches), default=1)
+        await self._shift_rounds(league, 1 - low, actor)
+        self._resync_size(league)
         await self._session.commit()
         await self._session.refresh(league, attribute_names=["teams", "matches"])
         await self._refresh_match_relations(league.matches)
@@ -405,7 +526,10 @@ class LeagueService:
             return  # 둘 다 아직 None — is_dead가 아니므로 언젠가 실제 경기로 채워질 예정
         empty_child_slot = match.slot_in_round * 2 + (1 if a is not None else 0)
         feeder = by_round_slot.get((match.round - 1, empty_child_slot))
-        if feeder is None or not feeder.is_dead:
+        # 먹여 줄 경기가 아예 없으면(가지를 안 친 자리) 그 쪽은 영원히 비어 있다 — ①이다.
+        # 판이 꽉 찬 나무이던 시절엔 이 경우가 없어서 None을 "판단 보류"로 다뤘는데, 이제는
+        # 가지를 필요한 데만 치므로 없는 게 정상이고 그때가 바로 부전승이다.
+        if feeder is not None and not feeder.is_dead:
             return  # 아직 실제 경기(위 ②) 결과를 기다리는 중 — 자동 처리하지 않는다
         winner = a if a is not None else b
         match.winner_team_id = winner
@@ -447,43 +571,37 @@ class LeagueService:
 
         지우지 않고 표시만 한다(요청) — 원본을 남겨 두면 나중에 확정을 푸는 길이 열린다.
         """
-        draw_size = league.draw_size or 0
-        total_rounds = _total_rounds(draw_size)
-        by = {(m.round, m.slot_in_round): m for m in league.matches}
+        total_rounds = _total_rounds(league.draw_size or 0)
+        by = _index(league)
+        # 아래(1라운드)에서 위(결승)로 — 판이 꽉 찬 나무가 아니라서 좌표를 훑는 대신 실제로
+        # 있는 칸만 순서대로 본다.
+        ordered = sorted(league.matches, key=lambda m: (m.round, m.slot_in_round))
 
         # 1) 씨앗이 하나라도 있는 가지만 산다 — 아래에서 위로 훑으면 한 번에 끝난다.
         live: dict[tuple[int, int], bool] = {}
-        for r in range(1, total_rounds + 1):
-            for slot in range(draw_size // (2 ** r)):
-                m = by.get((r, slot))
-                if m is None:
-                    continue
-                seeded = m.team_a_id is not None or m.team_b_id is not None
-                below = r > 1 and (live.get((r - 1, 2 * slot), False) or live.get((r - 1, 2 * slot + 1), False))
-                live[(r, slot)] = seeded or below
+        for m in ordered:
+            seeded = m.team_a_id is not None or m.team_b_id is not None
+            below = any(live.get(_child_key(m, s), False) for s in ("a", "b"))
+            live[(m.round, m.slot_in_round)] = seeded or below
         for key, m in by.items():
             m.is_dead = not live.get(key, False)
             m.updated_by = actor.pk
 
         # 2) 아래에서 위로 진출을 태운다 — 한쪽만 찬 칸의 반대쪽이 영영 안 채워지면 그대로
-        #    올라간다. 1라운드는 아래가 없으니 그 자체로 확정이고, 그 위는 먹여 주는 경기가
-        #    죽었는지로 가른다.
-        for r in range(1, total_rounds + 1):
-            for slot in range(draw_size // (2 ** r)):
-                m = by.get((r, slot))
-                if m is None or m.is_dead or m.winner_team_id is not None:
-                    continue
-                a, b = m.team_a_id, m.team_b_id
-                if (a is None) == (b is None):
-                    continue  # 둘 다 찼거나 둘 다 비었다 — 여기서 정할 게 없다
-                if r > 1:
-                    feeder = by.get((r - 1, 2 * slot + (1 if a is not None else 0)))
-                    if feeder is not None and not feeder.is_dead:
-                        continue  # 아직 올라올 사람이 있다
-                winner = a if a is not None else b
-                m.winner_team_id = winner
-                m.result_entered_at = datetime.now(UTC)
-                self._propagate_winner(by, total_rounds, r, slot, winner)
+        #    올라간다. 먹여 주는 경기가 없거나(가지를 안 친 자리) 죽었으면 영영 안 채워진다.
+        for m in ordered:
+            if m.is_dead or m.winner_team_id is not None:
+                continue
+            a, b = m.team_a_id, m.team_b_id
+            if (a is None) == (b is None):
+                continue  # 둘 다 찼거나 둘 다 비었다 — 여기서 정할 게 없다
+            feeder = by.get(_child_key(m, "b" if a is not None else "a"))
+            if feeder is not None and not feeder.is_dead:
+                continue  # 아직 올라올 사람이 있다
+            winner = a if a is not None else b
+            m.winner_team_id = winner
+            m.result_entered_at = datetime.now(UTC)
+            self._propagate_winner(by, total_rounds, m.round, m.slot_in_round, winner)
 
     async def confirm_bracket(self, league_id: int, *, actor: Member) -> LeagueOut:
         """대진을 확정한다 — 그 뒤로는 시드를 더는 바꿀 수 없다(요청).
@@ -558,31 +676,18 @@ class LeagueService:
                 match.team_b_id = team_id
             match.updated_by = actor.pk
 
-        # 같은 가지에 씨앗이 둘이면 누가 올라갈지 모순이다(요청: 거부) — 3라운드 칸에
-        # 앉은 팀이 있는데 그 자리로 올라올 아래 경기에도 팀이 있으면, 그 승자가 갈 자리가
-        # 이미 차 있다. 배정을 다 한 뒤 한 번에 본다: 하나씩 볼 때는 어느 쪽이 나중에
-        # 올지 몰라 순서에 따라 판정이 달라진다.
-        #
-        # 쪽(side)을 반드시 따져야 한다 — a자리는 아래 짝수 슬롯이, b자리는 홀수 슬롯이
-        # 먹인다. 칸 단위로만 보면 "결승 b자리에 앉은 팀"이 반대편(a쪽) 가지의 배정과
-        # 부딪친 것으로 잘못 걸린다(실측).
-        seeded: set[tuple[int, int]] = set()
+        # 가지가 달린 자리엔 앉힐 수 없다 — 거긴 아래 경기에서 이기고 올라올 자리다(요청:
+        # 거부). 판을 가지치기로 짜게 되면서 이 규칙이 한 칸만 봐도 판정되는 문제가 됐다:
+        # 예전엔 꽉 찬 나무라 "아래 어딘가에 이미 팀이 있는지"를 가지 끝까지 훑어야 했다.
+        by_key = _index(league)
         for m in league.matches:
-            if m.team_a_id is not None:
-                seeded.add((m.round, m.slot_in_round * 2))       # a쪽 = 아래 짝수 슬롯 자리
-            if m.team_b_id is not None:
-                seeded.add((m.round, m.slot_in_round * 2 + 1))   # b쪽 = 아래 홀수 슬롯 자리
-        for r, half in sorted(seeded, reverse=True):
-            below = [(r - 1, half)]
-            while below:
-                rr, ss = below.pop()
-                if rr < 1:
+            for side in ("a", "b"):
+                if getattr(m, f"team_{side}_id") is None:
                     continue
-                if (rr, ss * 2) in seeded or (rr, ss * 2 + 1) in seeded:
+                if _child_key(m, side) in by_key:
                     raise ValidationError(
-                        "이 자리로 올라올 아래 경기에 이미 팀이 있습니다. 한 가지에는 한 곳만 배정하세요.",
+                        "가지가 달린 자리에는 팀을 앉힐 수 없습니다. 아래 경기의 승자가 올라올 자리입니다.",
                     )
-                below += [(rr - 1, ss * 2), (rr - 1, ss * 2 + 1)]
         await self._repo.flush()
 
         await self._session.commit()

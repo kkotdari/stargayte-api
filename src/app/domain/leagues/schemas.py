@@ -126,19 +126,6 @@ class LeagueTeamCompositionIn(BaseModel):
     teams: list[LeagueTeamCompositionEntry]
 
 
-class LeagueBracketGenerateIn(BaseModel):
-    """대진표를 몇 라운드짜리로 잡을지(요청: 규모를 직접 정하기).
-
-    예전에는 팀 수를 받아 다음 2의 거듭제곱으로 판을 잡았는데, 이제는 어느 칸에나 팀을
-    앉힐 수 있어서(라운드 무관) '팀 수 → 판 크기'가 성립하지 않는다 — 여덟 칸짜리 판에
-    여섯을 앉히든 셋을 앉히든 관리자 마음이고, 안 쓰는 가지는 확정할 때 사라진다.
-    그래서 판의 크기를 라운드 수로 직접 받는다. 3이면 8강(1·2·3라운드), 4면 16강이다."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    rounds: int = Field(ge=1, le=10)
-
-
 class LeagueSeedSlotIn(BaseModel):
     """일괄 시드 저장의 한 자리 — 어느 경기(match_id)의 어느 쪽(side)에 어떤 팀(team_id,
     미지정은 None)이 들어갈지."""
