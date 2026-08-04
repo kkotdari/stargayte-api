@@ -73,6 +73,9 @@ async def _ensure_schema() -> None:
         # 반드시 먼저 돌려야 한다. 나중에 돌리면 create_all이 새 이름의 빈 테이블을 먼저
         # 만들어 버려서, 옛 테이블은 데이터를 안은 채 이름을 못 바꾸고 남는다.
         await step("rename legacy tables", lambda: _rename_legacy_tables(conn))
+        # 테이블 이름을 바꿔도 그 테이블이 쓰는 시퀀스는 옛 이름 그대로 남는다 — 이름을
+        # 맞춰 준다(요청). 표 이름을 바꾼 뒤에 돌려야 하므로 바로 여기다.
+        await step("rename owned sequences", lambda: _rename_owned_sequences(conn))
         # 테이블을 하나씩 만든다 — create_all 한 번으로 몰면 한 테이블의 DDL이 실패할 때
         # 그 사바포인트가 통째로 되돌아가, 죄 없는 나머지 테이블까지 하나도 안 생긴다.
         #
@@ -161,6 +164,55 @@ async def _rename_legacy_tables(conn) -> None:
             logging.getLogger(__name__).info("테이블 이름 변경: %s -> %s", old, new)
         except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(옛 이름 그대로 남는다).
             logging.getLogger(__name__).exception("테이블 이름 변경 실패: %s -> %s", old, new)
+
+
+async def _rename_owned_sequences(conn) -> None:
+    """시퀀스 이름을 제 테이블에 맞춘다(멱등, PostgreSQL 전용).
+
+    ALTER TABLE … RENAME TO는 그 테이블이 쓰는 시퀀스까지 따라 바꾸지는 않는다. 그래서
+    이름을 옮긴 테이블마다 옛 이름의 시퀀스가 남는다 — 운영에서 실제로 feed_comments_id_seq,
+    matches_id_seq, rank_snapshots_id_seq처럼 지금은 없는 이름이 줄줄이 남아 있었다(지적).
+    동작에는 지장이 없지만(테이블은 oid로 제 시퀀스를 붙들고 있다) DB를 열어 보는 사람에게는
+    없는 테이블의 흔적이라 읽기 나쁘고, 덤프를 옮겨 심을 때 헷갈린다.
+
+    이름을 손으로 적지 않고 카탈로그에서 '그 시퀀스를 소유한 테이블·컬럼'을 직접 물어
+    표준 이름({테이블}_{컬럼}_seq)과 다른 것만 바꾼다 — 그래서 오늘 옮긴 것뿐 아니라
+    예전에 어긋난 것까지 함께 정리되고, 앞으로 이름을 또 옮겨도 이 함수는 그대로 맞는다.
+
+    SQLite에는 시퀀스가 없어 아무 일도 안 한다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    log = logging.getLogger(__name__)
+    if conn.dialect.name != "postgresql":
+        return
+
+    rows = (await conn.execute(text("""
+        SELECT s.relname AS seq, t.relname AS tbl, a.attname AS col
+        FROM pg_class s
+        JOIN pg_depend d
+          ON d.objid = s.oid
+         AND d.classid = 'pg_class'::regclass
+         AND d.refclassid = 'pg_class'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+        JOIN pg_namespace n ON n.oid = s.relnamespace
+        WHERE s.relkind = 'S' AND n.nspname = current_schema()
+    """))).all()
+
+    for seq, tbl, col in rows:
+        want = f"{tbl}_{col}_seq"
+        if seq == want:
+            continue
+        try:
+            # 바꾸려는 이름이 이미 있으면 건드리지 않는다 — 남의 시퀀스를 덮어쓰느니 옛
+            # 이름으로 남는 편이 낫다.
+            await conn.execute(text(f'ALTER SEQUENCE "{seq}" RENAME TO "{want}"'))
+            log.info("시퀀스 이름 변경: %s -> %s", seq, want)
+        except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(옛 이름 그대로 남는다).
+            log.exception("시퀀스 이름 변경 실패: %s -> %s", seq, want)
 
 
 async def _add_match_result_summary(conn: object) -> None:
