@@ -472,6 +472,9 @@ class ActivityListService:
             total=total,
             # 아래에서부터 센다 — 위에서 세면 새 활동이 하나 올라올 때마다 모든 줄이 밀린다.
             rows=[ActivityListRow(key=key, kind=kind, no=total - idx) for idx, (kind, key) in enumerate(rows)],
+            # 댓글도 같이 실어 보낸다(요청: 목록·댓글 단일 API로 통합) — 목록 하나를 그리는
+            # 데 필요한 값은 한 번에 온다.
+            comments=await ActivityCommentService(self._session).list_all(actor=actor),
         )
 
     async def _game_rows(self) -> list[tuple[int, float, str]]:

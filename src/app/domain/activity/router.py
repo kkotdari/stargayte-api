@@ -20,20 +20,28 @@ router = APIRouter(tags=["activity"])
 
 @router.get("/list", response_model=ActivityListOut)
 async def list_activity_rows(db: DbSession, current: CurrentMember) -> ActivityListOut:
-    """활동 목록의 줄 순서와 번호 — 내용이 아니라 "그 줄이 전체에서 몇 번째인가"만 준다.
+    """활동 목록을 그리는 데 필요한 것 한 벌 — 줄 번호와 댓글(요청: 단일 API로 통합).
 
-    화면이 이 값을 직접 셀 수 없는 이유는 두 가지다. 목록은 세 곳(도전장·게임결과·
+    번호를 화면이 직접 셀 수 없는 이유는 두 가지다. 목록은 세 곳(도전장·게임결과·
     랭크변동)을 시간순으로 섞어 만드는데 어느 한 엔드포인트도 나머지를 모르고, 게임결과는
     페이지 단위로 나눠 받으므로 화면은 늘 일부만 쥐고 있다 — 거기서 센 번호는 아직 안
     받아온 과거만큼 통째로 어긋난다.
+
+    댓글이 여기 함께 오는 건 그것 역시 목록 한 벌에 딸린 값이기 때문이다. 요청이 둘이면
+    하나가 늦거나 실패할 때 목록이 반쯤 그려진 채로 남는다 — 실제로 운영에서 둘이 나란히
+    500이었다. 옛 경로(/activity/comments/all)는 배포가 어긋나는 순간을 위해 남겨 둔다.
     """
     return await ActivityListService(db).list_rows(actor=current)
 
 
-@router.get("/comments/all", response_model=list[ActivityCommentOut])
+@router.get("/comments/all", response_model=list[ActivityCommentOut], include_in_schema=False)
 async def list_all_activity_comments(db: DbSession, current: CurrentMember) -> list[ActivityCommentOut]:
-    """활동가 목록을 부를 때 댓글도 한 번에 같이 받아 간다(요청) — 카드마다 따로 부르면
-    답이 제각각 도착하며 카드 키가 뒤늦게 자라 스크롤 자리가 밀린다."""
+    """옛 경로 — 이제 GET /activity/list가 댓글까지 함께 준다(요청: 단일 API로 통합).
+
+    지우지 않고 남기는 건 프론트와 API가 동시에 배포되지 않기 때문이다. 새 프론트가 뜨기
+    전까지는 옛 프론트가 이 경로를 계속 부른다. 프론트가 모두 새 응답을 쓰게 된 뒤 한참
+    지나면 지워도 된다(랭크 스냅샷의 옛 경로와 같은 방식).
+    """
     return await ActivityCommentService(db).list_all(actor=current)
 
 

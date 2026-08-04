@@ -55,7 +55,8 @@ async def test_empty_list(client):
     a = await _signup(client, "alice", "Alice#1001")
     res = await client.get("/api/activity/list", headers=_h(a))
     assert res.status_code == 200, res.text
-    assert res.json() == {"total": 0, "rows": []}
+    # 댓글 칸은 비어 있어도 늘 있다 — 없으면 화면이 매번 있는지부터 확인해야 한다.
+    assert res.json() == {"total": 0, "rows": [], "comments": []}
 
 
 async def test_same_day_games_collapse_into_one_row(client):
@@ -226,3 +227,33 @@ async def test_survives_legacy_snapshot_sections(client, db_session):
     res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
     assert res.json() == []
+
+
+async def test_list_carries_comments_too(client):
+    """목록 한 벌은 한 번에 온다(요청: 목록·댓글 단일 API로 통합).
+
+    요청이 둘이면 하나가 늦거나 실패할 때 목록이 반쯤 그려진 채로 남는다 — 실제로 운영에서
+    /activity/list와 /activity/comments/all이 나란히 500이었다.
+    """
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    mid = (await _register_match(client, _h(a), "2026-04-01"))["id"]
+
+    res = await client.post(
+        "/api/activity/comments",
+        headers=_h(a),
+        json={"targetType": "gameResult", "targetId": mid, "text": "좋은 경기"},
+    )
+    assert res.status_code == 201, res.text
+
+    body = (await client.get("/api/activity/list", headers=_h(a))).json()
+    assert body["total"] == 1, body
+    assert [c["text"] for c in body["comments"]] == ["좋은 경기"], body
+    assert body["comments"][0]["targetType"] == "gameResult"
+    assert body["comments"][0]["targetId"] == mid
+
+    # 옛 경로도 아직 같은 값을 준다 — 프론트/API 배포가 어긋나는 순간을 위해 남겨 뒀다.
+    old = (await client.get("/api/activity/comments/all", headers=_h(a))).json()
+    assert [c["id"] for c in old] == [c["id"] for c in body["comments"]]
+
