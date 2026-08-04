@@ -513,3 +513,41 @@ async def test_legacy_target_type_rows_are_still_found(client, db_session):
     assert texts == ["새 이름", "옛 이름"], items
     # 내보낼 때는 둘 다 새 이름으로 통일된다.
     assert {c["targetType"] for c in items} == {"gameResult"}
+
+
+async def test_all_comments_survive_an_unknown_target_type(client, db_session):
+    """지금 안 쓰는 대상 종류로 저장된 줄 하나가 전체 목록을 죽이면 안 된다.
+
+    대상 종류는 그냥 문자열 칸이라 무엇이든 들어갈 수 있는데, 내보내는 스키마는 셋 중
+    하나만 받는다 — 운영 DB에 남아 있던 옛 이름 한 줄 때문에 GET /activity/comments/all이
+    통째로 500이었고, 그래서 활동 화면의 댓글 미리받기가 매번 실패했다. 그 줄만 빠지고
+    나머지는 그대로 나와야 한다.
+    """
+    from sqlalchemy import text
+
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    mid = (await _register_match(client, _h(a)))["id"]
+
+    res = await client.post(
+        "/api/activity/comments",
+        headers=_h(a),
+        json={"targetType": "gameResult", "targetId": mid, "text": "멀쩡한 댓글"},
+    )
+    assert res.status_code == 201, res.text
+
+    await db_session.execute(
+        text(
+            "INSERT INTO feed_comments (target_type, target_id, text, created_by, updated_by,"
+            " created_at, updated_at)"
+            " SELECT 'post', :mid, '없어진 종류', pk, pk, created_at, created_at FROM members WHERE id = 'alice'"
+        ),
+        {"mid": mid},
+    )
+    await db_session.commit()
+
+    res = await client.get("/api/activity/comments/all", headers=_h(a))
+    assert res.status_code == 200, res.text
+    items = res.json()
+    assert [c["text"] for c in items] == ["멀쩡한 댓글"], items

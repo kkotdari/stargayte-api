@@ -11,6 +11,7 @@ from app.domain.activity.schemas import (
     ActivityCommentAuthor,
     ActivityCommentMentionOut,
     ActivityCommentOut,
+    KNOWN_TARGET_TYPES,
     RankingShiftEntry,
     RankingShiftOut,
     RankingShiftSection,
@@ -18,6 +19,29 @@ from app.domain.activity.schemas import (
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
+
+
+def snapshot_sections(sections: object) -> list[dict]:
+    """스냅샷의 칸 목록 — 지금 모양이 아닌 것은 조용히 버린다.
+
+    sections는 JSON 칸이라 스키마가 강제되지 않는다. 지금은 [{matchType, standings,
+    shifts}, ...]지만, 유형마다 한 행이던 시절의 행이 운영 DB에 그대로 남아 있어 모양이
+    다르다 — 실제로 이것 때문에 운영에서 활동 목록(GET /activity/list)이 통째로 500이었다
+    (dict가 오면 `for sec in sections`가 키(str)를 돌아 sec.get에서 터진다).
+
+    그 줄 하나가 목록 전체를 죽이면 안 된다. 화면에 못 그릴 옛 행은 안 보이는 게 맞고,
+    나머지 줄은 그대로 나와야 한다. 새 이벤트 목록(list_events)이 운영에서 멀쩡했던 건
+    그쪽만 최근 100건으로 끊어 봐서 옛 행에 안 닿았기 때문이다 — 같은 잣대를 두 곳이
+    함께 쓰도록 여기로 모은다.
+    """
+    if not isinstance(sections, list):
+        return []
+    return [sec for sec in sections if isinstance(sec, dict)]
+
+
+def snapshot_has_shifts(sections: object) -> bool:
+    """어느 칸에든 변동이 하나라도 있나 — 목록에 뜨는 스냅샷의 잣대."""
+    return any((sec.get("shifts") or []) for sec in snapshot_sections(sections))
 
 
 def to_comment_out(comment: ActivityComment, *, actor_pk: int | None, is_admin: bool) -> ActivityCommentOut:
@@ -52,10 +76,21 @@ class ActivityCommentService:
         self._member_repo = MemberRepository(session)
 
     async def list_all(self, *, actor: Member) -> list[ActivityCommentOut]:
-        """활동가 목록과 함께 한 번에 받아 가는 전체 댓글(위 repository.list_all 주석)."""
+        """활동가 목록과 함께 한 번에 받아 가는 전체 댓글(위 repository.list_all 주석).
+
+        지금 쓰는 대상 종류가 아닌 줄은 건너뛴다. 대상 종류는 문자열 칸이라 무엇이든 들어갈
+        수 있고, 운영 DB에는 예전 이름으로 저장된 줄이 남아 있다 — 그 한 줄이 스키마 검증에
+        걸리면 전체 목록이 500이 되어 댓글 미리받기가 통째로 죽었다(운영에서 실제로 그랬다).
+        대상별 조회(list_for_target)가 멀쩡했던 건 그쪽은 물어본 종류만 골라 오기 때문이다.
+        여기서 버리는 줄은 어차피 화면 어느 카드에도 못 붙는다 — 그 종류의 카드가 없다.
+        """
         is_admin = actor.has_any_role("0202")
         comments = await self._repo.list_all()
-        return [to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin) for c in comments]
+        return [
+            to_comment_out(c, actor_pk=actor.pk, is_admin=is_admin)
+            for c in comments
+            if normalize_target_type(c.target_type) in KNOWN_TARGET_TYPES
+        ]
 
     async def list_for_target(self, target_type: str, target_id: int, *, actor: Member) -> list[ActivityCommentOut]:
         is_admin = actor.has_any_role("0202")
@@ -187,7 +222,7 @@ class RankingShiftService:
         rows = list((await self._session.scalars(stmt)).all())
         # 어느 칸에든 변동이 하나라도 있는 날만 보여준다 — 기준선만 남은 날은 다음 비교의
         # 재료일 뿐이라 카드가 될 이야기가 없다.
-        shown = [s for s in rows if any((sec.get("shifts") or []) for sec in s.sections or [])]
+        shown = [s for s in rows if snapshot_has_shifts(s.sections)]
         return [_to_ranking_shift_out(s) for s in shown][:limit]
 
     async def _latest(self) -> RankingShift | None:
@@ -204,7 +239,7 @@ class RankingShiftService:
     @staticmethod
     def _section_of(snap: RankingShift | None, match_type: str) -> dict:
         """그 스냅샷에서 이 유형 칸 — 없으면 빈 칸(순위표도 변동도 없음)."""
-        for sec in (snap.sections if snap else None) or []:
+        for sec in snapshot_sections(snap.sections if snap else None):
             if sec.get("matchType") == match_type:
                 return sec
         return {"matchType": match_type, "standings": [], "shifts": []}
@@ -484,7 +519,7 @@ class ActivityListService:
         return [
             (sid, _kst(created).timestamp() * 1000)
             for sid, created, sections in result.all()
-            if any((sec.get("shifts") or []) for sec in (sections or []))
+            if snapshot_has_shifts(sections)
         ]
 
 

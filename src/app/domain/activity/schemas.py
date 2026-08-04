@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -7,6 +7,8 @@ COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 활동 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
 ActivityTargetType = Literal["gameResult", "challenge", "rankingShift"]
+# 위 목록을 그대로 집합으로 — 손으로 한 벌 더 적으면 종류를 늘릴 때 한쪽만 고치게 된다.
+KNOWN_TARGET_TYPES = frozenset(get_args(ActivityTargetType))
 
 # 이름 통일(요청) 전에 쓰던 값 → 지금 값. 이 값은 activity_comments.target_type에 그대로
 #저장되므로 부팅 때 한 번 일괄로 옮기지만(_migrate_feed_target_types), 배포가 어긋난

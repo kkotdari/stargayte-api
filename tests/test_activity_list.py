@@ -181,3 +181,48 @@ async def test_survives_odd_shapes(client, db_session):
     # 도전장 1 + 게임결과 1 + 변동 있는 스냅샷 1 = 3줄(기준선만 있는 스냅샷은 빠진다).
     assert kinds == ["challenge", "gameResultPost", "rankingShift"], body
     assert sorted(r["no"] for r in body["rows"]) == [1, 2, 3]
+
+
+async def test_survives_legacy_snapshot_sections(client, db_session):
+    """옛 모양으로 저장된 스냅샷 한 줄이 목록 전체를 죽이면 안 된다.
+
+    sections는 JSON 칸이라 스키마가 강제되지 않는다. 유형마다 한 행이던 시절의 행이 운영
+    DB에 그대로 남아 있어 모양이 다른데, dict가 오면 `for sec in sections`가 키(str)를
+    돌아 sec.get에서 터진다 — 운영에서 이것 때문에 이 엔드포인트가 계속 500이었고 그래서
+    번호가 화면에 아예 안 나왔다. 새 이벤트 목록은 최근 100건만 봐서 옛 행에 안 닿았기에
+    멀쩡했다(그래서 원인이 더 안 보였다).
+
+    옛 줄은 화면에 못 그리니 목록에서 빠지고, 멀쩡한 줄들은 그대로 번호를 받아야 한다.
+    """
+    from sqlalchemy import text
+
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    await _register_match(client, _h(a), "2026-04-01")
+
+    for sections in (
+        '{"0101": {"standings": [], "shifts": []}}',   # 유형별 한 행이던 시절: dict
+        '["0101"]',                                    # 칸이 아니라 이름만 담긴 목록
+        'null',                                        # 아예 비어 있는 행
+    ):
+        await db_session.execute(
+            text(
+                "INSERT INTO ranking_shifts (reason, match_ids, sections, created_at, updated_at)"
+                " VALUES ('legacy', '[]', :sections, '2026-03-01 00:00:00', '2026-03-01 00:00:00')"
+            ),
+            {"sections": sections},
+        )
+    await db_session.commit()
+
+    res = await client.get("/api/activity/list", headers=_h(a))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 옛 줄 셋은 안 뜨고 게임결과 한 줄만 — 번호도 1번 하나다.
+    assert body["total"] == 1, body
+    assert [r["no"] for r in body["rows"]] == [1], body
+
+    # 이벤트 목록도 같은 줄에 안 걸려야 한다(같은 잣대를 쓴다).
+    res = await client.get("/api/activity/ranking-shifts", headers=_h(a))
+    assert res.status_code == 200, res.text
+    assert res.json() == []
