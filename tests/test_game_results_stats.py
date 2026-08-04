@@ -194,7 +194,7 @@ async def test_stats_excludes_too_short_game_even_below_outlier_sample_floor(cli
     """2분 미만 경기는 표본이 몇 판이든 지표 평균에서 뺀다(_MIN_DURATION_SECONDS).
 
     중앙값/MAD 판정은 표본이 5판(_OUTLIER_MIN_SAMPLES) 미만이면 아예 안 돈다. 순위 최소
-    판수가 개인전 3판으로 내려오면서 서너 판만 뛴 회원이 순위표에 오르는데, 그 구간은
+    판수가 개인전 두 판까지 내려오면서 서너 판만 뛴 회원이 순위표에 오르는데, 그 구간은
     정확히 MAD의 사각지대였다 — 20초짜리 기록 하나가 그대로 평균에 들어갔다. 경기 길이
     기준은 표본이 한 판이어도 판단할 수 있어 그 구멍을 메운다.
 
@@ -280,7 +280,7 @@ async def _solo_stats(client, headers, **params) -> dict:
 
 
 async def test_stats_hides_metric_averages_below_min_plays_but_keeps_record(client):
-    """개인전 3판(_MIN_PLAYS)을 못 채우면 지표 평균은 전부 null이고, 전적·승률은 그대로다.
+    """개인전 2판(_MIN_PLAYS)을 못 채우면 지표 평균은 전부 null이고, 전적·승률은 그대로다.
 
     판수가 적으면 이상치 판정(_OUTLIER_MIN_SAMPLES=5판)조차 못 돌아서 두 판 중 한 판만
     튀어도 평균이 그대로 끌려간다 — 잴 만큼 안 뛴 걸 숫자로 내보내는 게 더 나쁘다.
@@ -290,37 +290,37 @@ async def test_stats_hides_metric_averages_below_min_plays_but_keeps_record(clie
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
-    await _solo_matches(client, headers, 2)
+    await _solo_matches(client, headers, 1)
     overall = (await _solo_stats(client, headers))["overall"]
     assert [overall[f] for f in _METRIC_FIELDS] == [None] * 5
-    # 전적은 그대로 — 2전 2승이면 승률 100%다.
-    assert overall["plays"] == 2 and overall["wins"] == 2 and overall["winRate"] == 100.0
+    # 전적은 그대로 — 1전 1승이면 승률 100%다.
+    assert overall["plays"] == 1 and overall["wins"] == 1 and overall["winRate"] == 100.0
 
-    # 세 판째에 지표가 비로소 나온다.
-    await _solo_matches(client, headers, 1, start=3)
+    # 두 판째에 지표가 비로소 나온다.
+    await _solo_matches(client, headers, 1, start=2)
     overall = (await _solo_stats(client, headers))["overall"]
-    assert overall["plays"] == 3
+    assert overall["plays"] == 2
     assert [overall[f] for f in _METRIC_FIELDS] == [100, 80, 50, 40, 30]
 
 
 async def test_stats_metric_gate_counts_only_the_filtered_race(client):
-    """종족 필터를 걸면 그 종족 판수로 센다 — 기준값은 유형 그대로(개인전 3판).
+    """종족 필터를 걸면 그 종족 판수로 센다 — 기준값은 유형 그대로(개인전 2판).
 
-    전체로는 4판이라 문턱을 넘지만, 저그로는 두 판뿐이라 저그만 보면 지표가 사라져야 한다."""
+    전체로는 3판이라 문턱을 넘지만, 저그로는 한 판뿐이라 저그만 보면 지표가 사라져야 한다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     await _solo_matches(client, headers, 2, race="테란", start=1)
-    await _solo_matches(client, headers, 2, race="저그", start=3)
+    await _solo_matches(client, headers, 1, race="저그", start=3)
 
     overall = (await _solo_stats(client, headers))["overall"]
-    assert overall["plays"] == 4
-    assert overall["avgApm"] == 100  # 전 종족 4판 → 통과
+    assert overall["plays"] == 3
+    assert overall["avgApm"] == 100  # 전 종족 3판 → 통과
 
     zerg = (await _solo_stats(client, headers, race="저그"))["overall"]
-    assert zerg["plays"] == 2
-    assert [zerg[f] for f in _METRIC_FIELDS] == [None] * 5  # 저그 2판 → 미달
+    assert zerg["plays"] == 1
+    assert [zerg[f] for f in _METRIC_FIELDS] == [None] * 5  # 저그 1판 → 미달
     assert zerg["winRate"] == 100.0  # 승률은 그대로
 
 
@@ -328,20 +328,20 @@ async def test_stats_metric_gate_is_per_block_so_byrace_matches_race_filter(clie
     """칸마다 자기 판수로 판단한다 — 종족을 걸어 본 숫자와 안 걸고 byRace에서 꺼낸 같은
     숫자가 서로 어긋나면 안 된다.
 
-    테란 3판/저그 2판이면 전체(5판)와 테란 칸은 지표가 나오고 저그 칸만 null이다."""
+    테란 2판/저그 1판이면 전체(3판)와 테란 칸은 지표가 나오고 저그 칸만 null이다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
-    await _solo_matches(client, headers, 3, race="테란", start=1)
-    await _solo_matches(client, headers, 2, race="저그", start=4)
+    await _solo_matches(client, headers, 2, race="테란", start=1)
+    await _solo_matches(client, headers, 1, race="저그", start=4)
 
     member = await _solo_stats(client, headers)
-    assert member["overall"]["plays"] == 5
+    assert member["overall"]["plays"] == 3
     assert member["overall"]["avgApm"] == 100
-    assert member["byRace"]["테란"]["avgApm"] == 100          # 3판 → 통과
-    assert member["byRace"]["저그"]["avgApm"] is None          # 2판 → 미달
-    assert member["byRace"]["저그"]["plays"] == 2              # 전적은 그대로
+    assert member["byRace"]["테란"]["avgApm"] == 100          # 2판 → 통과
+    assert member["byRace"]["저그"]["avgApm"] is None          # 1판 → 미달
+    assert member["byRace"]["저그"]["plays"] == 1              # 전적은 그대로
 
     # 종족을 걸어서 본 저그 칸도 같은 결론이어야 한다.
     zerg_filtered = (await _solo_stats(client, headers, race="저그"))["overall"]
@@ -349,8 +349,8 @@ async def test_stats_metric_gate_is_per_block_so_byrace_matches_race_filter(clie
     assert zerg_filtered["plays"] == member["byRace"]["저그"]["plays"]
 
 
-async def test_stats_metric_gate_uses_ten_plays_for_team_matches(client):
-    """팀전은 문턱이 10판이다 — 한 판의 결과를 넷이 나눠 갖는 자리라 표본이 더 얕다."""
+async def test_stats_metric_gate_uses_a_higher_bar_for_team_matches(client):
+    """팀전은 문턱이 5판이다 — 한 판의 결과를 넷이 나눠 갖는 자리라 표본이 더 얕다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     for i in range(2, 5):
         await _signup(client, f"player0{i}", f"P{i}#100{i}")
@@ -373,16 +373,16 @@ async def test_stats_metric_gate_uses_ten_plays_for_team_matches(client):
         assert res.status_code == 200, res.text
         return res.json()["members"][0]["overall"]
 
-    await team_matches(9, 1)
-    nine = await team_stats()
-    assert nine["plays"] == 9
-    assert [nine[f] for f in _METRIC_FIELDS] == [None] * 5  # 아홉 판까지는 아직 없음
-    assert nine["winRate"] == 100.0
+    await team_matches(4, 1)
+    four = await team_stats()
+    assert four["plays"] == 4
+    assert [four[f] for f in _METRIC_FIELDS] == [None] * 5  # 네 판까지는 아직 없음
+    assert four["winRate"] == 100.0
 
-    await team_matches(1, 10)
-    ten = await team_stats()
-    assert ten["plays"] == 10
-    assert ten["avgApm"] == 100  # 열 판째에 비로소 나온다
+    await team_matches(1, 5)
+    five = await team_stats()
+    assert five["plays"] == 5
+    assert five["avgApm"] == 100  # 다섯 판째에 비로소 나온다
 
 
 async def test_stats_excludes_extreme_outlier_game_from_cmd_and_build_average(client):
@@ -626,7 +626,7 @@ async def test_stats_sums_build_mix_across_matches(client):
         client, headers, "2026-07-02",
         team1=[s2], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
     )
-    # 최소 판수(개인전 3판)를 채워야 지표가 나온다 — 구성도 지표라 같은 문을 지난다.
+    # 최소 판수(개인전 2판)를 채워야 지표가 나온다 — 구성도 지표라 같은 문을 지난다.
     s3 = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     await _create_match(
         client, headers, "2026-07-03",
@@ -688,7 +688,7 @@ async def test_stats_upgrade_average_skips_short_and_dataless_matches(client):
         client, headers, "2026-07-02",
         team1=[short_slot], team2=[_slot("player02", "저그")], result="team1", duration_seconds=600,
     )
-    # (3) 표본 문턱(개인전 3판)을 채우는 판 하나 — 25분이지만 업그레이드는 안 올렸다.
+    # (3) 표본 문턱(개인전 2판)을 채우는 판 하나 — 25분이지만 업그레이드는 안 올렸다.
     plain = _slot("player01", "테란", 100, 80, 500, 400, build=300)
     plain["buildMix"] = _mix(b_prod=10, core_seconds=600)
     await _create_match(

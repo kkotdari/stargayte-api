@@ -198,7 +198,7 @@ async def test_race_filter_scopes_rank_score(client):
 
     p1은 저그로는 세 번 다 이기고 테란으로는 세 번 다 진다. 전체 종족으로 보면 3승 3패로
     본전이지만, 저그만 보면 3승뿐이라 포인트가 더 높아야 한다. 종족별로 세 판씩인 건 종족
-    필터를 걸면 최소 판수(개인전 3판)도 그 종족 판수로 세기 때문이다 — 두 판씩이면 점수가
+    필터를 걸면 최소 판수(개인전 2판)도 그 종족 판수로 세기 때문이다 — 한 판씩이면 점수가
     아예 안 나와서 비교 자체가 불가능하다(test_race_filter_min_plays_counts_that_race_only).
     """
     headers = await _signup_many(client, 3)
