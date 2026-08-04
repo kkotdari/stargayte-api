@@ -1,4 +1,5 @@
 import calendar
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,7 @@ from app.domain.activity.schemas import (
     ActivityCommentAuthor,
     ActivityCommentMentionOut,
     ActivityCommentOut,
+    ActivityItemOut,
     KNOWN_TARGET_TYPES,
     RankingShiftEntry,
     RankingShiftOut,
@@ -413,6 +415,37 @@ def _kst(dt: datetime) -> datetime:
     return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).astimezone(_KST)
 
 
+@dataclass(frozen=True)
+class _Row:
+    """목록의 한 줄 — 내용 없이 '무엇이 어디에 있는가'만.
+
+    ids는 그 줄이 품은 원본 id들이다. 게임결과 묶음만 여럿이고(한 자리에서 이어 친 경기들)
+    나머지는 하나다. 순서와 번호는 이 목록으로 정하고, 내용은 페이지에 실린 줄만 채운다.
+    """
+
+    kind: str
+    key: str
+    ids: list[int]
+
+
+def _cursor_index(rows: list[_Row], cursor: str | None) -> int:
+    """커서가 가리키는 줄 다음부터 — 커서는 앞 페이지 마지막 줄의 열쇠다.
+
+    번호(index)가 아니라 열쇠로 잡는 이유는, 페이지를 받는 사이에 새 활동이 맨 위에 끼면
+    번호가 통째로 밀려 다음 페이지가 겹치거나 건너뛰기 때문이다. 열쇠는 그 줄 자체를
+    가리키므로 위에 무엇이 끼든 '그 다음'이 그대로다.
+
+    그 줄이 사라졌으면(그 사이 삭제) 이어 붙일 자리를 알 수 없다 — 처음부터 준다.
+    같은 줄을 다시 받는 편이, 조용히 건너뛰어 목록에 구멍이 나는 것보다 낫다.
+    """
+    if not cursor:
+        return 0
+    for idx, r in enumerate(rows):
+        if r.key == cursor:
+            return idx + 1
+    return 0
+
+
 class ActivityListService:
     """활동 목록의 줄 순서와 번호 — 프론트의 sortMsOf/challengeSortMs/sessionDateOf와
     같은 규칙을 서버에서 한 번 더 계산한다.
@@ -425,8 +458,13 @@ class ActivityListService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_rows(self, *, actor: Member) -> "ActivityListOut":
-        from app.domain.activity.schemas import ActivityListOut, ActivityListRow
+    async def _ordered_rows(self, *, actor: Member) -> tuple[list["_Row"], list]:
+        """줄을 순서대로 — 내용 없이 (종류, 열쇠, 담긴 id들)만. 도전장은 이미 다 받아 왔으므로
+        함께 돌려준다(페이지를 채울 때 다시 조회하지 않는다).
+
+        번호도 이 목록에서 나오고 내용도 이 목록에서 채운다 — 한 곳에서 나와야 "번호는
+        붙었는데 그 줄이 없다"가 원천적으로 안 생긴다.
+        """
         from app.domain.challenges.service import ChallengeService
 
         # 도전장은 서비스를 거쳐 받는다 — 상태(pending/confirmed/done/discarded)가 조회
@@ -452,30 +490,135 @@ class ActivityListService:
         entries.sort(key=lambda e: -e[0])
 
         # 잇달아 붙은 같은 세션의 게임결과를 한 줄로 묶는다 — 사이에 다른 종류가 끼면
-        # 거기서 끊긴다(프론트의 displayFeed와 같은 규칙). 줄의 열쇠는 그 묶음의 첫 경기다.
-        rows: list[tuple[str, str]] = []  # (kind, key)
+        # 거기서 끊긴다. 줄의 열쇠는 그 묶음의 첫 경기다.
+        rows: list[_Row] = []
         i = 0
         while i < len(entries):
             _, kind, key, day = entries[i]
             if kind != "gameResult":
-                rows.append((kind, key))
+                rows.append(_Row(kind, key, [int(key.split("-", 1)[1])]))
                 i += 1
                 continue
             j = i + 1
             while j < len(entries) and entries[j][1] == "gameResult" and entries[j][3] == day:
                 j += 1
-            rows.append(("gameResultPost", key))
+            # 묶음에 담긴 경기 id 전부 — 이 줄을 펴면 나오는 카드들이다.
+            ids = [int(entries[k][2].split("-", 1)[1]) for k in range(i, j)]
+            rows.append(_Row("gameResultPost", key, ids))
             i = j
+        return rows, challenges
 
+    async def list_rows(self, *, actor: Member) -> "ActivityListOut":
+        """줄 번호와 댓글만 — 내용은 안 싣는 옛 응답.
+
+        내용까지 함께 주는 list_feed가 생긴 뒤로는 이 경로를 프론트가 쓰지 않지만,
+        프론트와 API가 동시에 배포되지 않으므로 한동안 남겨 둔다.
+        """
+        from app.domain.activity.schemas import ActivityListOut, ActivityListRow
+
+        rows, _ = await self._ordered_rows(actor=actor)
         total = len(rows)
         return ActivityListOut(
             total=total,
             # 아래에서부터 센다 — 위에서 세면 새 활동이 하나 올라올 때마다 모든 줄이 밀린다.
-            rows=[ActivityListRow(key=key, kind=kind, no=total - idx) for idx, (kind, key) in enumerate(rows)],
-            # 댓글도 같이 실어 보낸다(요청: 목록·댓글 단일 API로 통합) — 목록 하나를 그리는
-            # 데 필요한 값은 한 번에 온다.
+            rows=[ActivityListRow(key=r.key, kind=r.kind, no=total - idx) for idx, r in enumerate(rows)],
             comments=await ActivityCommentService(self._session).list_all(actor=actor),
         )
+
+    async def list_feed(
+        self, *, actor: Member, storage, cursor: str | None, limit: int,
+    ) -> "ActivityFeedOut":
+        """활동 목록 한 페이지 — 줄 하나가 곧 아이템 하나이고, 내용도 댓글도 그 안에 있다.
+
+        너 나와·랭크 변동·게임결과를 같은 아이템으로 취급한다(요청: 하나의 목록으로).
+        예전에는 화면이 세 곳을 따로 받아 제 손으로 섞었는데, 그러면 섞는 규칙이 서버와
+        화면 양쪽에 있어야 하고(번호는 서버가 세니까) 한쪽만 고쳐지는 순간 어긋난다.
+        이제 섞는 자리가 한 곳뿐이다.
+
+        순서와 번호는 늘 전체를 놓고 센다 — 페이지는 그 다음에 자른다. 화면이 쥔 것만
+        세면 아직 안 받아온 과거만큼 번호가 통째로 어긋난다.
+        """
+        from app.domain.activity.schemas import ActivityFeedOut
+
+        rows, challenges = await self._ordered_rows(actor=actor)
+        total = len(rows)
+        start = _cursor_index(rows, cursor)
+        page = rows[start:start + limit]
+        # 다음 페이지가 있으면 이 페이지 마지막 줄의 열쇠를 커서로 준다. 열쇠로 잡아 두면
+        # 그 사이 새 활동이 맨 위에 끼어도 다음 페이지가 밀리거나 겹치지 않는다.
+        has_more = start + limit < total
+        return ActivityFeedOut(
+            total=total,
+            items=await self._hydrate(page, start=start, total=total, challenges=challenges,
+                                      actor=actor, storage=storage),
+            next_cursor=page[-1].key if has_more and page else None,
+        )
+
+    async def _hydrate(
+        self, page: list["_Row"], *, start: int, total: int, challenges: list,
+        actor: Member, storage,
+    ) -> list["ActivityItemOut"]:
+        """이 페이지의 줄에 내용과 댓글을 채운다 — 조회는 페이지에 실제로 실린 것만."""
+        from app.domain.activity.schemas import ActivityItemOut
+
+        by_kind: dict[str, list[int]] = {}
+        for r in page:
+            by_kind.setdefault(r.kind, []).extend(r.ids)
+
+        challenge_by_id = {c.id: c for c in challenges}
+        shift_by_id = await self._shifts_by_id(by_kind.get("rankingShift", []))
+        game_by_id = await self._games_by_id(by_kind.get("gameResultPost", []), actor=actor, storage=storage)
+
+        # 댓글은 한 번에 받아 대상별로 나눠 담는다 — 줄마다 물어보면 페이지 크기만큼
+        # 질의가 나간다. 댓글은 한 줄짜리라 전부 합쳐도 가볍다.
+        comments = await ActivityCommentService(self._session).list_all(actor=actor)
+        by_target: dict[tuple[str, int], list] = {}
+        for c in comments:
+            by_target.setdefault((c.target_type, c.target_id), []).append(c)
+
+        def mine(kind: str, ids: list[int]) -> list:
+            target = {"challenge": "challenge", "rankingShift": "rankingShift"}.get(kind, "gameResult")
+            return [c for i in ids for c in by_target.get((target, i), [])]
+
+        items: list[ActivityItemOut] = []
+        for offset, r in enumerate(page):
+            # 아래에서부터 센 번호(가장 오래된 줄이 1) — 위에서 세면 새 활동 하나에 전부 밀린다.
+            no = total - (start + offset)
+            items.append(ActivityItemOut(
+                key=r.key, kind=r.kind, no=no,
+                challenge=challenge_by_id.get(r.ids[0]) if r.kind == "challenge" else None,
+                ranking_shift=shift_by_id.get(r.ids[0]) if r.kind == "rankingShift" else None,
+                game_results=[game_by_id[i] for i in r.ids if i in game_by_id]
+                if r.kind == "gameResultPost" else [],
+                comments=mine(r.kind, r.ids),
+            ))
+        return items
+
+    async def _shifts_by_id(self, ids: list[int]) -> dict[int, "RankingShiftOut"]:
+        if not ids:
+            return {}
+        from sqlalchemy import select
+
+        rows = (await self._session.scalars(
+            select(RankingShift).where(RankingShift.id.in_(ids))
+        )).all()
+        return {s.id: _to_ranking_shift_out(s) for s in rows}
+
+    async def _games_by_id(self, ids: list[int], *, actor: Member, storage) -> dict[int, object]:
+        if not ids:
+            return {}
+        from app.domain.game_results.service import GameResultService, to_game_result_out
+
+        service = GameResultService(self._session, storage)
+        matches = await service.get_matches_by_ids(ids)
+        # 별칭 표는 한 번만 만들어 목록 전체가 나눠 쓴다 — 경기마다 다시 조회하지 않는다.
+        alias_by_player_name = await service.alias_by_player_name()
+        is_admin = actor.has_any_role("0202")
+        return {
+            m.id: to_game_result_out(m, storage, alias_by_player_name,
+                                     actor_pk=actor.pk, is_admin=is_admin)
+            for m in matches
+        }
 
     async def _game_rows(self) -> list[tuple[int, float, str]]:
         """(경기id, 정렬키ms, 세션날짜) — 시각을 아는 경기는 시작 시각, 모르면 그날 자정."""

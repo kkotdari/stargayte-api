@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Query, status
 
-from app.api.deps import CurrentAdmin, CurrentMember, DbSession
+from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
 from app.domain.activity.schemas import (
     ActivityCommentCreate,
     ActivityCommentOut,
     ActivityCommentWrite,
+    ActivityFeedOut,
     ActivityListOut,
     ActivityTargetTypeInput,
     RankingRecomputeResult,
@@ -18,7 +19,27 @@ from app.domain.activity.service import ActivityCommentService, ActivityListServ
 router = APIRouter(tags=["activity"])
 
 
-@router.get("/list", response_model=ActivityListOut)
+@router.get("/feed", response_model=ActivityFeedOut)
+async def list_activity_feed(
+    db: DbSession, storage: StorageDep, current: CurrentMember,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> ActivityFeedOut:
+    """활동 목록 — 화면이 부르는 API는 이것 하나다(요청: API 딱 하나만 호출하게).
+
+    너 나와·랭크 변동·게임결과를 같은 아이템으로 취급하고, 내용도 댓글도 그 안에 담아
+    보낸다. 예전에는 화면이 세 곳을 따로 받아 제 손으로 섞었는데, 그러면 섞는 규칙이
+    서버(번호를 세니까)와 화면 양쪽에 있어야 하고 한쪽만 고쳐지는 순간 번호가 줄과
+    어긋난다. 이제 섞는 자리가 한 곳뿐이다.
+
+    순서와 번호는 늘 전체를 놓고 세고, 자르는 건 그 다음이다.
+    """
+    return await ActivityListService(db).list_feed(
+        actor=current, storage=storage, cursor=cursor, limit=limit,
+    )
+
+
+@router.get("/list", response_model=ActivityListOut, include_in_schema=False)
 async def list_activity_rows(db: DbSession, current: CurrentMember) -> ActivityListOut:
     """활동 목록을 그리는 데 필요한 것 한 벌 — 줄 번호와 댓글(요청: 단일 API로 통합).
 

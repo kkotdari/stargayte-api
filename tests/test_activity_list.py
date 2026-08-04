@@ -257,3 +257,100 @@ async def test_list_carries_comments_too(client):
     old = (await client.get("/api/activity/comments/all", headers=_h(a))).json()
     assert [c["id"] for c in old] == [c["id"] for c in body["comments"]]
 
+
+
+async def test_feed_is_one_list_of_items_with_content_and_comments(client):
+    """너 나와·랭크 변동·게임결과가 같은 아이템이고, 내용도 댓글도 그 안에 있다(요청).
+
+    화면이 부르는 API는 이것 하나다 — 세 곳을 따로 받아 제 손으로 섞던 것을 서버 한 곳으로
+    모았다. 섞는 규칙이 양쪽에 있으면 한쪽만 고쳐지는 순간 번호가 줄과 어긋난다.
+    """
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    mid = (await _register_match(client, _h(a), "2026-04-01"))["id"]
+    res = await client.post(
+        "/api/challenges",
+        headers=_h(a),
+        json={"targetMemberIds": ["bob"], "ownTeamMemberIds": [], "message": "붙자",
+              "scheduledDate": "2026-04-05"},
+    )
+    assert res.status_code in (200, 201), res.text
+    res = await client.post(
+        "/api/activity/comments",
+        headers=_h(a),
+        json={"targetType": "gameResult", "targetId": mid, "text": "좋은 경기"},
+    )
+    assert res.status_code == 201, res.text
+
+    body = (await client.get("/api/activity/feed", headers=_h(a))).json()
+    assert body["total"] == 2, body
+    assert [i["no"] for i in body["items"]] == [2, 1], body
+    assert body["nextCursor"] is None
+
+    challenge, games = body["items"][0], body["items"][1]
+    # 도전장 줄에는 도전장 내용이, 게임결과 줄에는 그 자리에서 친 경기들이 담긴다.
+    assert challenge["kind"] == "challenge"
+    assert challenge["challenge"]["message"] == "붙자"
+    assert challenge["gameResults"] == [] and challenge["comments"] == []
+    assert games["kind"] == "gameResultPost"
+    assert [g["id"] for g in games["gameResults"]] == [mid]
+    # 댓글은 그 줄에 달린 것만, 자기 대상을 그대로 들고 온다(카드가 제 것을 찾아 붙는다).
+    assert [(c["targetType"], c["targetId"], c["text"]) for c in games["comments"]] \
+        == [("gameResult", mid, "좋은 경기")]
+
+
+async def test_feed_pages_without_gaps_or_repeats(client):
+    """페이지를 이어 받아도 번호가 1..total을 빠짐없이 한 번씩 쓴다.
+
+    순서와 번호는 늘 전체를 놓고 세고 자르는 건 그 다음이다 — 페이지 안에서 세면 두 번째
+    페이지가 다시 1부터 시작한다.
+    """
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    for day in ("2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04", "2026-04-05"):
+        await _register_match(client, _h(a), day)
+
+    nos: list[int] = []
+    keys: list[str] = []
+    cursor = None
+    for _ in range(10):
+        params = {"limit": 2, **({"cursor": cursor} if cursor else {})}
+        body = (await client.get("/api/activity/feed", headers=_h(a), params=params)).json()
+        nos += [i["no"] for i in body["items"]]
+        keys += [i["key"] for i in body["items"]]
+        cursor = body["nextCursor"]
+        if not cursor:
+            break
+
+    assert sorted(nos) == [1, 2, 3, 4, 5], nos
+    assert nos == sorted(nos, reverse=True), nos  # 최신이 위
+    assert len(set(keys)) == len(keys), keys
+
+
+async def test_feed_groups_one_session_into_one_item(client):
+    """한 자리에서 이어 친 경기는 아이템 하나 — 그 안에 경기들이 다 담긴다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    await _approve(client, a["accessToken"], "bob")
+    ids = [(await _register_match(client, _h(a), "2026-04-01"))["id"] for _ in range(3)]
+
+    body = (await client.get("/api/activity/feed", headers=_h(a))).json()
+    assert body["total"] == 1, body
+    item = body["items"][0]
+    assert item["kind"] == "gameResultPost"
+    assert sorted(g["id"] for g in item["gameResults"]) == sorted(ids), item
+
+
+async def test_feed_cursor_pointing_at_a_deleted_row_restarts(client):
+    """커서가 가리키던 줄이 사라졌으면 처음부터 준다 — 같은 줄을 다시 받는 편이 조용히
+    건너뛰어 목록에 구멍이 나는 것보다 낫다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    body = (await client.get("/api/activity/feed", headers=_h(a), params={"cursor": "ms-99999"})).json()
+    assert body["total"] == 0 and body["items"] == []
+
+
+async def test_feed_requires_login(client):
+    res = await client.get("/api/activity/feed")
+    assert res.status_code in (401, 403), res.text

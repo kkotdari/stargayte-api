@@ -3,6 +3,12 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# 활동 아이템이 품는 내용 — 도전장·게임결과 스키마를 그대로 쓴다. 여기서 다시 정의하면
+# 같은 것이 두 벌이 되어 한쪽만 고쳐지는 순간 어긋난다(둘 다 activity를 import하지 않아
+# 순환이 생기지 않는다).
+from app.domain.challenges.schemas import ChallengeOut
+from app.domain.game_results.schemas import GameResultOut
+
 COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 활동 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
@@ -163,3 +169,42 @@ class ActivityListOut(BaseModel):
     total: int
     rows: list[ActivityListRow]
     comments: list[ActivityCommentOut] = Field(default_factory=list)
+
+
+class ActivityItemOut(BaseModel):
+    """활동 목록의 아이템 하나 — 너 나와·랭크 변동·게임결과를 같은 것으로 취급한다(요청).
+
+    화면에서 한 줄이 곧 하나다. 종류에 따라 채워지는 칸이 다를 뿐, 줄을 세우고 번호를
+    붙이고 댓글을 다는 규칙은 셋이 똑같다.
+
+    게임결과만 여럿(gameResults)인 것은 한 자리에서 이어 친 경기가 한 줄이기 때문이다 —
+    줄을 펴면 그 안의 카드들이 나온다. 댓글은 그 줄에 속한 것 전부이고, 각 댓글이 자기
+    대상(targetType·targetId)을 그대로 들고 있어 카드마다 제 것을 찾아 붙는다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    key: str
+    kind: Literal["challenge", "rankingShift", "gameResultPost"]
+    # 아래에서부터 센 번호(가장 오래된 줄이 1).
+    no: int
+    challenge: ChallengeOut | None = None
+    ranking_shift: RankingShiftOut | None = Field(default=None, alias="rankingShift")
+    game_results: list[GameResultOut] = Field(default_factory=list, alias="gameResults")
+    comments: list[ActivityCommentOut] = Field(default_factory=list)
+
+
+class ActivityFeedOut(BaseModel):
+    """활동 목록 한 페이지 — 화면이 부르는 API는 이것 하나뿐이다(요청).
+
+    순서와 번호는 늘 전체를 놓고 세고 페이지는 그 다음에 자른다 — 화면이 쥔 것만 세면
+    아직 안 받아온 과거만큼 번호가 통째로 어긋난다. 그래서 total은 페이지가 아니라
+    목록 전체의 줄 수다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    total: int
+    items: list[ActivityItemOut]
+    # 다음 페이지를 부를 때 그대로 돌려주는 값 — 이 페이지 마지막 줄의 열쇠다. 없으면 끝.
+    next_cursor: str | None = Field(default=None, alias="nextCursor")

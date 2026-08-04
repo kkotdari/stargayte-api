@@ -1157,6 +1157,11 @@ class GameResultService:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
         return match
 
+    async def get_matches_by_ids(self, match_ids: list[int]) -> list[GameResult]:
+        """여러 경기를 한 번에 — 활동 목록이 한 줄에 담긴 경기들을 채울 때 쓴다.
+        없는 id는 조용히 빠진다(그 사이 지워진 경기)."""
+        return await self._repo.get_many(match_ids)
+
     async def build_replay_archive(self) -> bytes:
         """등록된 모든 리플레이(.rep 첨부)를 zip 바이트로 묶는다(운영자 제어판의 '리플레이
         전체 다운로드'). 폴더 구분 없이 평평하게 담는다(요청). 파일이 유실된 건은 조용히

@@ -32,6 +32,14 @@ class GameResultRepository:
         stmt = self._base_query().where(GameResult.id == match_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def get_many(self, match_ids: list[int]) -> list[GameResult]:
+        """여러 경기를 한 번에 — 활동 목록이 한 줄(한 자리에서 이어 친 묶음)을 채울 때 쓴다.
+        하나씩 부르면 줄에 담긴 경기 수만큼 질의가 나간다."""
+        if not match_ids:
+            return []
+        stmt = self._base_query().where(GameResult.id.in_(match_ids))
+        return list((await self._session.execute(stmt)).scalars().unique().all())
+
     async def get_by_match_no(self, match_no: str) -> GameResult | None:
         stmt = self._base_query().where(GameResult.match_no == match_no)
         return (await self._session.execute(stmt)).scalar_one_or_none()
