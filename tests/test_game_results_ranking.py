@@ -240,6 +240,54 @@ async def test_race_filter_scopes_rank_score(client):
     assert terran < overall, f"테란 전패인데 포인트가 전체({overall})보다 낮지 않다: {terran}"
 
 
+async def test_main_race_scopes_rank_score_per_member(client):
+    """주종족(race=main)은 사람마다 제 종족 기준으로 포인트를 다시 매긴다(요청).
+
+    한때는 주종족으로 봐도 포인트만 전체 종족 기준으로 남았다 — 사람마다 다른 종족이라
+    서버가 한 잣대로 걸 수 없다는 이유였는데, 실제로는 한 번의 재생이 이미 (회원, 종족)
+    조합 전부의 점수를 만들어 두므로 사람마다 제 칸을 집기만 하면 된다.
+
+    p1은 저그를 많이(3판) 하고 그 저그로 전승, 테란은 두 판 다 진다. 주종족으로 보면
+    p1의 포인트는 저그 것과 같아야 하고, 전체 종족 것보다는 높아야 한다."""
+    headers = await _signup_many(client, 3)
+
+    async def game(p1_race: str, foe: str, result: str) -> None:
+        res = await client.post(
+            "/api/game-results",
+            headers=headers,
+            json={
+                "date": TODAY, "result": result, "note": "", "matchType": "0101",
+                "team1": [{"memberId": "player01", "race": p1_race}],
+                "team2": [{"memberId": foe, "race": "테란"}],
+            },
+        )
+        assert res.status_code == 200, res.text
+
+    for foe in ("player02", "player03", "player02"):
+        await game("저그", foe, "team1")
+    for foe in ("player02", "player03"):
+        await game("테란", foe, "team2")
+
+    async def entry_of(race: str | None) -> dict:
+        params = {"matchType": "0101"}
+        if race:
+            params["race"] = race
+        res = await client.get("/api/game-results/stats", headers=headers, params=params)
+        assert res.status_code == 200, res.text
+        return {m["memberId"]: m for m in res.json()["members"]}["player01"]
+
+    overall = await entry_of(None)
+    zerg = await entry_of("저그")
+    main = await entry_of("main")
+
+    assert main["mostPlayedRace"] == "저그"
+    assert main["rankScore"] == zerg["rankScore"]      # 제 주종족 잣대 그대로
+    assert main["rankScore"] > overall["rankScore"]    # 테란 전패가 안 섞인다
+    # 집계 자체는 여전히 '전체'다 — 화면이 byRace에서 그 사람 것을 골라 쓴다.
+    assert main["overall"]["plays"] == overall["overall"]["plays"] == 5
+    assert main["byRace"]["저그"]["plays"] == 3
+
+
 async def test_rank_score_is_null_without_games(client):
     """이 기간·유형에 한 경기도 없는 회원은 점수를 내리지 않는다(요청: 경기 없는 0점은
     null로 내려서 화면에서 "-"로 보이게).

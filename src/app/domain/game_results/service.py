@@ -811,6 +811,8 @@ class GameResultService:
         min_plays = _min_plays_for(match_type)
 
         entries: list[MemberStatsEntry] = []
+        # 사람마다의 주종족 — "main"으로 볼 때 순위·포인트를 이 종족 기준으로 매긴다.
+        main_race_by_pk: dict[int, str | None] = {}
         for member in members:
             race_rows = by_member.get(member.pk, {})
             raw_race_rows = raw_by_member_race.get(member.pk, {})
@@ -827,7 +829,10 @@ class GameResultService:
                 )
 
             overall_agg = _RaceAgg()
-            if race and race != "all":
+            # "main"(주종족)은 집계로는 '전체'다 — 사람마다 다른 종족이라 한 잣대로 걸 수가
+            # 없고, 화면이 by_race에서 그 사람 것을 골라 쓴다. 갈리는 건 순위·포인트뿐이고
+            # 그건 아래 _apply_rank_order가 사람마다 제 주종족으로 매긴다.
+            if race and race not in ("all", "main"):
                 if race in race_rows:
                     overall_agg.add_row(race_rows[race])
                 overall_raw = raw_race_rows.get(race, [])
@@ -846,6 +851,7 @@ class GameResultService:
                     best_plays = plays
                     most_played_race = r
 
+            main_race_by_pk[member.pk] = most_played_race
             overall_entry = _gate_metrics_by_plays(
                 overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw)), min_plays,
             )
@@ -865,6 +871,7 @@ class GameResultService:
             date_to=parsed_date_to,
             match_type=match_type,
             race=race,
+            main_race_by_pk=main_race_by_pk,
         )
         return entries
 
@@ -877,6 +884,7 @@ class GameResultService:
         date_to: date | None,
         match_type: str | None,
         race: str | None,
+        main_race_by_pk: dict[int, str | None] | None = None,
     ) -> None:
         """랭킹 정렬(sort_order/tie_group)을 entries에 채워 넣는다 — entries[i]는 members[i]의 것이다.
 
@@ -906,7 +914,9 @@ class GameResultService:
             date_from=date_from,
             date_to=date_to,
             match_type=match_type,
-            race=race,
+            # 주종족은 사람마다 달라 한 종족으로 걸 수가 없다 — 맞대결 전적은 순위 산정에
+            # 안 쓰이는 참고값이라 전 종족으로 둔다.
+            race=None if race == "main" else race,
         )
         h2h: HeadToHead = {}
         for row in rows:
@@ -946,9 +956,17 @@ class GameResultService:
         )
         # 종족 필터가 걸리면 레이팅 대상을 '(회원, 종족)'으로 나눠 그 종족으로 낸 경기만 그
         # 회원의 그 종족 레이팅에 쌓는다(요청: "종족은 랭커의 종족"). '전체'면 회원 단위 하나.
+        #
+        # 주종족("main")도 여기서 갈린다(요청: "주종족으로 했을 때 포인트를 다시 계산 못해?").
+        # 한 번의 재생이 이미 (회원, 종족) 조합 전부의 점수를 만들어 두므로, 사람마다 제
+        # 주종족 칸을 집기만 하면 된다 — 조회가 늘지도, 재생을 더 돌지도 않는다.
         race_active = race is not None and race != "all"
+        by_main = race == "main"
+        mains = main_race_by_pk or {}
 
         def _rk(pk: int):
+            if by_main:
+                return (pk, mains.get(pk))
             return (pk, race) if race_active else pk
 
         engine, _, running = _replay_ratings(replay_rows, by_race=race_active)
