@@ -182,9 +182,9 @@ def _trimmed_per_min(rows: list, attr: str) -> int | None:
 #
 # 아래 _outlier_keep_mask(중앙값/MAD)와 겹치는 게 아니라 서로 다른 구멍을 막는다: MAD 쪽은
 # 표본이 _OUTLIER_MIN_SAMPLES(5판) 미만이면 아예 동작하지 않아서, 서너 판만 뛴 회원의 20초
-# 짜리 기록은 지금껏 그대로 평균에 들어갔다. 순위 최소 판수가 개인전 두 판까지 내려오면서
-# (_MIN_PLAYS_FOR_RANK) 정확히 그 사각지대에 있는 회원이 순위표에 오르게 됐다. 경기 길이
-# 기준은 표본이 한 판이어도 판단할 수 있어 그 구간을 메운다.
+# 짜리 기록은 지금껏 그대로 평균에 들어갔다. 판수 문턱을 걷어내면서 서너 판만 뛴 회원도
+# 그대로 표에 서게 됐는데, 거기가 정확히 MAD의 사각지대다. 경기 길이 기준은 표본이 한 판이어도
+# 판단할 수 있어 그 구간을 메운다.
 _MIN_DURATION_SECONDS = 120
 
 
@@ -470,56 +470,11 @@ class _Record:
 HeadToHead = dict[int, dict[int, _Record]]
 
 
-# "이 사람을 말해줄 만큼 뛰었나"의 기준 판수(요청: 개인전 2판, 팀전 5판 — 그전엔 3판/10판
-# 이었는데 너무 높아 표에 "-"만 늘어섰다). 개인전은 결과가 온전히 그 사람
-# 몫이라 적은 판수로도 읽히는 편이지만, 팀전은 한 판의 결과를 넷이 나눠 갖는 자리라 표본이
-# 그만큼 얕다 — 그래서 팀전 쪽 문턱이 더 높다.
-#
-# 쓰는 곳은 지표 평균 하나뿐이다(_gate_metrics_by_plays) — 못 채우면 APM·유효APM·커맨드·
-# 유효커맨드·생산이 전부 null이다. 판수가 적으면 이상치 판정(_OUTLIER_MIN_SAMPLES)조차 못
-# 돌아서, 두 판 중 한 판만 튀어도 그 평균이 그대로 끌려간다 — 잴 만큼 안 뛴 걸 숫자로
-# 내보내는 게 더 나쁘다.
-#
-# 안 걸리는 것들.
-#  · 전적(판수/승/무/승률) — 요청: "승률은 정확하니까 굳이 안 빼도 될듯". 한 판을 뛰었으면
-#    그 한 판의 승패는 있는 그대로의 사실이라, 표본이 적다고 가릴 값이 아니다.
-#  · 포인트·순위(_apply_rank_order) — 요청: "포인트 컬럼은 최소 경기수 제약을 적용 안 하는
-#    곳이야, 편차가 없는 확정적 결과이기 때문". 평균이 아니라 누적이라 적게 뛴 사람은
-#    '못 믿을 값'이 나오는 게 아니라 그냥 적게 쌓인다.
-#
-# 종족 필터가 걸리면 세는 대상이 그 종족 판수로 바뀐다(기준값 자체는 유형 그대로다 — 개인전에
-# 종족을 걸면 그 종족으로 2판, 팀전이면 그 종족으로 5판).
-#
-# 유형을 안 고른 조회(match_type=None)는 예전 기준('한 판이라도')을 그대로 둔다 — 화면에서는
-# 유형이 필수라 갈 수 없는 경로이고(프론트가 항상 matchType을 보낸다), 개인전과 팀전 경기가
-# 한 표본에 섞여서 어느 쪽 문턱을 대도 말이 안 되는 자리다. API 직접 호출·테스트 전용.
-# 문턱을 낮췄다(요청: 개인전 2판, 팀전 5판) — 높게 잡아 두니 표에 "-"만 늘어섰다.
-_MIN_PLAYS = {"0101": 2, "0102": 5}
-_MIN_PLAYS_DEFAULT = 1
-
-
-def _min_plays_for(match_type: str | None) -> int:
-    return _MIN_PLAYS.get(match_type or "", _MIN_PLAYS_DEFAULT)
-
-
-def _gate_metrics_by_plays(entry: RaceStatsEntry, min_plays: int) -> RaceStatsEntry:
-    """판수가 기준 미만인 칸은 지표 평균만 전부 null로 내린다(전적·승률은 그대로).
-
-    entry.plays는 그 칸 자신의 판수다 — 종족별 칸이면 그 종족 판수, 전체 칸이면 전체(종족
-    필터가 걸렸으면 그 종족) 판수. 칸마다 자기 표본으로 판단해야, 종족을 걸어 본 숫자와
-    안 걸고 byRace에서 꺼내 본 같은 숫자가 서로 어긋나지 않는다."""
-    if entry.plays >= min_plays:
-        return entry
-    blanks: dict[str, object] = {
-        field: None for field, _attr in (*_TRIMMED_RATES, *_TRIMMED_VOLUMES)
-    }
-    # 생산 구성도 지표다 — 표본이 모자라면 같이 내린다(안 그러면 한 판만 뛴 사람의 도넛이
-    # 다른 지표는 '-'인 채로 혼자 그려진다).
-    blanks.update({
-        "build_mix": None, "avg_worker5": None,
-        "mix_plays": None, "mix_seconds": None, "up_plays": None,
-    })
-    return entry.model_copy(update=blanks)
+# 표본이 모자란다고 지표를 가리지는 않는다(요청: "그런 제한 다 없애줘 다 보여주기").
+# 한때 개인전 2판·팀전 5판을 못 채우면 APM·커맨드·생산을 전부 null로 내렸는데, 표에 "-"만
+# 늘어서는 값이 그 자체로 정보가 없었다 — 적게 뛴 사람의 값은 적게 뛴 값으로 읽으면 된다.
+# 튀는 한 판을 걸러내는 장치는 그대로 남는다: 경기 길이(_MIN_DURATION_SECONDS)와 중앙값/MAD
+# (_outlier_keep_mask). 그쪽은 "몇 판 뛰었나"가 아니라 "이 판이 정상인가"를 본다.
 
 
 def _replay_order_key(game_started_at, match_date, match_no):
@@ -807,9 +762,6 @@ class GameResultService:
         for raw in raw_rows:
             raw_by_member_race.setdefault(raw.member_pk, {}).setdefault(raw.race, []).append(raw)
 
-        # 판수가 이만큼 안 되는 칸은 지표 평균을 내보내지 않는다(전적·승률은 그대로).
-        min_plays = _min_plays_for(match_type)
-
         entries: list[MemberStatsEntry] = []
         # 사람마다의 주종족 — "main"으로 볼 때 순위·포인트를 이 종족 기준으로 매긴다.
         main_race_by_pk: dict[int, str | None] = {}
@@ -824,9 +776,7 @@ class GameResultService:
                     agg.add_row(race_rows[r])
                 entry = agg.to_entry()
                 raw_for_race = raw_race_rows.get(r, [])
-                by_race[r] = _gate_metrics_by_plays(
-                    entry.model_copy(update=_trimmed_avgs(raw_for_race)), min_plays,
-                )
+                by_race[r] = entry.model_copy(update=_trimmed_avgs(raw_for_race))
 
             overall_agg = _RaceAgg()
             # "main"(주종족)은 집계로는 '전체'다 — 사람마다 다른 종족이라 한 잣대로 걸 수가
@@ -852,9 +802,7 @@ class GameResultService:
                     most_played_race = r
 
             main_race_by_pk[member.pk] = most_played_race
-            overall_entry = _gate_metrics_by_plays(
-                overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw)), min_plays,
-            )
+            overall_entry = overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw))
             entries.append(
                 MemberStatsEntry(
                     member_id=member.id,
@@ -985,13 +933,11 @@ class GameResultService:
         # 같은 곳에서 스케일돼 "Δ의 합 = 카드 점수"가 스케일 후에도 정확히 유지된다.
         score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
 
-        # 포인트에는 최소 판수(_MIN_PLAYS)를 걸지 않는다(요청: "포인트 컬럼은 최소 경기수
+        # 포인트에는 판수 문턱이 없다(요청: "포인트 컬럼은 최소 경기수
         # 제약을 적용 안 하는 곳이야 — 편차가 없는 확정적 결과이기 때문"). 이 점수는 평균이
         # 아니라 누적이다: 이길 때만 오르고 질 때 안 내려가는 값이라, 적게 뛴 사람은 표본이
         # 얕아 못 믿을 값이 나오는 게 아니라 그냥 적게 쌓인다. 세 판 뛰고 3점인 사람과 서른
         # 판 뛰고 30점인 사람 사이에 문턱을 둘 이유가 없다 — 순서가 이미 그 차이를 말한다.
-        # (표본이 얕으면 못 믿는 값들 — APM·커맨드·생산 — 은 여전히 _gate_metrics_by_plays가
-        # 가린다. 그쪽은 평균이라 사정이 다르다.)
         #
         # 갈라 두는 것은 '한 판이라도 뛰었나' 하나뿐이다. 0경기와 0점은 다른 말이라(잰 적이
         # 없는 것과 바닥까지 떨어진 것) 값을 null로 두고, 진 사람이 음수여도 안 뛴 사람보다는
