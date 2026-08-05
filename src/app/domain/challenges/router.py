@@ -1,6 +1,6 @@
 from fastapi import APIRouter, status
 
-from app.api.deps import CurrentAdmin, CurrentMember, DbSession
+from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
 from app.domain.challenges.schemas import (
     ChallengeCreate,
     ChallengeListOut,
@@ -34,9 +34,10 @@ async def get_result_pending_for_me(db: DbSession, current: CurrentMember) -> Ch
 
 @router.post("", response_model=ChallengeOut)
 async def create_challenge(
-    payload: ChallengeCreate, db: DbSession, current: CurrentMember
+    payload: ChallengeCreate, db: DbSession, current: CurrentMember, storage: StorageDep
 ) -> ChallengeOut:
-    return await ChallengeService(db).create_challenge(payload, actor=current)
+    # 호출 만들기만 저장소를 함께 받는다 — 편지지 배경 사진이 여기로만 들어온다.
+    return await ChallengeService(db, storage).create_challenge(payload, actor=current)
 
 
 @router.post("/{challenge_id}/respond", response_model=ChallengeOut)

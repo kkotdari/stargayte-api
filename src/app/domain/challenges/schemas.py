@@ -16,6 +16,11 @@ ChallengeStatus = Literal["pending", "confirmed", "done", "discarded"]
 ChallengeResult = Literal["creator", "target", "draw", "not_held"]
 
 
+# 편지지 배경 사진 한 장의 상한 — data URL 문자열 길이다(base64라 실제 바이트의 약 4/3).
+# 브라우저가 긴 변 1440px JPEG로 줄여 보내므로 보통 한 장에 200~500KB다.
+_IMAGE_MAX_CHARS = 3_000_000
+
+
 class ChallengeAuthor(BaseModel):
     id: str
     nickname: str
@@ -75,6 +80,10 @@ class ChallengeOut(BaseModel):
     canceled_by: ChallengeAuthor | None = Field(default=None, alias="canceledBy")
     # 확정된 대결의 결과(이긴 쪽) — 아직 아무도 입력하지 않았으면 None.
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
+    # 편지지 배경 사진(선택) — 없으면 None이고, 그러면 편지지는 평소의 유리 그대로다.
+    backdrop_url: str | None = Field(default=None, alias="backdropUrl")
+    # 같은 사진의 공유 카드(1200×600)판 — 카카오 썸네일 자리에 그대로 넣는다.
+    backdrop_share_url: str | None = Field(default=None, alias="backdropShareUrl")
 
 
 class ChallengeCreate(BaseModel):
@@ -94,9 +103,20 @@ class ChallengeCreate(BaseModel):
     # — 본인 포함 최대 4명이라 이 목록 자체는 최대 3명. (지금 UI는 1:1만 신청하므로 항상
     # 빈 배열로 오지만, 서버는 계속 팀전을 받아준다 — 나중에 UI가 팀전을 다시 열면 그대로 쓴다.)
     own_team_member_ids: list[str] = Field(default_factory=list, alias="ownTeamMemberIds", max_length=3)
+    # 편지지 배경 사진(선택) — 브라우저가 캔버스로 줄여서 data URL로 보낸다(요청: "용량
+    # 줄여서 업로드"). 서버는 받은 뒤 한 번 더 줄여 저장하므로 이 상한은 "말도 안 되게
+    # 큰 것"만 걸러내는 자리다.
+    backdrop: str | None = Field(default=None, max_length=_IMAGE_MAX_CHARS)
+    # 같은 사진의 공유 카드(1200×600)판 — 로고/문구까지 얹은 완성본을 브라우저가 함께 만든다.
+    backdrop_share: str | None = Field(
+        default=None, max_length=_IMAGE_MAX_CHARS, alias="backdropShare",
+    )
 
     @model_validator(mode="after")
     def _normalize(self) -> "ChallengeCreate":
+        for name, value in (("backdrop", self.backdrop), ("backdropShare", self.backdrop_share)):
+            if value is not None and not value.startswith("data:image/"):
+                raise ValueError(f"{name}은(는) data:image/... 형식이어야 합니다.")
         if len(set(self.target_member_ids)) != len(self.target_member_ids):
             raise ValueError("같은 회원을 두 번 지목할 수 없습니다.")
         if len(set(self.own_team_member_ids)) != len(self.own_team_member_ids):

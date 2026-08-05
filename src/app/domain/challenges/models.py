@@ -45,6 +45,14 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # "그날 봐서", "퇴근하고" 같은 값이 들어온다 — 정렬이나 마감 계산에는 절대 쓰지 않는다
     # (그건 계속 scheduled_date만 본다). 빈 문자열이면 안 적은 것.
     scheduled_time_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 편지지 배경 사진(선택) — 부르는 사람이 호출할 때 한 장 올린다(요청). 저장된 파일의
+    # 절대 URL이고, NULL이면 안 올린 것(평소의 유리 편지지 그대로).
+    backdrop_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 위 사진을 카카오 공유 카드 자리(1200×600)에 맞춰 미리 앉혀 둔 판 — 같은 사진이지만
+    # 비율이 다르고 로고/문구가 얹혀 있다(요청: "공유시 썸네일 배경으로 쓰임"). 카카오는
+    # 자기 서버에서 이 URL을 읽어 2:1로 잘라 쓰므로, 원본을 그대로 주면 위아래가 잘린다 —
+    # 그래서 두 장을 따로 둔다. NULL이면 사진 없는 호출이라 종류별 기본 썸네일을 쓴다.
+    backdrop_share_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
     # 상대의 명시적 거절, 응답 마감(무응답 거절), 미실시(not_held) 결과 입력. 상태(_status_of)의
     # 유일한 폐기 판정 근거이자, 휴지통 7일 자동 비움(deleted_at 소프트삭제)의 기준 시각이다.

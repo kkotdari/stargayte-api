@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
+from app.core.imaging import resize_image_bytes
 from app.domain.challenges.models import Challenge, ChallengeParticipant
 from app.domain.challenges.repository import ChallengeRepository
 from app.domain.challenges.schemas import (
@@ -15,6 +16,8 @@ from app.domain.challenges.schemas import (
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
+from app.storage.base import FileStorage
+from app.storage.data_url import decode_data_url
 
 # 응답 없이 이 기간이 지나면(pending 상태 그대로) "무응답 거절"로 보고 폐기(휴지통) 처리한다
 # — 요청: 72시간. 단, 예정 시각이 그보다 먼저면 예정 시각이 마감이다(_response_deadline).
@@ -27,6 +30,12 @@ TRASH_RETENTION = timedelta(days=7)
 # 예정 날짜/시간은 한국시간 벽시계값으로 저장한다 — 비교(마감/지남 판정) 때만 KST로 해석해
 # UTC로 환산한다.
 KST = ZoneInfo("Asia/Seoul")
+
+# 편지지 배경 사진을 저장할 때의 상한 — 편지지는 모바일 화면을 꽉 채우는 정도라 긴 변
+# 1440px이면 레티나에서도 충분하고, 공유 카드판은 카카오가 쓰는 1200×600 그대로다.
+_BACKDROP_MAX_SIDE = 1440
+_SHARE_MAX_SIDE = 1200
+_BACKDROP_QUALITY = 82
 
 
 def _scheduled_dt(challenge: "Challenge") -> datetime | None:
@@ -159,14 +168,37 @@ def to_challenge_out(challenge: Challenge) -> ChallengeOut:
             else None
         ),
         resultWinnerSide=challenge.result_winner_side,
+        backdropUrl=challenge.backdrop_url,
+        backdropShareUrl=challenge.backdrop_share_url,
     )
 
 
 class ChallengeService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, storage: FileStorage | None = None) -> None:
         self._session = session
         self._repo = ChallengeRepository(session)
         self._member_repo = MemberRepository(session)
+        # 편지지 배경 사진을 저장할 곳 — 사진을 받는 경로(create_challenge)에서만 필요해서
+        # 선택 인자다. 나머지 호출부(목록·응답·결과 등)는 예전처럼 세션 하나로 부른다.
+        self._storage = storage
+
+    async def _store_image(self, data_url: str | None, *, max_side: int) -> str | None:
+        """편지지 배경 사진 한 장을 저장하고 그 URL을 돌려준다 — 안 올렸으면 None.
+
+        브라우저가 이미 캔버스로 줄여서 보내지만(요청: "용량 줄여서 업로드") 여기서 한 번
+        더 줄인다. 화면을 거치지 않고 API를 직접 부르는 길이 늘 열려 있어서, 저장되는
+        파일 크기를 실제로 못 박는 곳은 여기뿐이다.
+        """
+        if not data_url:
+            return None
+        if self._storage is None:  # 사진을 받는 경로가 아니면 저장소를 안 넘긴다.
+            return None
+        content, _ = decode_data_url(data_url)
+        content = resize_image_bytes(content, max_side=max_side, quality=_BACKDROP_QUALITY)
+        stored = await self._storage.save(
+            subdir="challenges", filename="backdrop.jpg", content=content, content_type="image/jpeg",
+        )
+        return stored.url
 
     async def delete(self, challenge_id: int) -> None:
         """운영자 전용 완전 삭제 — 도전장과 그에 달린 활동 댓글을 지운다."""
@@ -253,6 +285,8 @@ class ChallengeService:
             message=payload.message.strip(),
             scheduled_date=payload.scheduled_date,
             scheduled_time_note=payload.scheduled_time_note.strip(),
+            backdrop_url=await self._store_image(payload.backdrop, max_side=_BACKDROP_MAX_SIDE),
+            backdrop_share_url=await self._store_image(payload.backdrop_share, max_side=_SHARE_MAX_SIDE),
             created_by=actor.pk,
             updated_by=actor.pk,
         )

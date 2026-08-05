@@ -803,3 +803,72 @@ async def test_expired_challenge_has_no_canceled_by(client):
     assert got["status"] == "discarded"
     assert got["canceledBy"] is None
     assert [t["response"] for t in got["targets"]] == ["pending"]
+
+
+def _photo_data_url(width: int, height: int) -> str:
+    """업로드 시늉을 낼 사진 한 장 — 캔버스가 보내는 것과 같은 JPEG data URL이다."""
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (30, 90, 160)).save(buf, format="JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+async def test_backdrop_is_stored_and_shrunk(client):
+    """편지지 배경 사진은 두 장(편지지용·공유 카드용)이 따로 저장되고, 저장될 때 상한
+    크기까지 줄어든다(요청: "용량 줄여서 업로드")."""
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    from PIL import Image
+
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={
+            "targetMemberIds": ["bob"],
+            # 브라우저를 안 거치고 API를 직접 부르면 원본 크기가 그대로 올 수 있다 —
+            # 서버가 제 손으로 줄이는지 보려고 상한(1440)보다 큰 사진을 보낸다.
+            "backdrop": _photo_data_url(2400, 1600),
+            "backdropShare": _photo_data_url(1200, 600),
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["backdropUrl"] and body["backdropShareUrl"]
+    assert body["backdropUrl"] != body["backdropShareUrl"]
+
+    root = Path("var/test_uploads")
+    for url, expected_long_side in ((body["backdropUrl"], 1440), (body["backdropShareUrl"], 1200)):
+        key = urlparse(url).path.split("/uploads/", 1)[1]
+        with Image.open(root / key) as saved:
+            assert max(saved.size) == expected_long_side
+
+    # 목록으로 다시 읽어도 같은 두 장을 가리킨다 — 공유 링크가 이 값을 읽어 간다.
+    res = await client.get("/api/challenges", headers=headers_a)
+    got = next(c for c in res.json()["items"] if c["id"] == body["id"])
+    assert got["backdropUrl"] == body["backdropUrl"]
+    assert got["backdropShareUrl"] == body["backdropShareUrl"]
+
+
+async def test_backdrop_is_optional_and_rejects_non_image(client):
+    a = await _signup(client, "alice", "Alice#1001")
+    await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+
+    res = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
+    assert res.status_code == 200, res.text
+    assert res.json()["backdropUrl"] is None
+    assert res.json()["backdropShareUrl"] is None
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "backdrop": "https://example.com/photo.jpg"},
+    )
+    assert res.status_code == 422, res.text

@@ -99,6 +99,7 @@ async def _ensure_schema() -> None:
             ("add replay map image id", _add_replay_map_image_id),
             ("add challenge time note", _add_challenge_time_note),
             ("add challenge canceled_by", _add_challenge_canceled_by),
+            ("add challenge backdrop", _add_challenge_backdrop),
             ("add participant build_mix", _add_participant_build_mix),
             ("drop challenge time", _drop_challenge_time),
             ("drop challenge revenge chain", _drop_challenge_revenge_chain),
@@ -335,6 +336,38 @@ async def _add_challenge_canceled_by(conn: object) -> None:
             return
         except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
             logging.getLogger(__name__).debug("challenges.canceled_by_pk 추가 시도 실패: %s", sql, exc_info=True)
+
+
+async def _add_challenge_backdrop(conn: object) -> None:
+    """challenges.backdrop_url / backdrop_share_url 컬럼을 더한다(멱등).
+
+    위 _add_challenge_canceled_by와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
+    넣어주지 않는다. 부르는 사람이 호출할 때 올린 편지지 배경 사진 자리다(요청). 두 장인
+    이유는 models.py 주석 참고 — 편지지는 세로로 길고 카카오 카드 자리는 2:1이라 같은
+    사진이라도 앉히는 판이 다르다. 옛 호출은 NULL로 남아 예전 그대로 보인다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    for column in ("backdrop_url", "backdrop_share_url"):
+        # SQLite는 ADD COLUMN IF NOT EXISTS를 모른다(개발용 DB가 그렇다) — 방언별 두 형태를
+        # 차례로 시도한다. 이미 있으면 둘 다 실패하고 그게 정상이다.
+        #
+        # 시도마다 사바포인트를 따로 여는 것이 핵심이다: 포스트그레스는 문장 하나가 실패하면
+        # 그 트랜잭션 전체를 중단 상태로 만들어, 그 뒤 문장은 무엇이든 다시 터진다. 한 단계
+        # 안에서 두 컬럼을 잇달아 손대는 것은 이 파일에서 여기뿐이라, 첫 컬럼이 이미 있다는
+        # 이유만으로 둘째 컬럼이 영영 안 생기는 일이 실제로 가능하다.
+        for sql in (
+            f"ALTER TABLE challenges ADD COLUMN IF NOT EXISTS {column} TEXT",
+            f"ALTER TABLE challenges ADD COLUMN {column} TEXT",
+        ):
+            try:
+                async with conn.begin_nested():  # type: ignore[attr-defined]
+                    await conn.execute(text(sql))  # type: ignore[attr-defined]
+                break
+            except Exception:  # noqa: BLE001 — 다음 형태로 넘어가거나, 이미 있으면 그대로 둔다.
+                logging.getLogger(__name__).debug("challenges.%s 추가 시도 실패", column, exc_info=True)
 
 
 async def _add_participant_build_mix(conn: object) -> None:
