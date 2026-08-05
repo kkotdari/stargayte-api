@@ -20,9 +20,10 @@ from app.storage.base import FileStorage
 from app.storage.data_url import decode_data_url
 
 # 응답 없이 이 기간이 지나면(pending 상태 그대로) "무응답 거절"로 보고 폐기(휴지통) 처리한다
-# — 요청: 72시간. 단, 예정 시각이 그보다 먼저면 예정 시각이 마감이다(_response_deadline).
-# 프론트의 화면 표시 기준(ChallengeScreen.tsx의 EXPIRE_MS)과 같은 72시간이다.
-RESPONSE_EXPIRE = timedelta(hours=72)
+# — 요청: 하루(72시간이었다가 줄였다). 단, 예정 시각이 그보다 먼저면 예정 시각이
+# 마감이다(_response_deadline). 프론트의 화면 표시 기준(ChallengeScreen.tsx의
+# CHALLENGE_EXPIRE_MS)과 같은 값이어야 한다 — 갈라지면 화면과 실제 폐기 시점이 어긋난다.
+RESPONSE_EXPIRE = timedelta(hours=24)
 # 폐기(휴지통)된 지 이 기간이 지나면 소프트 삭제한다(요청: "휴지통은 폐기된 지 7일 지나면
 # 사라짐, DB에서는 소프트 삭제").
 TRASH_RETENTION = timedelta(days=7)
@@ -99,7 +100,7 @@ def _status_of(challenge: Challenge) -> str:
     return "pending"
 
 
-# 응답 마감 = 요청일(created_at) + 72시간. 단, 예정 시각이 그보다 먼저면 예정 시각이
+# 응답 마감 = 요청일(created_at) + 24시간. 단, 예정 시각이 그보다 먼저면 예정 시각이
 # 마감이다(요청: "예정시간이 그 전이면 예정시간 지나면 자동 거절 처리") — 그 시각까지
 # 응답이 없으면 무응답 거절(폐기)된다.
 def _response_deadline(challenge: Challenge) -> datetime:

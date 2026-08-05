@@ -481,7 +481,7 @@ async def test_not_held_result_goes_to_trash(client):
 
 
 async def test_listing_expires_stale_pending_as_discarded(client, db_session):
-    """응답 기한(요청일+72시간)이 지난 pending 도전장은 목록 조회 시 폐기(휴지통)로 넘어간다 —
+    """응답 기한(요청일+24시간)이 지난 pending 도전장은 목록 조회 시 폐기(휴지통)로 넘어간다 —
     지목자는 응답하지 않았으므로 response는 그대로 pending이고, 폐기는 예정 일시를 건드리지
     않으므로 미정(scheduledDate/scheduledAt=null)이던 건은 그대로 미정으로 남는다."""
     a = await _signup(client, "alice", "Alice#1001")
@@ -494,7 +494,7 @@ async def test_listing_expires_stale_pending_as_discarded(client, db_session):
 
     await db_session.execute(
         update(Challenge).where(Challenge.id == challenge_id).values(
-            created_at=datetime.now(UTC) - timedelta(hours=73)
+            created_at=datetime.now(UTC) - timedelta(hours=25)
         )
     )
     await db_session.commit()
@@ -510,9 +510,9 @@ async def test_listing_expires_stale_pending_as_discarded(client, db_session):
     assert bob_target["response"] == "pending"  # 실제로 아무도 응답 안 함
 
 
-async def test_response_deadline_is_72h_or_scheduled_time_whichever_first(client, db_session):
-    """응답 마감은 요청일+72시간이지만, 예정 시각이 그보다 먼저면 예정 시각이 마감이다(요청):
-    (1) 예정 없음 + 30시간 전 = 아직 pending. (2) 예정 없음 + 73시간 전 = 폐기.
+async def test_response_deadline_is_24h_or_scheduled_time_whichever_first(client, db_session):
+    """응답 마감은 요청일+24시간이지만, 예정 시각이 그보다 먼저면 예정 시각이 마감이다(요청):
+    (1) 예정 없음 + 10시간 전 = 아직 pending. (2) 예정 없음 + 25시간 전 = 폐기.
     (3) 예정이 이미 지남(과거) = 방금 만들었어도 예정 시각이 마감이라 폐기."""
     a = await _signup(client, "alice", "Alice#1001")
     b = await _signup(client, "bob", "Bob#1002")
@@ -521,7 +521,7 @@ async def test_response_deadline_is_72h_or_scheduled_time_whichever_first(client
 
     # 셋 다 먼저 만들고(HTTP), 그 뒤에 created_at만 한 번에 조정한다 — HTTP 세션과 db_session의
     # 쓰기가 얽히면 SQLite가 잠긴다.
-    # (1) 예정 없음 → 30시간 전으로. (2) 예정 없음 → 73시간 전으로. (3) 예정이 과거(2020), 방금 생성.
+    # (1) 예정 없음 → 10시간 전으로. (2) 예정 없음 → 25시간 전으로. (3) 예정이 과거(2020), 방금 생성.
     r1 = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
     id1 = r1.json()["id"]
     r2 = await client.post("/api/challenges", headers=headers_a, json={"targetMemberIds": ["bob"]})
@@ -532,10 +532,10 @@ async def test_response_deadline_is_72h_or_scheduled_time_whichever_first(client
     )
     id3 = r3.json()["id"]
     await db_session.execute(
-        update(Challenge).where(Challenge.id == id1).values(created_at=datetime.now(UTC) - timedelta(hours=30))
+        update(Challenge).where(Challenge.id == id1).values(created_at=datetime.now(UTC) - timedelta(hours=10))
     )
     await db_session.execute(
-        update(Challenge).where(Challenge.id == id2).values(created_at=datetime.now(UTC) - timedelta(hours=73))
+        update(Challenge).where(Challenge.id == id2).values(created_at=datetime.now(UTC) - timedelta(hours=25))
     )
     await db_session.commit()
 
