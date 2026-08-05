@@ -227,14 +227,36 @@ async def _decide_match(db_session, match_id: int, *, sets_a: int, sets_b: int) 
     await db_session.commit()
 
 
-async def test_members_can_read_but_only_admins_can_write(client):
-    """보는 건 회원 누구나, 고치는 건 운영자만이다(요청: 리그를 탭바로 옮기며 전체 공개)."""
+async def test_members_can_read_and_fill_in_but_only_admins_can_shape(client):
+    """회원 누구나 보고 일시·결과를 적을 수 있고, 판을 짜는 일만 운영자다(요청: "일정등록과
+    결과입력은 아무나 가능하게 열어주고 수정은 불가")."""
     admin_headers, members = await _bootstrap(client, 1)
-    league = await _create_league(client, admin_headers)
+    league = await _create_league(client, admin_headers, best_of=1)
 
     res = await client.get("/api/leagues", headers=members[0])
     assert res.status_code == 200, res.text
     res = await client.get(f"/api/leagues/{league['id']}", headers=members[0])
+    assert res.status_code == 200, res.text
+
+    # 일시는 일반 회원도 적는다 — 그 자리에 있던 사람이 적는 게 가장 빠르다.
+    teams = await _add_teams(client, admin_headers, league["id"], 2)
+    body = (await _save_bracket(client, admin_headers, league["id"], [""], [
+        {"path": "", "side": "a", "teamId": teams[0]["id"]},
+        {"path": "", "side": "b", "teamId": teams[1]["id"]},
+    ])).json()
+    final = _match(body, 1, 0)
+    res = await client.put(
+        f"/api/leagues/{league['id']}/matches/{final['id']}/schedule",
+        headers=members[0], json={"scheduledAt": "2026-09-01T11:00:00Z"},
+    )
+    assert res.status_code == 200, res.text
+
+    # 결과도 마찬가지다(확정된 대진에만 들어가므로 판의 모양은 못 바꾼다).
+    assert (await _confirm_bracket(client, admin_headers, league["id"])).status_code == 200
+    res = await client.put(
+        f"/api/leagues/{league['id']}/matches/{final['id']}/result",
+        headers=members[0], json={"setsWonA": 1, "setsWonB": 0},
+    )
     assert res.status_code == 200, res.text
 
     for call in (
