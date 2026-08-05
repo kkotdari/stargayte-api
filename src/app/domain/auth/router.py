@@ -57,12 +57,16 @@ async def access_ping(
     payload: AccessPingRequest, current: CurrentMember, request: Request, db: DbSession, storage: StorageDep
 ) -> None:
     """로그인된 상태에서 화면(screen)을 전환할 때마다 프론트가 호출 — 어떤 화면을 언제
-    봤는지를 접속 기록에 남긴다(같은 화면을 짧은 시간 안에 또 보면 한 행으로 합쳐진다)."""
+    봤는지를 접속 기록에 남긴다(부를 때마다 한 행씩, record_access 참고).
+
+    공유 링크로 열린 카드 한 장짜리 화면도 여기로 온다(요청) — screen="share"에 detail로
+    무엇을 열었는지(예: "gameResult#12")를 함께 적는다."""
     await AuthService(db, storage).record_access(
         current,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
         screen_code=payload.screen,
+        detail=payload.detail,
         client_env=request.headers.get("x-client-env"),
     )
 

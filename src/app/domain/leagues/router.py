@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.deps import CurrentAdmin, DbSession
+from app.api.deps import CurrentAdmin, CurrentMember, DbSession
 from app.domain.leagues.schemas import (
     LeagueBracketIn,
     LeagueBracketSeedIn,
@@ -13,13 +13,14 @@ from app.domain.leagues.schemas import (
 )
 from app.domain.leagues.service import LeagueService
 
-# 화면 전체가 운영자 전용(요청: "일단 운영자만 볼수있게 처리")이라 조회(GET) 포함
-# 전 엔드포인트를 CurrentAdmin으로 게이팅한다.
+# 보는 건 회원 누구나, 고치는 건 운영자만이다(요청: 리그를 탭바로 옮기며 "전체 공개,
+# 읽기는 누구나"). 그래서 조회(GET)만 CurrentMember이고 나머지는 전부 CurrentAdmin이다 —
+# 화면의 '수정' 토글은 겉모습일 뿐이라, 실제 경계는 여기 이 줄들이다.
 router = APIRouter(prefix="/leagues", tags=["leagues"])
 
 
 @router.get("", response_model=LeagueListOut)
-async def list_leagues(db: DbSession, current: CurrentAdmin) -> LeagueListOut:
+async def list_leagues(db: DbSession, current: CurrentMember) -> LeagueListOut:
     return await LeagueService(db).list_leagues()
 
 
@@ -29,7 +30,7 @@ async def create_league(payload: LeagueCreateIn, db: DbSession, current: Current
 
 
 @router.get("/{league_id}", response_model=LeagueOut)
-async def get_league(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
+async def get_league(league_id: int, db: DbSession, current: CurrentMember) -> LeagueOut:
     return await LeagueService(db).get_league(league_id)
 
 

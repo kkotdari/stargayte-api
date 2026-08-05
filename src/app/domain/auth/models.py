@@ -26,6 +26,9 @@ class AccessHistory(Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 어떤 화면(서비스)에서의 접속인지 — 로그인 자체(화면 이동 없이 발생)는 NULL.
     screen_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 그 화면 안에서 정확히 무엇을 봤는지 — 지금은 공유 링크로 열린 카드만 적는다
+    # (screen_code="share"일 때 "gameResult#12" 같은 꼴). 그 외 화면은 NULL.
+    detail: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class RefreshToken(Base):

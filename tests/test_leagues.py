@@ -227,12 +227,25 @@ async def _decide_match(db_session, match_id: int, *, sets_a: int, sets_b: int) 
     await db_session.commit()
 
 
-async def test_non_admin_forbidden(client):
+async def test_members_can_read_but_only_admins_can_write(client):
+    """보는 건 회원 누구나, 고치는 건 운영자만이다(요청: 리그를 탭바로 옮기며 전체 공개)."""
     admin_headers, members = await _bootstrap(client, 1)
+    league = await _create_league(client, admin_headers)
+
     res = await client.get("/api/leagues", headers=members[0])
-    assert res.status_code == 403, res.text
-    res = await client.post("/api/leagues", headers=members[0], json={"name": "x", "mode": "team"})
-    assert res.status_code == 403, res.text
+    assert res.status_code == 200, res.text
+    res = await client.get(f"/api/leagues/{league['id']}", headers=members[0])
+    assert res.status_code == 200, res.text
+
+    for call in (
+        client.post("/api/leagues", headers=members[0], json={"name": "x", "mode": "team"}),
+        client.delete(f"/api/leagues/{league['id']}", headers=members[0]),
+        client.put(f"/api/leagues/{league['id']}/bracket", headers=members[0],
+                   json={"paths": [""], "assignments": []}),
+        client.post(f"/api/leagues/{league['id']}/bracket/confirm", headers=members[0]),
+    ):
+        res = await call
+        assert res.status_code == 403, res.text
 
 
 async def test_create_get_delete_league(client):

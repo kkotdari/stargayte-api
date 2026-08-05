@@ -105,6 +105,7 @@ async def _ensure_schema() -> None:
             ("drop challenge from match request", _drop_challenge_from_match_request),
             ("drop match request tables", _drop_match_request_tables),
             ("drop access screen code check", _drop_access_screen_code_check),
+            ("add access history detail", _add_access_history_detail),
             ("drop legacy match notes", _drop_legacy_match_notes),
             ("drop legacy match summary", _drop_legacy_match_summary),
             ("rebuild ranking shifts", _rebuild_ranking_shifts),
@@ -461,6 +462,26 @@ async def _drop_match_request_tables(conn) -> None:
         logging.getLogger(__name__).info("너 나와! 요청(match_requests) 테이블 삭제 완료")
     except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다(안 쓰는 테이블로 남는다).
         logging.getLogger(__name__).exception("너 나와! 요청(match_requests) 테이블 삭제 실패")
+
+
+async def _add_access_history_detail(conn: object) -> None:
+    """access_history.detail 컬럼을 더한다(멱등).
+
+    create_all은 이미 있는 테이블에 새 컬럼을 넣어주지 않는다(위 _add_challenge_time_note와
+    같은 이유). 공유 링크로 열린 카드가 무엇이었는지를 적는 자리다(요청: "접속로그에
+    공유페이지 열어본거도 표시(어떤 페이지인지도)") — 화면 코드는 다 같은 "share"라
+    이 칸이 없으면 무엇을 열어 봤는지가 통째로 안 남는다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(  # type: ignore[attr-defined]
+            text("ALTER TABLE access_history ADD COLUMN IF NOT EXISTS detail VARCHAR(64)")
+        )
+    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("access_history.detail 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:

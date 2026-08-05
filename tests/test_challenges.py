@@ -676,8 +676,9 @@ async def test_time_note_is_free_text_and_never_affects_schedule(client):
     challenge_id = body["id"]
     assert body["scheduledDate"] == "2026-08-01"
     assert body["scheduledTimeNote"] == "그날 봐서"
-    # 시간 미정과 같은 취급이라 파생 일시는 그날 0시(KST) = 전날 15:00Z 그대로다.
-    assert body["scheduledAt"] == "2026-07-31T15:00:00Z"
+    # "언제"는 사람이 읽는 한마디일 뿐이라 파생 일시를 건드리지 않는다 — 늘 그날 저녁
+    # 8시(KST) = 같은 날 11:00Z다.
+    assert body["scheduledAt"] == "2026-08-01T11:00:00Z"
 
     # 요청자가 이미 적어 뒀으면 응답자가 덮어쓸 수 없다.
     res = await client.post(

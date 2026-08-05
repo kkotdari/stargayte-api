@@ -94,6 +94,7 @@ class AuthService:
         ip_address: str | None,
         user_agent: str | None,
         screen_code: str | None = None,
+        detail: str | None = None,
         client_env: str | None = None,
     ) -> None:
         """/auth/login(screen_code="login")과 /auth/access-ping(화면을 전환할 때마다, 해당
@@ -122,6 +123,7 @@ class AuthService:
                 ip_address=ip_address,
                 user_agent=user_agent,
                 screen_code=screen_code,
+                detail=detail,
             )
         )
         await self._session.commit()

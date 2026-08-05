@@ -26,6 +26,9 @@ ScreenCode = Literal[
     # 운영 메뉴로 들어온 화면들 — 프론트 ScreenKey에 추가되고도 여기 빠져 있어 진입 핑이
     # 422로 막혔다(브라우저 콘솔에 그대로 찍혔다). 화면이 늘면 이 줄을 함께 고쳐야 한다.
     "minimaps", "control",
+    # 공유 링크(?sv=…&sid=…)로 열린 카드 한 장짜리 화면(요청: "접속로그에 공유페이지
+    # 열어본거도 표시(어떤 페이지인지도)") — 어느 카드였는지는 detail이 따로 적는다.
+    "share",
     # 화면 이동이 아니라 로그인 자체 — 예전엔 NULL로 남겼는데 목록에서 구분이 안 돼
     # 명시적인 코드로 남긴다(요청: "단순 로그인도 login 으로").
     "login",
@@ -74,9 +77,15 @@ class LogoutRequest(BaseModel):
 
 
 class AccessPingRequest(BaseModel):
-    """프론트엔드가 화면(screen)을 전환할 때마다 보내는 접속 기록 핑."""
+    """프론트엔드가 화면(screen)을 전환할 때마다 보내는 접속 기록 핑.
+
+    detail은 그 화면 안에서 정확히 무엇을 봤는지다 — 지금은 공유 링크로 열린 카드
+    ("gameResult#12", "challenge#7", "stack#2026-07-29")를 적는 데만 쓴다(요청: "어떤
+    페이지인지도"). 화면 코드만으로는 공유로 들어온 사람이 무엇을 열어 봤는지 알 수 없다.
+    자유 문자열이라 값 자체는 검증하지 않고 길이만 막는다."""
 
     screen: ScreenCode
+    detail: str | None = Field(default=None, max_length=64)
 
 
 class AccessHistoryEntry(BaseModel):
@@ -95,3 +104,5 @@ class AccessHistoryEntry(BaseModel):
     # gameId 등)와 로그인 NULL 행이 그대로 남아 있어서, 현재 목록으로 좁히면 조회가
     # 응답 검증에서 통째로 500이 난다.
     screen_code: str | None = Field(alias="screenCode")
+    # 공유 링크로 열린 카드가 무엇이었는지 — 그 외 화면은 None.
+    detail: str | None = None

@@ -39,13 +39,25 @@ def _scheduled_dt(challenge: "Challenge") -> datetime | None:
     return datetime.combine(challenge.scheduled_date, t, tzinfo=KST).astimezone(UTC).replace(tzinfo=None)
 
 
+# 시각을 안 정한 너 나와의 기본 시각 — 저녁 8시(요청: "시간은 기본 20시로 해줘").
+#
+# 예전엔 그날 자정(00:00)이었다. 너 나와는 날짜만 정하는 약속이라 시각 성분이 정렬·그룹핑
+# 용도뿐인데, 자정으로 잡으면 그 시각이 화면에 그대로 새어 나왔다 — 오늘 오전에 올린
+# 오늘자 너 나와가 활동 목록에 "11시간 전"으로 적혔다(지적). 실제로 모이는 시간대에
+# 맞춰 두면 그런 표기가 사람 감각과 어긋나지 않는다. 저장하는 값이 아니라 여기서
+# 파생하는 값이라, 바꾸면 지난 기록까지 한 번에 같이 바뀐다(마이그레이션 불필요).
+_DEFAULT_SCHEDULED_HOUR = 20
+
+
 def _scheduled_at_iso(challenge: "Challenge") -> datetime | None:
-    """프론트 정렬/그룹핑/카운트다운용 파생 일시(UTC aware) — 늘 그날 자정(00:00 KST)이다.
+    """프론트 정렬/그룹핑/카운트다운용 파생 일시(UTC aware) — 그날 저녁 8시(KST)다.
     시각 성분은 정렬·날짜 그룹핑에만 쓴다(표시용 "언제"는 scheduledTimeNote가 따로 맡는다).
-    날짜가 없으면 None."""
+    날짜가 없으면 None — 그때는 화면이 '미정'으로 적고 목록 맨 위에 둔다(요청)."""
     if challenge.scheduled_date is None:
         return None
-    return datetime.combine(challenge.scheduled_date, time(0, 0), tzinfo=KST).astimezone(UTC)
+    return datetime.combine(
+        challenge.scheduled_date, time(_DEFAULT_SCHEDULED_HOUR, 0), tzinfo=KST,
+    ).astimezone(UTC)
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
