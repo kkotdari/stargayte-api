@@ -402,6 +402,11 @@ class ChallengeService:
         target.response = response
         target.response_message = message.strip()
         target.responded_at = datetime.now(UTC)
+        # 응답도 이 도전장을 손댄 것이다 — 여기서 도전장 행을 안 건드리면 바뀌는 것은
+        # 참가자 행뿐이라, challenges.updated_at이 그대로 등록 시각에 머문다. 활동 목록의
+        # UPDATE 딱지가 바로 그 값을 보는데(사흘 전 호출에 방금 답이 온 것은 새것이 아니라
+        # 달라진 것이다), 일정을 함께 고친 경우가 아니면 그 딱지가 영영 안 떴다.
+        challenge.updated_by = actor.pk
         # 명시적 거절이든 버림(discarded)이든 그 즉시 도전장을 폐기(휴지통)로 넘긴다 — 팀전이라도
         # 한 명이 거절/버리면 그 대결은 끝이다. 예정 일시는 그대로 둔다(미정이면 미정 유지 — 요청).
         if response in ("rejected", "discarded"):

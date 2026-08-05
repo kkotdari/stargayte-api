@@ -879,3 +879,39 @@ async def test_backdrop_is_optional_and_rejects_non_image(client):
         json={"targetMemberIds": ["bob"], "backdrop": "https://example.com/photo.jpg"},
     )
     assert res.status_code == 422, res.text
+
+
+async def test_respond_touches_challenge_updated_at(client, db_session):
+    """응답하면 도전장 자체의 수정 시각도 올라간다 — 활동 목록의 UPDATE 딱지가 이 값을
+    본다. 예전엔 참가자 행만 바뀌어서, 일정을 함께 고치지 않은 평범한 수락은 등록
+    시각에 머문 채라 그 딱지가 영영 안 떴다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    headers_a = {"Authorization": f"Bearer {a['accessToken']}"}
+    headers_b = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    res = await client.post(
+        "/api/challenges", headers=headers_a,
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2999-01-01"},
+    )
+    made = res.json()
+
+    # 등록 시각을 하루 전으로 밀어 둔다 — 시각 해상도가 초 단위라, 방금 만든 것에
+    # 그대로 응답하면 두 값이 같은 초에 찍혀 올랐는지 아닌지를 가릴 수가 없다.
+    await db_session.execute(
+        update(Challenge).where(Challenge.id == made["id"]).values(
+            created_at=datetime.now(UTC) - timedelta(days=1),
+            updated_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    await db_session.commit()
+
+    # 일정은 이미 정해져 왔으므로 수락이 도전장의 다른 값을 바꾸지 않는다 — 그래도 손댄 것이다.
+    res = await client.post(
+        f"/api/challenges/{made['id']}/respond", headers=headers_b,
+        json={"response": "accepted"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["updatedAt"] > body["createdAt"]
