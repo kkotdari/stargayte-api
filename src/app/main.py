@@ -476,12 +476,20 @@ async def _add_access_history_detail(conn: object) -> None:
 
     from sqlalchemy import text
 
-    try:
-        await conn.execute(  # type: ignore[attr-defined]
-            text("ALTER TABLE access_history ADD COLUMN IF NOT EXISTS detail VARCHAR(64)")
-        )
-    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
-        logging.getLogger(__name__).debug("access_history.detail 컬럼 추가 건너뜀", exc_info=True)
+    # SQLite는 ADD COLUMN IF NOT EXISTS를 모른다 — 운영(Postgres)만 보고 그 한 줄로 두면
+    # 로컬/테스트 DB에는 컬럼이 영영 안 생기고, 그 사실이 부팅 로그에 debug로만 남아
+    # 조용히 지나간 뒤 첫 로그인에서 "no column named detail"로 터진다(실제로 겪었다).
+    # 그래서 방언별 두 형태를 차례로 시도한다 — 이미 있으면 둘 다 실패하고 그게 정상이다.
+    for sql in (
+        "ALTER TABLE access_history ADD COLUMN IF NOT EXISTS detail VARCHAR(64)",
+        "ALTER TABLE access_history ADD COLUMN detail VARCHAR(64)",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001 — 다음 형태로 넘어간다.
+            continue
+    logging.getLogger(__name__).debug("access_history.detail 컬럼 추가 건너뜀(이미 있음)")
 
 
 async def _drop_access_screen_code_check(conn: object) -> None:
