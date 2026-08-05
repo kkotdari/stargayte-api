@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -48,11 +49,18 @@ class Challenge(AuditMixin, TimestampMixin, Base):
     # 편지지 배경 사진(선택) — 부르는 사람이 호출할 때 한 장 올린다(요청). 저장된 파일의
     # 절대 URL이고, NULL이면 안 올린 것(평소의 유리 편지지 그대로).
     backdrop_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 위 사진을 카카오 공유 카드 자리(1200×600)에 맞춰 미리 앉혀 둔 판 — 같은 사진이지만
-    # 비율이 다르고 로고/문구가 얹혀 있다(요청: "공유시 썸네일 배경으로 쓰임"). 카카오는
-    # 자기 서버에서 이 URL을 읽어 2:1로 잘라 쓰므로, 원본을 그대로 주면 위아래가 잘린다 —
-    # 그래서 두 장을 따로 둔다. NULL이면 사진 없는 호출이라 종류별 기본 썸네일을 쓴다.
+    # 위 사진에 흰 물을 덧대고 로고·문구를 얹은 카카오 공유 카드판. 예전엔 2:1(1200×600)로
+    # 잘라 만들었는데, 이제 사진의 원래 비율 그대로 만든다(요청: "카톡 미리보기는 원본
+    # 비율") — 잘라 내는 판이 아니라 원본을 그대로 쓰는 판이다.
+    #
+    # 편지지는 이 판이 아니라 위 backdrop_url을 쓴다. 같은 비율이라 한 장으로 합칠 수
+    # 있을 것 같지만, 이 판에는 로고와 "너 나와! 호출"이 구워져 있어서 편지지 배경으로
+    # 깔면 그 글자들이 편지 안에 비친다 — 두 장인 이유는 비율이 아니라 그 글자다.
     backdrop_share_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 그 공유 카드판의 실제 가로·세로(px). 카카오는 이 값을 함께 줘야 그림을 그 비율로
+    # 앉힌다 — 안 주면 제 자리(2:1)에 맞춰 잘라 버린다(워드마크가 좌우로 잘렸던 그 일).
+    backdrop_share_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backdrop_share_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 도전장이 "폐기(휴지통)"로 넘어간 시각 — NULL이면 폐기 안 됨. 폐기 사유는 여러 가지다:
     # 상대의 명시적 거절, 응답 마감(무응답 거절), 미실시(not_held) 결과 입력. 상태(_status_of)의
     # 유일한 폐기 판정 근거이자, 휴지통 7일 자동 비움(deleted_at 소프트삭제)의 기준 시각이다.

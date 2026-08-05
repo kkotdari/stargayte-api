@@ -7,6 +7,16 @@ DEFAULT_MAX_SIDE = 480
 DEFAULT_QUALITY = 92
 
 
+def image_size(content: bytes) -> tuple[int, int]:
+    """이미지 바이트의 (가로, 세로)를 읽는다 — 픽셀을 디코딩하지 않고 헤더만 본다.
+
+    저장한 뒤의 실제 크기를 알아야 하는 곳이 있다: 카카오 공유 카드는 그림의 가로·세로를
+    함께 넘겨야 그 비율로 앉히므로(안 주면 제 자리 비율에 맞춰 잘라 낸다), 브라우저가
+    알려 준 원본 크기가 아니라 서버가 줄인 뒤의 크기를 적어 둬야 한다."""
+    with Image.open(BytesIO(content)) as img:
+        return img.size
+
+
 def resize_image_bytes(
     content: bytes, *, max_side: int = DEFAULT_MAX_SIDE, quality: int = DEFAULT_QUALITY
 ) -> bytes:

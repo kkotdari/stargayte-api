@@ -836,7 +836,7 @@ async def test_backdrop_is_stored_and_shrunk(client):
             # 브라우저를 안 거치고 API를 직접 부르면 원본 크기가 그대로 올 수 있다 —
             # 서버가 제 손으로 줄이는지 보려고 상한(1440)보다 큰 사진을 보낸다.
             "backdrop": _photo_data_url(2400, 1600),
-            "backdropShare": _photo_data_url(1200, 600),
+            "backdropShare": _photo_data_url(2400, 1600),
         },
     )
     assert res.status_code == 200, res.text
@@ -849,6 +849,12 @@ async def test_backdrop_is_stored_and_shrunk(client):
         key = urlparse(url).path.split("/uploads/", 1)[1]
         with Image.open(root / key) as saved:
             assert max(saved.size) == expected_long_side
+            # 비율은 그대로다 — 잘라 내는 판이 아니다(요청: "카톡 미리보기는 원본 비율").
+            assert round(saved.size[0] / saved.size[1], 2) == 1.5
+
+    # 카카오에 넘길 크기는 서버가 저장한 그림에서 직접 읽은 값이어야 한다 — 이게 없으면
+    # 카카오가 제 자리 비율(2:1)에 맞춰 잘라 버린다.
+    assert (body["backdropShareWidth"], body["backdropShareHeight"]) == (1200, 800)
 
     # 목록으로 다시 읽어도 같은 두 장을 가리킨다 — 공유 링크가 이 값을 읽어 간다.
     res = await client.get("/api/challenges", headers=headers_a)
@@ -866,6 +872,7 @@ async def test_backdrop_is_optional_and_rejects_non_image(client):
     assert res.status_code == 200, res.text
     assert res.json()["backdropUrl"] is None
     assert res.json()["backdropShareUrl"] is None
+    assert res.json()["backdropShareWidth"] is None
 
     res = await client.post(
         "/api/challenges", headers=headers_a,

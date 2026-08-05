@@ -339,18 +339,26 @@ async def _add_challenge_canceled_by(conn: object) -> None:
 
 
 async def _add_challenge_backdrop(conn: object) -> None:
-    """challenges.backdrop_url / backdrop_share_url 컬럼을 더한다(멱등).
+    """challenges의 편지지 배경 사진 컬럼 네 개를 더한다(멱등).
 
     위 _add_challenge_canceled_by와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
-    넣어주지 않는다. 부르는 사람이 호출할 때 올린 편지지 배경 사진 자리다(요청). 두 장인
-    이유는 models.py 주석 참고 — 편지지는 세로로 길고 카카오 카드 자리는 2:1이라 같은
-    사진이라도 앉히는 판이 다르다. 옛 호출은 NULL로 남아 예전 그대로 보인다.
+    넣어주지 않는다. 부르는 사람이 호출할 때 올린 편지지 배경 사진 자리다(요청). 그림이
+    두 장인 이유는 models.py 주석 참고 — 카카오 카드판에는 로고와 문구가 구워져 있어
+    편지지 배경으로는 쓸 수 없다. 옛 호출은 NULL로 남아 예전 그대로 보인다.
     """
     import logging
 
     from sqlalchemy import text
 
-    for column in ("backdrop_url", "backdrop_share_url"):
+    for column, kind in (
+        ("backdrop_url", "TEXT"),
+        ("backdrop_share_url", "TEXT"),
+        # 공유 카드판의 실제 크기 — 카카오에 함께 넘겨야 사진의 원래 비율로 앉는다(요청:
+        # "카톡 미리보기는 원본 비율"). 처음엔 2:1로 잘라 만들었기에 크기가 늘 같아서
+        # 적어 둘 이유가 없었다.
+        ("backdrop_share_width", "INTEGER"),
+        ("backdrop_share_height", "INTEGER"),
+    ):
         # SQLite는 ADD COLUMN IF NOT EXISTS를 모른다(개발용 DB가 그렇다) — 방언별 두 형태를
         # 차례로 시도한다. 이미 있으면 둘 다 실패하고 그게 정상이다.
         #
@@ -359,8 +367,8 @@ async def _add_challenge_backdrop(conn: object) -> None:
         # 안에서 두 컬럼을 잇달아 손대는 것은 이 파일에서 여기뿐이라, 첫 컬럼이 이미 있다는
         # 이유만으로 둘째 컬럼이 영영 안 생기는 일이 실제로 가능하다.
         for sql in (
-            f"ALTER TABLE challenges ADD COLUMN IF NOT EXISTS {column} TEXT",
-            f"ALTER TABLE challenges ADD COLUMN {column} TEXT",
+            f"ALTER TABLE challenges ADD COLUMN IF NOT EXISTS {column} {kind}",
+            f"ALTER TABLE challenges ADD COLUMN {column} {kind}",
         ):
             try:
                 async with conn.begin_nested():  # type: ignore[attr-defined]

@@ -82,8 +82,11 @@ class ChallengeOut(BaseModel):
     result_winner_side: ChallengeResult | None = Field(default=None, alias="resultWinnerSide")
     # 편지지 배경 사진(선택) — 없으면 None이고, 그러면 편지지는 평소의 유리 그대로다.
     backdrop_url: str | None = Field(default=None, alias="backdropUrl")
-    # 같은 사진의 공유 카드(1200×600)판 — 카카오 썸네일 자리에 그대로 넣는다.
+    # 같은 사진에 로고·문구를 얹은 카카오 공유 카드판 — 사진의 원래 비율 그대로다.
     backdrop_share_url: str | None = Field(default=None, alias="backdropShareUrl")
+    # 그 판의 실제 크기(px) — 카카오에 함께 넘겨야 원래 비율로 앉는다.
+    backdrop_share_width: int | None = Field(default=None, alias="backdropShareWidth")
+    backdrop_share_height: int | None = Field(default=None, alias="backdropShareHeight")
 
 
 class ChallengeCreate(BaseModel):
@@ -107,7 +110,7 @@ class ChallengeCreate(BaseModel):
     # 줄여서 업로드"). 서버는 받은 뒤 한 번 더 줄여 저장하므로 이 상한은 "말도 안 되게
     # 큰 것"만 걸러내는 자리다.
     backdrop: str | None = Field(default=None, max_length=_IMAGE_MAX_CHARS)
-    # 같은 사진의 공유 카드(1200×600)판 — 로고/문구까지 얹은 완성본을 브라우저가 함께 만든다.
+    # 같은 사진에 로고·문구를 얹은 공유 카드판 — 브라우저가 함께 만들어 보낸다.
     backdrop_share: str | None = Field(
         default=None, max_length=_IMAGE_MAX_CHARS, alias="backdropShare",
     )

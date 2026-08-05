@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.core.imaging import resize_image_bytes
+from app.core.imaging import image_size, resize_image_bytes
 from app.domain.challenges.models import Challenge, ChallengeParticipant
 from app.domain.challenges.repository import ChallengeRepository
 from app.domain.challenges.schemas import (
@@ -31,8 +31,8 @@ TRASH_RETENTION = timedelta(days=7)
 # UTC로 환산한다.
 KST = ZoneInfo("Asia/Seoul")
 
-# 편지지 배경 사진을 저장할 때의 상한 — 편지지는 모바일 화면을 꽉 채우는 정도라 긴 변
-# 1440px이면 레티나에서도 충분하고, 공유 카드판은 카카오가 쓰는 1200×600 그대로다.
+# 편지지 배경 사진을 저장할 때의 긴 변 상한 — 편지지는 모바일 화면을 꽉 채우는 정도라
+# 1440px이면 레티나에서도 충분하고, 공유 카드판은 카카오 대화창에 뜨는 크기라 더 작아도 된다.
 _BACKDROP_MAX_SIDE = 1440
 _SHARE_MAX_SIDE = 1200
 _BACKDROP_QUALITY = 82
@@ -170,6 +170,8 @@ def to_challenge_out(challenge: Challenge) -> ChallengeOut:
         resultWinnerSide=challenge.result_winner_side,
         backdropUrl=challenge.backdrop_url,
         backdropShareUrl=challenge.backdrop_share_url,
+        backdropShareWidth=challenge.backdrop_share_width,
+        backdropShareHeight=challenge.backdrop_share_height,
     )
 
 
@@ -182,12 +184,17 @@ class ChallengeService:
         # 선택 인자다. 나머지 호출부(목록·응답·결과 등)는 예전처럼 세션 하나로 부른다.
         self._storage = storage
 
-    async def _store_image(self, data_url: str | None, *, max_side: int) -> str | None:
-        """편지지 배경 사진 한 장을 저장하고 그 URL을 돌려준다 — 안 올렸으면 None.
+    async def _store_image(
+        self, data_url: str | None, *, max_side: int
+    ) -> tuple[str, int, int] | None:
+        """편지지 배경 사진 한 장을 저장하고 (URL, 가로, 세로)를 돌려준다 — 안 올렸으면 None.
 
         브라우저가 이미 캔버스로 줄여서 보내지만(요청: "용량 줄여서 업로드") 여기서 한 번
         더 줄인다. 화면을 거치지 않고 API를 직접 부르는 길이 늘 열려 있어서, 저장되는
         파일 크기를 실제로 못 박는 곳은 여기뿐이다.
+
+        크기도 브라우저가 알려 준 값을 받는 게 아니라 저장한 바이트에서 직접 읽는다 —
+        여기서 한 번 더 줄이는 이상, 실제로 저장된 그림의 크기를 아는 곳도 여기뿐이다.
         """
         if not data_url:
             return None
@@ -195,10 +202,11 @@ class ChallengeService:
             return None
         content, _ = decode_data_url(data_url)
         content = resize_image_bytes(content, max_side=max_side, quality=_BACKDROP_QUALITY)
+        width, height = image_size(content)
         stored = await self._storage.save(
             subdir="challenges", filename="backdrop.jpg", content=content, content_type="image/jpeg",
         )
-        return stored.url
+        return stored.url, width, height
 
     async def delete(self, challenge_id: int) -> None:
         """운영자 전용 완전 삭제 — 도전장과 그에 달린 활동 댓글을 지운다."""
@@ -280,13 +288,20 @@ class ChallengeService:
             "0101" if len(target_members) == 1 and len(own_members) == 0 else "0102"
         )
 
+        # 편지지 배경 사진은 두 장이다 — 편지지에 깔 원본과, 거기에 로고·문구를 얹은
+        # 카카오 공유 카드판. 둘 다 사진의 원래 비율이고, 편지지 쪽이 잘라 쓴다.
+        backdrop = await self._store_image(payload.backdrop, max_side=_BACKDROP_MAX_SIDE)
+        share = await self._store_image(payload.backdrop_share, max_side=_SHARE_MAX_SIDE)
+
         challenge = Challenge(
             match_type=match_type,
             message=payload.message.strip(),
             scheduled_date=payload.scheduled_date,
             scheduled_time_note=payload.scheduled_time_note.strip(),
-            backdrop_url=await self._store_image(payload.backdrop, max_side=_BACKDROP_MAX_SIDE),
-            backdrop_share_url=await self._store_image(payload.backdrop_share, max_side=_SHARE_MAX_SIDE),
+            backdrop_url=backdrop[0] if backdrop else None,
+            backdrop_share_url=share[0] if share else None,
+            backdrop_share_width=share[1] if share else None,
+            backdrop_share_height=share[2] if share else None,
             created_by=actor.pk,
             updated_by=actor.pk,
         )
