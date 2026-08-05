@@ -125,48 +125,40 @@ async def _delete_team(client, headers, league_id: int, team_id: int):
     return await _save_composition(client, headers, league_id, teams)
 
 
-async def _start_bracket(client, headers, league_id: int):
-    return await client.post(f"/api/leagues/{league_id}/bracket", headers=headers)
+def _perfect_paths(rounds: int) -> list[str]:
+    """rounds겹짜리 꽉 찬 판의 모든 자리를 뿌리에서의 길로. 1이면 결승 하나뿐이다."""
+    out = [""]
+    for depth in range(1, rounds):
+        out += ["".join(bits) for bits in __import__("itertools").product("ab", repeat=depth)]
+    return out
 
 
-async def _drop_bracket(client, headers, league_id: int):
-    return await client.delete(f"/api/leagues/{league_id}/bracket", headers=headers)
+def _spine_paths(rounds: int) -> list[str]:
+    """한쪽으로만 계속 가지를 친 판 — 깊이만 필요한 테스트용(꽉 찬 판보다 훨씬 작다)."""
+    out, cur = [""], ""
+    for _ in range(rounds - 1):
+        cur += "a"
+        out.append(cur)
+    return out
 
 
-async def _branch(client, headers, league_id: int, match_id: int, side: str):
-    return await client.post(
-        f"/api/leagues/{league_id}/bracket/matches/{match_id}/{side}/branch", headers=headers,
-    )
-
-
-async def _unbranch(client, headers, league_id: int, match_id: int, side: str):
-    return await client.delete(
-        f"/api/leagues/{league_id}/bracket/matches/{match_id}/{side}/branch", headers=headers,
+async def _save_bracket(client, headers, league_id: int, paths, assignments=None):
+    """대진표 모양(+배정)을 한 번에 저장한다 — 화면이 저장 버튼에서 하는 그 호출이다."""
+    return await client.put(
+        f"/api/leagues/{league_id}/bracket", headers=headers,
+        json={"paths": list(paths), "assignments": assignments or []},
     )
 
 
 async def _generate_bracket(client, headers, league_id: int, team_count: int):
-    """이 팀 수가 들어갈 만한 '꽉 찬' 판을 가지치기로 만든다.
+    """이 팀 수가 들어갈 만한 '꽉 찬' 판을 만든다.
 
-    판은 이제 우승 자리 하나에서 시작해 필요한 데만 왼쪽으로 가지를 쳐서 만든다(요청) —
-    크기를 미리 받아 한 방에 까는 엔드포인트는 없어졌다. 여기 있는 테스트들은 대부분
-    "N팀짜리 대진표"라는 상황만 필요하므로, N을 담을 최소 깊이까지 모든 자리에 가지를 쳐
-    예전과 똑같은 꽉 찬 판을 만들어 준다 — (라운드, 슬롯) 좌표도 예전 그대로다."""
+    판은 우승 자리에서 시작해 필요한 데만 가지를 쳐 만드는 것이고(요청), 저장은 모양 전체를
+    한 번에 보내는 방식이다. 여기 있는 테스트들은 대부분 "N팀짜리 대진표"라는 상황만
+    필요하므로, N을 담을 최소 깊이의 꽉 찬 판을 한 번에 저장해 준다 — (라운드, 슬롯) 좌표도
+    예전 그대로다."""
     rounds = max(1, math.ceil(math.log2(max(2, team_count))))
-    res = await _start_bracket(client, headers, league_id)
-    if res.status_code != 200:
-        return res
-    for _ in range(rounds - 1):
-        body = res.json()
-        low = min(m["round"] for m in body["matches"])
-        # 가지를 치면 판이 한 겹 자라며 라운드 번호가 밀린다 — id로 잡아 둬야 흔들리지 않는다.
-        leaf_ids = [m["id"] for m in body["matches"] if m["round"] == low]
-        for match_id in leaf_ids:
-            for side in ("a", "b"):
-                res = await _branch(client, headers, league_id, match_id, side)
-                if res.status_code != 200:
-                    return res
-    return res
+    return await _save_bracket(client, headers, league_id, _perfect_paths(rounds))
 
 
 def _round1_assignments(league: dict) -> list[dict]:
@@ -330,7 +322,7 @@ async def test_bracket_starts_from_the_champion_seat_and_grows(client):
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers)
 
-    res = await _start_bracket(client, admin_headers, league["id"])
+    res = await _save_bracket(client, admin_headers, league["id"], [""])
     assert res.status_code == 200, res.text
     body = res.json()
     assert len(body["matches"]) == 1
@@ -338,10 +330,8 @@ async def test_bracket_starts_from_the_champion_seat_and_grows(client):
     assert body["drawSize"] == 2
     assert body["plannedTeams"] == 2   # 결승의 두 자리
 
-    assert (await _start_bracket(client, admin_headers, league["id"])).status_code == 409
-
     # 결승 a자리에 가지를 치면 판이 한 겹 자라고, 결승은 맨 끝 라운드로 밀린다.
-    res = await _branch(client, admin_headers, league["id"], final["id"], "a")
+    res = await _save_bracket(client, admin_headers, league["id"], ["", "a"])
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["drawSize"] == 4
@@ -349,33 +339,27 @@ async def test_bracket_starts_from_the_champion_seat_and_grows(client):
     assert _match(body, 1, 0)["id"] != final["id"]   # 새 가지가 1라운드에 놓였다
     assert body["plannedTeams"] == 3                 # 결승 b + 새 경기 두 자리
 
-    # 같은 자리에 두 번 칠 수는 없다.
-    res = await _branch(client, admin_headers, league["id"], final["id"], "a")
-    assert res.status_code == 400, res.text
+    # 나무가 아닌 모양은 거부한다 — 뿌리(결승)가 없거나, 중간이 비었거나, 같은 자리가 두 번.
+    for bad in (["a"], ["", "aa"], ["", "a", "a"]):
+        res = await _save_bracket(client, admin_headers, league["id"], bad)
+        assert res.status_code == 400, f"{bad}: {res.text}"
 
 
 async def test_bracket_depth_is_capped(client):
     """판은 열 겹까지만 자란다 — 그 이상은 거부한다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers)
-    body = (await _start_bracket(client, admin_headers, league["id"])).json()
 
-    def deepest(b):
-        low = min(m["round"] for m in b["matches"])
-        return next(m for m in b["matches"] if m["round"] == low)
+    res = await _save_bracket(client, admin_headers, league["id"], _spine_paths(10))
+    assert res.status_code == 200, res.text
+    assert res.json()["drawSize"] == 2 ** 10
 
-    for _ in range(9):   # 1라운드짜리 판을 10라운드까지 키운다
-        res = await _branch(client, admin_headers, league["id"], deepest(body)["id"], "a")
-        assert res.status_code == 200, res.text
-        body = res.json()
-    assert body["drawSize"] == 2 ** 10
-
-    res = await _branch(client, admin_headers, league["id"], deepest(body)["id"], "a")
+    res = await _save_bracket(client, admin_headers, league["id"], _spine_paths(11))
     assert res.status_code == 400, res.text
 
 
-async def test_unbranch_drops_the_subtree_and_pulls_the_rounds_back(client):
-    """가지를 지우면 아래 매달린 것까지 통째로 사라지고, 얕아진 만큼 라운드가 당겨진다."""
+async def test_saving_a_smaller_shape_drops_the_subtree_and_pulls_the_rounds_back(client):
+    """모양에서 빠진 자리는 아래 매달린 것까지 통째로 사라지고, 얕아진 만큼 라운드가 당겨진다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 4)
@@ -389,70 +373,69 @@ async def test_unbranch_drops_the_subtree_and_pulls_the_rounds_back(client):
     ])
     assert res.status_code == 200, res.text
 
-    # 왼쪽 가지를 지운다 — 그 경기와 거기 앉아 있던 배정이 함께 사라진다(팀 자체는 남는다).
-    res = await _unbranch(client, admin_headers, league["id"], final["id"], "a")
+    # 왼쪽 가지를 뺀 모양으로 저장한다 — 그 경기와 거기 앉아 있던 배정이 함께 사라진다
+    # (팀 자체는 리그에 남는다).
+    res = await _save_bracket(client, admin_headers, league["id"], ["", "b"])
     assert res.status_code == 200, res.text
     body = res.json()
     assert all(m["id"] != left["id"] for m in body["matches"])
     assert len(body["teams"]) == 4
     assert body["plannedTeams"] == 3   # 결승 a(다시 앉힐 수 있는 자리) + 오른쪽 두 자리
 
-    # 없는 가지는 못 지운다.
-    res = await _unbranch(client, admin_headers, league["id"], final["id"], "a")
-    assert res.status_code == 400, res.text
-
-    # 나머지 가지까지 지우면 결승만 남고 라운드가 1로 당겨진다.
-    res = await _unbranch(client, admin_headers, league["id"], final["id"], "b")
+    # 나머지 가지까지 빼면 결승만 남고 라운드가 1로 당겨진다 — 결승 행은 그대로다.
+    res = await _save_bracket(client, admin_headers, league["id"], [""])
     assert res.status_code == 200, res.text
     body = res.json()
     assert len(body["matches"]) == 1
     assert _match(body, 1, 0)["id"] == final["id"]
     assert body["drawSize"] == 2 and body["plannedTeams"] == 2
 
-    # 우승 자리의 '가지 지우기' — 판을 통째로 없앤다.
-    res = await _drop_bracket(client, admin_headers, league["id"])
+    # 빈 모양 — 판을 통째로 없앤다.
+    res = await _save_bracket(client, admin_headers, league["id"], [])
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["matches"] == [] and body["drawSize"] is None
 
 
-async def test_unbranch_is_blocked_after_a_real_result(client, db_session):
-    """이미 치른 경기가 딸린 가지는 못 지운다 — 지우면 그 진행 상황이 날아간다."""
+async def test_bracket_shape_is_frozen_after_a_real_result(client, db_session):
+    """이미 치른 경기가 있으면 모양을 못 바꾼다 — 바꾸면 그 진행 상황이 소리 없이 날아간다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 2)
     body = (await _generate_bracket(client, admin_headers, league["id"], 4)).json()
-    final, left = _match(body, 2, 0), _match(body, 1, 0)
+    left = _match(body, 1, 0)
 
     await _assign_slot(client, admin_headers, league["id"], left["id"], "a", teams[0]["id"])
     res = await _assign_slot(client, admin_headers, league["id"], left["id"], "b", teams[1]["id"])
     assert res.status_code == 200, res.text
     await _decide_match(db_session, left["id"], sets_a=1, sets_b=0)
 
-    assert (await _unbranch(client, admin_headers, league["id"], final["id"], "a")).status_code == 400
-    assert (await _drop_bracket(client, admin_headers, league["id"])).status_code == 400
-    # 결과가 난 경기 자체에도 가지를 칠 수 없다.
-    assert (await _branch(client, admin_headers, league["id"], left["id"], "a")).status_code == 400
+    for shape in (["", "b"], [], ["", "a", "b", "aa"]):
+        res = await _save_bracket(client, admin_headers, league["id"], shape)
+        assert res.status_code == 400, f"{shape}: {res.text}"
 
 
 async def test_growing_a_branch_keeps_the_other_seats(client):
-    """가지를 더 쳐도 다른 자리 배정은 그대로다 — 가지를 친 그 자리만 비워진다."""
+    """모양이 자라도 나머지 자리 배정은 그대로 다시 앉는다 — 가지가 달린 자리만 비워진다."""
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers, best_of=1)
     teams = await _add_teams(client, admin_headers, league["id"], 4)  # A, B, C, D
-    body = (await _generate_bracket(client, admin_headers, league["id"], 4)).json()
-    left, right = _match(body, 1, 0), _match(body, 1, 1)
-
-    res = await _seed(client, admin_headers, league["id"], [
-        {"matchId": left["id"], "side": "a", "teamId": teams[0]["id"]},
-        {"matchId": left["id"], "side": "b", "teamId": teams[1]["id"]},
-        {"matchId": right["id"], "side": "a", "teamId": teams[2]["id"]},
-        {"matchId": right["id"], "side": "b", "teamId": teams[3]["id"]},
-    ])
+    seats = [
+        {"path": "a", "side": "a", "teamId": teams[0]["id"]},
+        {"path": "a", "side": "b", "teamId": teams[1]["id"]},
+        {"path": "b", "side": "a", "teamId": teams[2]["id"]},
+        {"path": "b", "side": "b", "teamId": teams[3]["id"]},
+    ]
+    res = await _save_bracket(client, admin_headers, league["id"], ["", "a", "b"], seats)
     assert res.status_code == 200, res.text
+    body = res.json()
+    left, right = _match(body, 1, 0), _match(body, 1, 1)
+    assert left["teamA"]["label"] == "A" and left["teamB"]["label"] == "B"
+    assert right["teamA"]["label"] == "C" and right["teamB"]["label"] == "D"
 
-    # 이미 D가 앉아 있는 자리에 가지를 친다 — 그 자리는 이제 '올라오는 자리'라 비워진다.
-    res = await _branch(client, admin_headers, league["id"], right["id"], "b")
+    # D가 앉아 있던 자리에 가지를 친다 — 그 자리는 이제 '올라오는 자리'라 비워 둔다.
+    grown = ["", "a", "b", "bb"]
+    res = await _save_bracket(client, admin_headers, league["id"], grown, seats[:3])
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["drawSize"] == 8   # 판이 한 겹 자랐다
@@ -464,6 +447,10 @@ async def test_growing_a_branch_keeps_the_other_seats(client):
     assert by_id[right["id"]]["teamB"] is None
     # 풀린 D는 리그에 그대로 있고, 새로 생긴 자리에 다시 앉힐 수 있다.
     assert len(body["teams"]) == 4
+
+    # 가지가 달린 자리에 그대로 앉히려 들면 거부한다.
+    res = await _save_bracket(client, admin_headers, league["id"], grown, seats)
+    assert res.status_code == 400, res.text
 
 
 async def test_bracket_generates_empty_and_slots_are_assigned_manually(client):
@@ -506,7 +493,7 @@ async def test_team_count_is_not_capped_by_the_bracket(client):
     admin_headers, _ = await _bootstrap(client, 0)
     league = await _create_league(client, admin_headers)
     await _add_teams(client, admin_headers, league["id"], 2)
-    res = await _start_bracket(client, admin_headers, league["id"])
+    res = await _save_bracket(client, admin_headers, league["id"], [""])
     assert res.status_code == 200, res.text
     assert res.json()["plannedTeams"] == 2   # 결승 두 자리뿐
 
@@ -911,17 +898,15 @@ async def test_planned_teams_tracks_the_seats_as_the_bracket_grows(client):
     league = await _create_league(client, admin_headers, mode="team")
     lid = league["id"]
 
-    body = (await _start_bracket(client, admin_headers, lid)).json()
+    body = (await _save_bracket(client, admin_headers, lid, [""])).json()
     assert body["plannedTeams"] == 2                    # 결승 두 자리
-    final = _match(body, 1, 0)
 
-    body = (await _branch(client, admin_headers, lid, final["id"], "a")).json()
+    body = (await _save_bracket(client, admin_headers, lid, ["", "a"])).json()
     assert body["plannedTeams"] == 3                    # 결승 b + 새 경기 두 자리
-    semi = _match(body, 1, 0)
 
-    body = (await _branch(client, admin_headers, lid, semi["id"], "a")).json()
+    body = (await _save_bracket(client, admin_headers, lid, ["", "a", "aa"])).json()
     assert body["plannedTeams"] == 4
 
-    body = (await _unbranch(client, admin_headers, lid, final["id"], "a")).json()
+    body = (await _save_bracket(client, admin_headers, lid, [""])).json()
     assert body["plannedTeams"] == 2                    # 다시 결승만 남는다
     assert body["drawSize"] == 2

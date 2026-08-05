@@ -126,6 +126,59 @@ class LeagueTeamCompositionIn(BaseModel):
     teams: list[LeagueTeamCompositionEntry]
 
 
+class LeagueBracketSlotIn(BaseModel):
+    """일괄 저장에서 자리 하나를 가리키는 법 — 뿌리(우승 자리)에서 내려온 길과 그 자리의 쪽.
+
+    id로 가리키지 않는다: 화면이 가지를 치고 지우는 동안 새 칸에는 아직 id가 없기 때문이다
+    (요청: 바로바로 저장이 아니라 마지막 저장 버튼에서 한 번에). path는 "a"/"b"를 이어 붙인
+    문자열이고 빈 문자열이 결승이다 — "ab"면 결승의 a쪽으로 올라가는 경기의 b쪽 자리다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    path: str = Field(pattern=r"^[ab]*$", max_length=10)
+    side: LeagueMatchSide
+    team_id: int | None = Field(default=None, alias="teamId")
+
+
+class LeagueBracketIn(BaseModel):
+    """대진표의 모양과 배정을 한 번에 저장한다(요청: 마지막 저장 버튼에서 한 번에).
+
+    paths는 '있는 경기 전부'를 뿌리에서의 길로 적은 목록이다(빈 문자열=결승). 빈 목록이면
+    대진표를 통째로 없앤다. 서버는 이 목록대로 판을 다시 맞춘다 — 그대로인 칸은 행을 그대로
+    두고(그래야 id가 안 흔들린다), 없어진 칸은 지우고, 새 칸만 만든다.
+
+    가지를 치고 지우는 조작을 하나하나 API로 부르던 방식(bracket/matches/{id}/{side}/branch)을
+    대신한다 — 새 칸의 id와 밀린 라운드 번호가 서버에서 와야 해서 매번 왕복해야 했다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    paths: list[str] = Field(default_factory=list)
+    assignments: list[LeagueBracketSlotIn] = Field(default_factory=list)
+
+
+class LeagueMatchResultIn(BaseModel):
+    """세트 스코어(요청: 결과는 몇 대 몇 입력) — 둘 다 None이면 결과를 지운다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    sets_won_a: int | None = Field(default=None, alias="setsWonA", ge=0, le=99)
+    sets_won_b: int | None = Field(default=None, alias="setsWonB", ge=0, le=99)
+
+    @model_validator(mode="after")
+    def _both_or_neither(self) -> "LeagueMatchResultIn":
+        if (self.sets_won_a is None) != (self.sets_won_b is None):
+            raise ValueError("세트 스코어는 두 값을 함께 넣거나 함께 비워야 합니다.")
+        return self
+
+
+class LeagueMatchScheduleIn(BaseModel):
+    """경기 일시(요청) — None이면 정해진 일시를 지운다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
+
+
 class LeagueSeedSlotIn(BaseModel):
     """일괄 시드 저장의 한 자리 — 어느 경기(match_id)의 어느 쪽(side)에 어떤 팀(team_id,
     미지정은 None)이 들어갈지."""

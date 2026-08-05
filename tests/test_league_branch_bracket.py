@@ -14,14 +14,13 @@
 from tests.test_leagues import (
     _add_teams,
     _bootstrap,
-    _branch,
     _confirm_bracket,
     _create_league,
     _generate_bracket,
     _get_league,
     _match,
+    _save_bracket,
     _seed,
-    _start_bracket,
 )
 
 
@@ -34,17 +33,12 @@ async def test_compound_bracket_built_by_branching(client):
     lid = (await _create_league(client, headers, best_of=1))["id"]
     teams = await _add_teams(client, headers, lid, 6)
 
-    body = (await _start_bracket(client, headers, lid)).json()
-    final = _match(body, 1, 0)
     # 결승 왼쪽은 네 팀 토너먼트로, 오른쪽은 두 팀 단판으로 키운다.
-    body = (await _branch(client, headers, lid, final["id"], "a")).json()
-    semi = _match(body, 1, 0)
-    body = (await _branch(client, headers, lid, final["id"], "b")).json()
-    single = _match(body, 1, 1)
-    body = (await _branch(client, headers, lid, semi["id"], "a")).json()
-    quarter_a = _match(body, 1, 0)
-    body = (await _branch(client, headers, lid, semi["id"], "b")).json()
-    quarter_b = _match(body, 1, 1)
+    res = await _save_bracket(client, headers, lid, ["", "a", "b", "aa", "ab"])
+    assert res.status_code == 200, res.text
+    body = res.json()
+    single = _match(body, 2, 1)
+    quarter_a, quarter_b = _match(body, 1, 0), _match(body, 1, 1)
 
     assert body["drawSize"] == 8
     assert len(body["matches"]) == 5      # 꽉 찬 8강이면 7경기
@@ -100,10 +94,8 @@ async def test_a_seat_without_a_branch_becomes_a_bye(client):
     lid = (await _create_league(client, headers, best_of=1))["id"]
     teams = await _add_teams(client, headers, lid, 2)
 
-    body = (await _start_bracket(client, headers, lid)).json()
-    final = _match(body, 1, 0)
-    body = (await _branch(client, headers, lid, final["id"], "a")).json()
-    semi = _match(body, 1, 0)
+    body = (await _save_bracket(client, headers, lid, ["", "a"])).json()
+    final, semi = _match(body, 2, 0), _match(body, 1, 0)
 
     # A는 준결승에 혼자, B는 결승에 바로 앉는다 — 결승 b쪽엔 가지가 없다.
     res = await _seed(client, headers, lid, [
@@ -168,5 +160,5 @@ async def test_bracket_shape_is_locked_after_confirm(client):
     assert res.status_code == 200, res.text
     assert (await _confirm_bracket(client, headers, lid)).status_code == 200
 
-    assert (await _branch(client, headers, lid, final["id"], "a")).status_code == 409
-    assert (await _start_bracket(client, headers, lid)).status_code == 409
+    assert (await _save_bracket(client, headers, lid, ["", "a"])).status_code == 409
+    assert (await _save_bracket(client, headers, lid, [])).status_code == 409

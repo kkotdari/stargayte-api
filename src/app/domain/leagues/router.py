@@ -2,10 +2,12 @@ from fastapi import APIRouter
 
 from app.api.deps import CurrentAdmin, DbSession
 from app.domain.leagues.schemas import (
+    LeagueBracketIn,
     LeagueBracketSeedIn,
     LeagueCreateIn,
     LeagueListOut,
-    LeagueMatchSide,
+    LeagueMatchResultIn,
+    LeagueMatchScheduleIn,
     LeagueOut,
     LeagueTeamCompositionIn,
 )
@@ -43,30 +45,30 @@ async def set_team_composition(
     return await LeagueService(db).set_team_composition(league_id, payload, actor=current)
 
 
-# 대진표는 우승 자리 하나에서 시작해 왼쪽으로 가지를 쳐 나간다(요청) — 크기를 미리 받는
-# 엔드포인트(bracket/generate)는 사라졌다.
-@router.post("/{league_id}/bracket", response_model=LeagueOut)
-async def start_bracket(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
-    return await LeagueService(db).start_bracket(league_id, actor=current)
-
-
-@router.delete("/{league_id}/bracket", response_model=LeagueOut)
-async def delete_bracket(league_id: int, db: DbSession, current: CurrentAdmin) -> LeagueOut:
-    return await LeagueService(db).delete_bracket(league_id, actor=current)
-
-
-@router.post("/{league_id}/bracket/matches/{match_id}/{side}/branch", response_model=LeagueOut)
-async def branch_slot(
-    league_id: int, match_id: int, side: LeagueMatchSide, db: DbSession, current: CurrentAdmin,
+# 대진표의 모양과 배정은 한 번에 저장한다(요청: 바로바로가 아니라 마지막 저장 버튼) —
+# 가지를 치고 지우는 조작마다 부르던 엔드포인트 넷(대진표 생성/삭제, 가지 추가/삭제)을
+# 이 하나가 대신한다.
+@router.put("/{league_id}/bracket", response_model=LeagueOut)
+async def set_bracket(
+    league_id: int, payload: LeagueBracketIn, db: DbSession, current: CurrentAdmin,
 ) -> LeagueOut:
-    return await LeagueService(db).branch_slot(league_id, match_id, side, actor=current)
+    return await LeagueService(db).set_bracket(league_id, payload, actor=current)
 
 
-@router.delete("/{league_id}/bracket/matches/{match_id}/{side}/branch", response_model=LeagueOut)
-async def unbranch_slot(
-    league_id: int, match_id: int, side: LeagueMatchSide, db: DbSession, current: CurrentAdmin,
+@router.put("/{league_id}/matches/{match_id}/schedule", response_model=LeagueOut)
+async def set_match_schedule(
+    league_id: int, match_id: int, payload: LeagueMatchScheduleIn,
+    db: DbSession, current: CurrentAdmin,
 ) -> LeagueOut:
-    return await LeagueService(db).unbranch_slot(league_id, match_id, side, actor=current)
+    return await LeagueService(db).set_match_schedule(league_id, match_id, payload, actor=current)
+
+
+@router.put("/{league_id}/matches/{match_id}/result", response_model=LeagueOut)
+async def set_match_result(
+    league_id: int, match_id: int, payload: LeagueMatchResultIn,
+    db: DbSession, current: CurrentAdmin,
+) -> LeagueOut:
+    return await LeagueService(db).set_match_result(league_id, match_id, payload, actor=current)
 
 
 @router.post("/{league_id}/bracket/confirm", response_model=LeagueOut)
