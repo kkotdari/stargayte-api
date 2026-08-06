@@ -97,8 +97,8 @@ async def test_all_time_score_equals_sum_of_each_month(client):
     assert abs(total - parts) < 0.3  # 각 창이 소수 첫째자리로 반올림된 값이라 그만큼만 허용
 
 
-async def test_season_reset_keeps_monthly_scores_comparable(client):
-    """달이 바뀌면 σ가 조금 되돌아온다 — 그래야 달마다의 점수 폭이 계속 쪼그라들지 않는다.
+async def test_sigma_drift_keeps_monthly_scores_comparable(client):
+    """시간이 지나면 σ가 조금 되돌아온다 — 그래야 달마다의 점수 폭이 계속 쪼그라들지 않는다.
 
     같은 사람이 매달 똑같이 한 판씩 이기는데, 되돌리기가 없으면 σ가 단조 감소해 세 번째 달의
     점수가 첫 달의 몇 분의 일로 주저앉는다(실측으로 1월 230점 → 12월 10점까지 갔다).

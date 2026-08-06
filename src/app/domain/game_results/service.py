@@ -504,9 +504,10 @@ def _replay_ratings(
     3연승한 신입과 3연승한 고수가 같은 점수를 받는다. 이제 그 정보를 그대로 들고 시작한다 —
     같은 1승이라도 누구를 이겼느냐에 따라 값이 달라진다.
 
-    달이 바뀔 때마다 engine.season_reset()으로 σ만 되돌린다(rating.py의 SEASON_SIGMA 주석).
-    창(count_from~)과 무관하게 늘 같은 자리에서 일어나므로, 어느 달을 조회하든 그 달 경기의
-    Δ는 똑같이 나온다 — '올타임으로 본 3월'과 '3월만 본 3월'이 어긋나지 않는다.
+    경기와 경기 사이에 engine.drift()로 σ만 쉰 날수에 비례해 되돌린다(rating.py의
+    SEASON_SIGMA 주석). 창(count_from~)과 무관하게 늘 같은 자리에서 일어나므로, 어느 달을
+    조회하든 그 달 경기의 Δ는 똑같이 나온다 — '올타임으로 본 3월'과 '3월만 본 3월'이
+    어긋나지 않는다.
 
     by_race=False면 레이팅 대상이 '회원'(member_pk)이고, True면 '(회원, 그 경기 종족)' 조합이다
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
@@ -559,25 +560,31 @@ def _replay_ratings(
     engine = RatingEngine()
     deltas: dict[str, float] = {}
     running: dict = defaultdict(float)
-    # 달이 바뀔 때마다 σ를 되돌린다(rating.py의 SEASON_SIGMA) — 마지막으로 경기가 있었던 달을
-    # 들고 다니며, 건너뛴 달 수만큼 되돌린다. 오래 쉬면 그만큼 더 모르는 게 맞고, σ0을 넘지는
-    # 않으므로 몇 달을 쉬든 '처음 보는 사람'까지만 간다. 한 번에 열두 달까지만 세는 것은
-    # 데이터가 이상할 때(먼 과거의 한 판) 루프가 길어지지 않게 하는 안전장치일 뿐이다.
-    last_month: int | None = None
+    # 뛴 사람마다 마지막 경기 날짜를 들고 다니며, 다음 경기 직전에 그동안 쉰 날수만큼 σ를
+    # 되돌린다(rating.py의 SEASON_SIGMA·SEASON_VAR_PER_DAY). 오래 쉬면 그만큼 더 모르는 게
+    # 맞고, σ0을 넘지는 않으므로 몇 년을 쉬든 '처음 보는 사람'까지만 간다.
+    #
+    # 예전에는 달이 바뀌는 순간 전원에게 한 달치를 통째로 얹었다. 그러면 σ가 부풀어 있는
+    # 월초의 승리가 월말의 승리보다 값이 나갔다(실측 1.78배). 지금은 같은 양을 날마다 나눠
+    # 풀어 그 편향이 없다 — 자세한 실측은 rating.py의 상수 주석에 있다.
+    last_played: dict = {}
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
         # 0점 경기 — 레이팅을 갱신하지도, 표시 점수를 더하지도 않는다(위 주석).
         if mm["outsider"]:
             continue
-        month = mm["date"].year * 12 + mm["date"].month
-        if last_month is not None and month > last_month:
-            for _ in range(min(month - last_month, 12)):
-                engine.season_reset()
-        last_month = month
         # 창 밖(count_from 이전)의 경기는 레이팅만 만들고 표시 점수에는 안 들어간다 —
         # 이게 곧 "지난달까지의 누적치로 상대강도를 계산해서 평가를 시작"이다(요청).
         counted = count_from is None or mm["date"] >= count_from
         participants = [p for p in (mm["team1"] + mm["team2"]) if p is not None]
+        # 이번에 뛰는 사람만, 각자 쉰 날수만큼 σ를 되돌린다. 안 뛰는 사람은 제 다음 경기
+        # 직전에 그때까지 쉰 날수를 한꺼번에 받으므로 결과가 같다 — 굳이 매 경기 전원을
+        # 훑지 않는다. pre를 재기 전에 끝나므로 이 되돌림 자체는 Δ를 만들지 않는다.
+        for p in participants:
+            gap = (mm["date"] - last_played[p]).days if p in last_played else 0
+            if gap > 0:
+                engine.drift((p,), gap)
+            last_played[p] = mm["date"]
         pre = {p: engine.get(p).conservative for p in participants}
         engine.update(mm["team1"], mm["team2"], mm["result"])
         is_decisive = mm["result"] in ("team1", "team2")
