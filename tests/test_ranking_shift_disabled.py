@@ -14,7 +14,9 @@ from app.core.config import settings
 
 from tests.test_activity_comments import (
     _approve,
+    _club,
     _h,
+    _overtake,
     _recompute,
     _register_match_today,
     _signup,
@@ -44,16 +46,13 @@ async def _snapshot_count() -> int:
 
 async def test_disabled_hides_cards_but_keeps_rows(client, ranking_shift_off):
     """이미 쌓인 스냅샷이 있어도 카드로는 안 나간다 — 행은 그대로 남는다."""
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
+    a = await _club(client)
 
     # 켜 둔 상태로 변동을 하나 만들어 둔다(기준선 + 그 뒤 경기).
     settings.ranking_shift_enabled = True
     await _register_match_today(client, _h(a))
     await _recompute(client)
-    await _register_match_today(client, _h(a), result="team2")
-    await _register_match_today(client, _h(a), result="team2")
+    await _overtake(client, _h(a))
     await _recompute(client)
     assert (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json() != []
     rows_before = await _snapshot_count()

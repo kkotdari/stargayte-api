@@ -490,6 +490,38 @@ def _replay_order_key(game_started_at, match_date, match_no):
     return (ts, match_no or "")
 
 
+# 같은 상대와 자꾸 붙을 때, 판마다 표시점수에 곱하는 감쇠(요청: "같은 사람에게 이겼을때/
+# 졌을때 얻고 잃는 점수가 너무 적게 줄어드는거 같아. 사실 4~5판 정도 이겼을 때부터는 거의
+# 0점이어야 한다고 생각되는데").
+#
+# TrueSkill만으로는 여기까지 못 간다 — 한 판이 μ를 1~2밖에 못 움직여서, 다섯 판으로는
+# 기대승률이 절반 근처를 못 벗어난다. β를 표준값까지 내려도 다섯 번째 승리가 첫 승의 30%
+# 아래로 안 떨어졌다. 그래서 맞대결 반복은 별개의 인자로 따로 센다.
+#
+# 세는 것은 '연승'이 아니라 '맞붙은 횟수'다. 처음엔 연승으로 세어 봤는데(같은 결과가 이어질
+# 때만 깎고 결과가 뒤집히면 처음부터) 클럽 전체로 돌리니 랭킹이 통째로 뒤집혔다 — 꾸준히
+# 이기는 사람은 계속 깎이는데 가끔 이변을 내는 쪽은 매번 제값을 받기 때문이다. 실측(24명·
+# 월 250판·24개월, 점수순위와 실제 실력의 순위상관):
+#     감쇠 없음                 0.83
+#     연승 기준 r=0.5          -0.96   ← 거의 정확히 뒤집힘
+#     맞대결 기준 r=0.5·반감기30일  0.96
+# 맞붙은 횟수로 세면 이기는 쪽·지는 쪽에 같은 인자가 걸려(요청: "이겼을때/졌을때") 한쪽으로
+# 기울지 않는다. 오히려 대진이 한쪽으로 몰린 사람이 점수를 퍼오는 걸 막아 주어, 감쇠가 없을
+# 때보다 순위가 더 정확해진다.
+#
+# 안 붙고 지나간 시간만큼 이 횟수는 다시 줄어든다(반감기 H2H_HALFLIFE_DAYS). 그래야 몇 달
+# 만에 다시 만난 사이가 예전 전적에 묶이지 않는다. 사흘 간격으로 잇달아 붙으면 감쇠가
+# 1.00 → 0.52 → 0.29 → 0.16 → 0.10 → 0.06으로 간다.
+#
+# 팀전도 같은 자리에서 센다 — '같은 편성 대 같은 편성'이 반복되는 경우다. 한 명이라도 바뀌면
+# 다른 맞대결이라 처음부터다. 무승부는 애초에 Δ가 0이라 세지 않는다.
+#
+# 엔진의 μ/σ는 이 감쇠와 무관하게 순수 TrueSkill 그대로 갱신된다. 화면에 노출하는 점수(경기별
+# Δ와 그 누적)에만 곱하므로 "Δ의 합 = 카드 점수" telescoping도 그대로다.
+H2H_REPEAT_DAMP = 0.5
+H2H_HALFLIFE_DAYS = 30.0
+
+
 def _replay_ratings(
     rows, focal=None, by_race: bool = False, count_from: date | None = None,
 ) -> tuple[RatingEngine, dict[str, float], dict]:
@@ -568,6 +600,10 @@ def _replay_ratings(
     # 월초의 승리가 월말의 승리보다 값이 나갔다(실측 1.78배). 지금은 같은 양을 날마다 나눠
     # 풀어 그 편향이 없다 — 자세한 실측은 rating.py의 상수 주석에 있다.
     last_played: dict = {}
+    # 맞대결마다 (그동안 붙은 횟수, 마지막으로 붙은 날) — H2H_REPEAT_DAMP 주석 참고.
+    # 창(count_from)과 무관하게 맨 처음부터 센다. 창 앞에 세 번 붙은 걸 잊고 창 안의 첫 판을
+    # 제값으로 쳐주면, 같은 3월을 '올타임으로 볼 때'와 '3월만 볼 때'가 어긋난다.
+    h2h: dict[tuple, tuple[float, date]] = {}
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
         # 0점 경기 — 레이팅을 갱신하지도, 표시 점수를 더하지도 않는다(위 주석).
@@ -589,6 +625,19 @@ def _replay_ratings(
         engine.update(mm["team1"], mm["team2"], mm["result"])
         is_decisive = mm["result"] in ("team1", "team2")
         winners = set(mm[mm["result"]]) if is_decisive else set()
+        # 이 맞대결로 몇 번째 붙는 건가 — 자주 붙을수록 표시점수를 깎고, 안 붙고 지나간
+        # 시간만큼 그 횟수는 다시 줄어든다(H2H_REPEAT_DAMP 주석).
+        damp = 1.0
+        if is_decisive:
+            side1 = tuple(sorted(p for p in mm["team1"] if p is not None))
+            side2 = tuple(sorted(p for p in mm["team2"] if p is not None))
+            pair = (side1, side2) if side1 <= side2 else (side2, side1)
+            seen, met_on = h2h.get(pair, (0.0, mm["date"]))
+            rest = (mm["date"] - met_on).days
+            if rest > 0:
+                seen *= 0.5 ** (rest / H2H_HALFLIFE_DAYS)
+            damp = H2H_REPEAT_DAMP ** seen
+            h2h[pair] = (seen + 1.0, mm["date"])
         for p in participants:
             # ×10 스케일(요청) — 화면에 노출되는 모든 점수(카드 점수 running, 상세 경기당
             # Δ)를 여기 한 곳에서 10배로 키워 내려준다. 프론트는 이 값을 자연수로 반올림해
@@ -599,6 +648,7 @@ def _replay_ratings(
             raw = (engine.get(p).conservative - pre[p]) * 10
             if is_decisive:
                 raw = max(raw, 0.0) if p in winners else min(raw, 0.0)
+                raw *= damp
             running[p] += raw
             if p == focal:
                 deltas[mm["match_no"]] = raw

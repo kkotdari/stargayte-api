@@ -185,7 +185,9 @@ async def test_activity_comment_on_challenge_target(client):
     assert [c["text"] for c in res.json()] == ["기대되는 매치"]
 
 
-async def _register_match_today(client, headers: dict, *, result: str = "team1") -> dict:
+async def _register_match_today(
+    client, headers: dict, *, result: str = "team1", one: str = "alice", two: str = "bob",
+) -> dict:
     """스냅샷은 '이번 달(KST)' 성적으로 계산되므로 오늘 날짜로 등록한다."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -196,14 +198,36 @@ async def _register_match_today(client, headers: dict, *, result: str = "team1")
         headers=headers,
         json={
             "date": today,
-            "team1": [{"memberId": "alice", "race": "테란"}],
-            "team2": [{"memberId": "bob", "race": "저그"}],
+            "team1": [{"memberId": one, "race": "테란"}],
+            "team2": [{"memberId": two, "race": "저그"}],
             "result": result,
             "matchType": "0101",
         },
     )
     assert res.status_code == 200, res.text
     return res.json()
+
+
+async def _club(client) -> dict:
+    """alice(운영자) + bob·carol·dave. alice의 토큰을 돌려준다.
+
+    carol·dave도 한 판 붙여 순위표에 올려 둔다 — 기준선에 없던 사람이 나중에 올라오면
+    '신규 진입'이라 변동의 from이 비어, 그걸 검사하는 테스트가 헛돈다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    for i, who in enumerate(("bob", "carol", "dave"), start=2):
+        await _signup(client, who, f"{who.title()}#100{i}")
+        await _approve(client, a["accessToken"], who)
+    await _register_match_today(client, _h(a), one="carol", two="dave")
+    return a
+
+
+async def _overtake(client, headers: dict) -> None:
+    """bob이 alice를 제치도록 두 판을 이긴다 — 순위 변동을 만드는 상투구.
+
+    상대를 carol·dave로 바꿔 가며 이긴다. 같은 사람과 거듭 붙으면 맞대결 반복 감쇠
+    (service의 H2H_REPEAT_DAMP)가 걸려 점수가 거의 안 움직이기 때문이다."""
+    await _register_match_today(client, headers, one="bob", two="carol")
+    await _register_match_today(client, headers, one="bob", two="dave")
 
 
 async def _recompute(client) -> None:
@@ -236,9 +260,7 @@ async def test_daily_recompute_first_run_is_silent_baseline(client):
     """기준선이 없으면 첫 재집계는 변동 없이 기준선으로만 남는다.
 
     비교 대상이 없는데 변동을 내면 순위표에 있는 전원이 '신규 진입'으로 쏟아진다."""
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
+    a = await _club(client)
 
     await _register_match_today(client, _h(a))
     await _recompute(client)
@@ -246,8 +268,7 @@ async def test_daily_recompute_first_run_is_silent_baseline(client):
     assert res.json() == []  # 기준선만 깔린다
 
     # 그다음 경기부터는 이 기준선과 비교돼 변동이 잡힌다 — 아무도 '신규'가 아니다.
-    await _register_match_today(client, _h(a), result="team2")
-    await _register_match_today(client, _h(a), result="team2")
+    await _overtake(client, _h(a))
     await _recompute(client)
     res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     events = res.json()
@@ -263,14 +284,11 @@ async def test_shift_carries_point_change(client):
     """순위 변동에 포인트 변동도 함께 실린다(요청: 순위 변동 옆에 "+100p").
 
     몇 계단 올랐는지만으로는 그게 한 판 차이인지 몰아친 결과인지 알 수가 없다."""
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
+    a = await _club(client)
 
     await _register_match_today(client, _h(a))
     await _recompute(client)  # 기준선
-    await _register_match_today(client, _h(a), result="team2")
-    await _register_match_today(client, _h(a), result="team2")
+    await _overtake(client, _h(a))
     await _recompute(client)
 
     events = (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json()
@@ -333,9 +351,7 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
     from app.domain.activity.models import RankingShift
     from app.main import _seed_ranking_shifts
 
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
+    a = await _club(client)
     await _seed_ranking_shifts()
 
     # 기준선을 '지난달'로 밀어 둔다.
@@ -348,8 +364,7 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
     res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.json() == []  # 월초 '전원 신규' 카드가 뜨지 않는다
 
-    await _register_match_today(client, _h(a), result="team2")
-    await _register_match_today(client, _h(a), result="team2")
+    await _overtake(client, _h(a))
     await _recompute(client)
     events = (await client.get("/api/activities/ranking-shifts", headers=_h(a))).json()
     assert len(events) >= 1
@@ -361,15 +376,12 @@ async def test_rank_snapshot_new_month_starts_fresh_baseline(client, db_session)
 
 async def test_activity_comment_on_rankshift_target(client):
     """순위변동 알림 카드에도 같은 댓글 API가 그대로 붙는다(요청)."""
-    a = await _signup(client, "alice", "Alice#1001")
-    await _signup(client, "bob", "Bob#1002")
-    await _approve(client, a["accessToken"], "bob")
+    a = await _club(client)
 
     # 기준선 한 번, 그다음 변동 한 번 — 그래야 댓글을 달 변동 카드가 생긴다.
     await _register_match_today(client, _h(a))
     await _recompute(client)
-    await _register_match_today(client, _h(a), result="team2")
-    await _register_match_today(client, _h(a), result="team2")
+    await _overtake(client, _h(a))
     await _recompute(client)
     res = await client.get("/api/activities/ranking-shifts", headers=_h(a))
     assert res.status_code == 200, res.text
