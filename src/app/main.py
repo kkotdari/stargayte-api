@@ -97,6 +97,7 @@ async def _ensure_schema() -> None:
             ("add game_outcomes.map_hash", _add_match_result_map_hash),
             ("add replay map resources", _add_replay_map_resources),
             ("add replay map image id", _add_replay_map_image_id),
+            ("add league match schedule_posted_at", _add_league_match_schedule_posted_at),
             ("add challenge time note", _add_challenge_time_note),
             ("add challenge canceled_by", _add_challenge_canceled_by),
             ("add challenge backdrop", _add_challenge_backdrop),
@@ -294,6 +295,32 @@ async def _add_replay_map_image_id(conn: object) -> None:
         except Exception:  # noqa: BLE001
             continue
     logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_league_match_schedule_posted_at(conn: object) -> None:
+    """league_matches.schedule_posted_at 컬럼을 더한다(멱등).
+
+    일정을 처음 적어 둔 때 — 활동 목록에서 이 경기가 언제 새것이었는지의 기준이다
+    (models.py 주석 참고). 이미 일정이 적혀 있는 옛 줄은 NULL로 남는데, 그러면 활동에
+    안 뜬다: 지난 일정을 이제 와서 전부 새것으로 올릴 이유가 없다. 다음에 그 일정을
+    손대면 그때부터 뜬다.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    # IF NOT EXISTS는 PostgreSQL(운영)만 알아듣는다 — SQLite(개발/테스트)에서는 구문 오류가
+    # 나므로 그냥 ADD COLUMN으로 한 번 더 시도하고, 이미 있으면 그때 나는 오류를 삼킨다.
+    for sql in (
+        "ALTER TABLE league_matches ADD COLUMN IF NOT EXISTS schedule_posted_at TIMESTAMPTZ",
+        "ALTER TABLE league_matches ADD COLUMN schedule_posted_at TIMESTAMP",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001
+            continue
+    logging.getLogger(__name__).debug("league_matches.schedule_posted_at 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_challenge_time_note(conn: object) -> None:

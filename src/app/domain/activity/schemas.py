@@ -12,7 +12,7 @@ from app.domain.game_results.schemas import GameResultOut
 COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 활동 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
-ActivityTargetType = Literal["gameResult", "challenge", "rankingShift"]
+ActivityTargetType = Literal["gameResult", "challenge", "rankingShift", "leagueMatch"]
 # 위 목록을 그대로 집합으로 — 손으로 한 벌 더 적으면 종류를 늘릴 때 한쪽만 고치게 된다.
 KNOWN_TARGET_TYPES = frozenset(get_args(ActivityTargetType))
 
@@ -23,7 +23,9 @@ LEGACY_FEED_TARGET_TYPES = {"match": "gameResult", "rankshift": "rankingShift"}
 
 # 요청으로 들어오는 값 — 위 이유로 옛 이름까지 허용하고, normalize_target_type으로 새
 # 이름 하나로 모아서 저장/조회한다.
-ActivityTargetTypeInput = Literal["gameResult", "challenge", "rankingShift", "match", "rankshift"]
+ActivityTargetTypeInput = Literal[
+    "gameResult", "challenge", "rankingShift", "leagueMatch", "match", "rankshift",
+]
 
 
 def normalize_target_type(value: str) -> str:
@@ -132,6 +134,34 @@ class RankingShiftOut(BaseModel):
     sections: list[RankingShiftSection]
 
 
+class LeagueMatchActivityOut(BaseModel):
+    """활동 목록에 뜨는 리그 경기 하나 — 일정이 적힌 경기만 여기 온다(요청: 리그 매치에
+    일정 등록 시 활동에 띄움).
+
+    리그 화면의 LeagueMatchOut을 그대로 쓰지 않는 이유는, 여기서는 대진표의 좌표(round·
+    slot)나 대타 명단이 아니라 '언제 누가 붙나, 결과가 나왔나'만 필요해서다. 리그 이름도
+    함께 담는다 — 활동 목록에는 대진표라는 맥락이 없다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    league_id: int = Field(alias="leagueId")
+    league_name: str = Field(alias="leagueName")
+    # "8강" 같은 라운드 이름 — 결승까지의 거리로 붙인다.
+    round_name: str = Field(alias="roundName")
+    team_a: str | None = Field(default=None, alias="teamA")
+    team_b: str | None = Field(default=None, alias="teamB")
+    scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
+    sets_won_a: int | None = Field(default=None, alias="setsWonA")
+    sets_won_b: int | None = Field(default=None, alias="setsWonB")
+    winner_team: str | None = Field(default=None, alias="winnerTeam")
+    # NEW는 '일정을 처음 적어 둔 때', UPDATE는 '마지막으로 손댄 때'로 가른다 — 너 나와의
+    # createdAt/updatedAt과 같은 규칙이라 화면 쪽 판정을 그대로 쓴다.
+    posted_at: datetime = Field(alias="postedAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+
 class ActivityItemOut(BaseModel):
     """활동 목록의 아이템 하나 — 너 나와·랭크 변동·게임결과를 같은 것으로 취급한다(요청).
 
@@ -146,12 +176,13 @@ class ActivityItemOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     key: str
-    kind: Literal["challenge", "rankingShift", "gameResultPost"]
+    kind: Literal["challenge", "rankingShift", "gameResultPost", "leagueMatch"]
     # 아래에서부터 센 번호(가장 오래된 줄이 1).
     no: int
     challenge: ChallengeOut | None = None
     ranking_shift: RankingShiftOut | None = Field(default=None, alias="rankingShift")
     game_results: list[GameResultOut] = Field(default_factory=list, alias="gameResults")
+    league_match: LeagueMatchActivityOut | None = Field(default=None, alias="leagueMatch")
     comments: list[ActivityCommentOut] = Field(default_factory=list)
 
 

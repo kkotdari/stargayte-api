@@ -627,6 +627,13 @@ class LeagueService:
         match = self._match_in_bracket(league, match_id)
         if match.is_dead:
             raise ValidationError("열리지 않는 자리입니다.")
+        # 없다가 생긴 순간이 '등록'이다 — 그때만 활동 목록의 NEW 기준을 새로 찍는다.
+        # 이미 적혀 있던 것을 고치는 건 수정이라 기준을 그대로 두고(UPDATE 배지는 updated_at이
+        # 맡는다), 지우면 기준도 함께 지운다(활동에서 내려간다).
+        if payload.scheduled_at is None:
+            match.schedule_posted_at = None
+        elif match.scheduled_at is None:
+            match.schedule_posted_at = datetime.now(UTC)
         match.scheduled_at = payload.scheduled_at
         match.updated_by = actor.pk
         await self._session.commit()

@@ -162,6 +162,11 @@ class LeagueMatch(AuditMixin, TimestampMixin, Base):
     )
     is_dead: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 일정을 '처음 적어 둔' 때(요청: 리그 매치에 일정 등록 시 활동에 띄움) — 활동 목록에서
+    # 이 경기가 언제 새것(NEW)이었는지의 기준이다. created_at은 대진표를 만든 순간이라
+    # 쓸 수 없다: 대진은 일정보다 한참 먼저 생기고, 그때는 아직 알릴 일이 없다.
+    # 일정을 지웠다가 다시 적으면 그때가 새 기준이 된다 — 그 순간이 곧 다시 알릴 일이다.
+    schedule_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 세트 스코어(요청: "세트 스코어 기록 — 예: 2:1") — 둘 다 NULL이면 아직 실제로
     # 치러지지 않은 경기(부전승으로 승자가 정해졌더라도 이 두 값은 NULL로 남는다).
     sets_won_a: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

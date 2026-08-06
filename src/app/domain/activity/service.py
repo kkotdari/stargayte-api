@@ -485,6 +485,7 @@ class ActivityListService:
         challenges = await ChallengeService(self._session).list_challenges(actor=actor)
         games = await self._game_rows()
         shifts = await self._shift_rows()
+        leagues = await self._league_match_rows()
 
         now_ms = datetime.now(UTC).timestamp() * 1000
         entries: list[tuple[float, str, str, str]] = []  # (정렬키ms, kind, key, 세션날짜)
@@ -494,6 +495,8 @@ class ActivityListService:
             entries.append((sort_ms, "gameResult", f"ms-{gid}", session_day))
         for sid, sort_ms in shifts:
             entries.append((sort_ms, "rankingShift", f"rs-{sid}", ""))
+        for mid, sort_ms in leagues:
+            entries.append((sort_ms, "leagueMatch", f"lm-{mid}", ""))
 
         # 최신이 위. 같은 시각인 것들의 순서는 '넣은 순서'가 정한다 — 파이썬 sort는 안정
         # 정렬이라 동점끼리는 위에서 담은 차례가 그대로 남는다. 프론트도 [도전장, 게임결과,
@@ -566,6 +569,7 @@ class ActivityListService:
         challenge_by_id = {c.id: c for c in challenges}
         shift_by_id = await self._shifts_by_id(by_kind.get("rankingShift", []))
         game_by_id = await self._games_by_id(by_kind.get("gameResultPost", []), actor=actor, storage=storage)
+        league_by_id = await self._league_matches_by_id(by_kind.get("leagueMatch", []))
 
         # 댓글은 한 번에 받아 대상별로 나눠 담는다 — 줄마다 물어보면 페이지 크기만큼
         # 질의가 나간다. 댓글은 한 줄짜리라 전부 합쳐도 가볍다.
@@ -575,7 +579,11 @@ class ActivityListService:
             by_target.setdefault((c.target_type, c.target_id), []).append(c)
 
         def mine(kind: str, ids: list[int]) -> list:
-            target = {"challenge": "challenge", "rankingShift": "rankingShift"}.get(kind, "gameResult")
+            target = {
+                "challenge": "challenge",
+                "rankingShift": "rankingShift",
+                "leagueMatch": "leagueMatch",
+            }.get(kind, "gameResult")
             return [c for i in ids for c in by_target.get((target, i), [])]
 
         items: list[ActivityItemOut] = []
@@ -589,6 +597,7 @@ class ActivityListService:
                     ranking_shift=shift_by_id.get(r.ids[0]) if r.kind == "rankingShift" else None,
                     game_results=[game_by_id[i] for i in r.ids if i in game_by_id]
                     if r.kind == "gameResultPost" else [],
+                    league_match=league_by_id.get(r.ids[0]) if r.kind == "leagueMatch" else None,
                     comments=mine(r.kind, r.ids),
                 ))
             except Exception:
@@ -603,6 +612,41 @@ class ActivityListService:
                 logger.exception("활동 목록에서 줄 하나를 못 그렸습니다 — key=%s kind=%s", r.key, r.kind)
                 items.append(ActivityItemOut(key=r.key, kind=r.kind, no=no))
         return items
+
+    async def _league_matches_by_id(self, ids: list[int]) -> dict[int, "LeagueMatchActivityOut"]:
+        """이 페이지에 실린 리그 경기만 내용을 채운다 — 리그 이름과 라운드 이름까지 함께."""
+        if not ids:
+            return {}
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from app.domain.activity.schemas import LeagueMatchActivityOut
+        from app.domain.leagues.models import LeagueMatch
+
+        rows = (await self._session.scalars(
+            select(LeagueMatch)
+            .where(LeagueMatch.id.in_(ids))
+            .options(selectinload(LeagueMatch.league))
+        )).all()
+        out: dict[int, LeagueMatchActivityOut] = {}
+        for m in rows:
+            if m.schedule_posted_at is None:
+                continue
+            winner = (
+                m.team_a if m.winner_team_id and m.team_a and m.team_a.id == m.winner_team_id
+                else m.team_b if m.winner_team_id and m.team_b and m.team_b.id == m.winner_team_id
+                else None
+            )
+            out[m.id] = LeagueMatchActivityOut(
+                id=m.id, leagueId=m.league_id, leagueName=m.league.name,
+                roundName=_round_name(m.round, m.league.draw_size),
+                teamA=_team_name(m.team_a), teamB=_team_name(m.team_b),
+                scheduledAt=m.scheduled_at,
+                setsWonA=m.sets_won_a, setsWonB=m.sets_won_b,
+                winnerTeam=_team_name(winner),
+                postedAt=m.schedule_posted_at, updatedAt=m.updated_at,
+            )
+        return out
 
     async def _shifts_by_id(self, ids: list[int]) -> dict[int, "RankingShiftOut"]:
         if not ids:
@@ -658,6 +702,37 @@ class ActivityListService:
                 out.append((gid, midnight.timestamp() * 1000, match_date.isoformat()))
         return out
 
+    async def _league_match_rows(self) -> list[tuple[int, float]]:
+        """일정이 적힌 리그 경기만 — 활동에 뜨는 것은 그것뿐이다(요청: 리그 매치에 일정
+        등록 시 활동에 띄움).
+
+        schedule_posted_at이 없는 줄은 뺀다: 이 컬럼이 생기기 전부터 일정이 적혀 있던
+        경기까지 지금 와서 새것으로 올릴 이유가 없다(models.py 주석 참고).
+
+        꽂히는 자리는 너 나와와 같은 생각이다 — 아직 결과가 안 들어온 경기는 '남은 일'이라
+        지금 바로 위에 두고, 결과가 들어온 경기는 그 경기가 열린 때에 둔다.
+        """
+        from sqlalchemy import select
+
+        from app.domain.leagues.models import LeagueMatch
+
+        rows = (await self._session.scalars(
+            select(LeagueMatch)
+            .where(LeagueMatch.scheduled_at.is_not(None))
+            .where(LeagueMatch.schedule_posted_at.is_not(None))
+            .where(LeagueMatch.is_dead.is_(False))
+        )).all()
+        now_ms = datetime.now(UTC).timestamp() * 1000
+        out: list[tuple[int, float]] = []
+        for m in rows:
+            played = m.sets_won_a is not None or m.sets_won_b is not None
+            at_ms = _kst(m.scheduled_at).timestamp() * 1000
+            out.append((m.id, at_ms if played else max(at_ms, now_ms + 1)))
+        # 최신이 위 — 위 entries.sort가 전체를 다시 세우지만, 같은 시각끼리의 순서는
+        # 담은 차례가 정하므로(안정 정렬) 여기서도 정해 둔다.
+        out.sort(key=lambda x: -x[1])
+        return out
+
     async def _shift_rows(self) -> list[tuple[int, float]]:
         """화면에 실제로 뜨는 스냅샷만 — list_events와 같은 잣대여야 한다.
 
@@ -680,6 +755,33 @@ class ActivityListService:
             for sid, created, sections in result.all()
             if snapshot_has_shifts(sections)
         ]
+
+
+def _team_name(team: object) -> str | None:
+    """팀을 활동 목록에서 부르는 이름 — 로스터 닉네임을 이어 붙인다.
+
+    리그 안에서는 팀을 라벨(A·B…)로 부르지만 그건 대진표라는 판이 있어야 뜻이 있는 이름이다
+    — 활동 목록에는 그 판이 없어서 "A가 B와 붙는다"로는 누구 얘긴지 알 수 없다. 로스터를
+    못 읽는 경우에만 라벨로 물러선다.
+    """
+    if team is None:
+        return None
+    names = [r.member.nickname for r in getattr(team, "roster", []) if r.member]
+    return "·".join(names) if names else getattr(team, "label", None)
+
+
+def _round_name(round_no: int, draw_size: int | None) -> str:
+    """"8강"처럼 사람이 부르는 라운드 이름 — round는 결승까지의 거리라(leagues/models 주석)
+    맨 끝 라운드가 결승이다. 판 크기를 모르면 라운드 번호만 적는다."""
+    if not draw_size or draw_size < 2:
+        return f"{round_no}라운드"
+    total = max(1, (draw_size - 1).bit_length())
+    left = total - round_no  # 결승까지 남은 판 수
+    if left <= 0:
+        return "결승"
+    if left == 1:
+        return "4강"
+    return f"{2 ** (left + 1)}강"
 
 
 def _sched_date(value: object) -> date | None:
