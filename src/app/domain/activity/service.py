@@ -620,7 +620,11 @@ class ActivityListService:
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
-        from app.domain.activity.schemas import LeagueMatchActivityOut
+        from app.domain.activity.schemas import (
+            LeagueMatchActivityOut,
+            LeagueMatchMemberOut,
+            LeagueMatchTeamActivityOut,
+        )
         from app.domain.leagues.models import LeagueMatch
 
         rows = (await self._session.scalars(
@@ -632,18 +636,29 @@ class ActivityListService:
         for m in rows:
             if m.schedule_posted_at is None:
                 continue
-            winner = (
-                m.team_a if m.winner_team_id and m.team_a and m.team_a.id == m.winner_team_id
-                else m.team_b if m.winner_team_id and m.team_b and m.team_b.id == m.winner_team_id
+            def side(team) -> "LeagueMatchTeamActivityOut | None":
+                if team is None:
+                    return None
+                return LeagueMatchTeamActivityOut(
+                    label=team.label,
+                    members=[
+                        LeagueMatchMemberOut(memberId=r.member.id, nickname=r.member.nickname)
+                        for r in team.roster if r.member
+                    ],
+                )
+
+            won = (
+                "a" if m.winner_team_id and m.team_a and m.team_a.id == m.winner_team_id
+                else "b" if m.winner_team_id and m.team_b and m.team_b.id == m.winner_team_id
                 else None
             )
             out[m.id] = LeagueMatchActivityOut(
                 id=m.id, leagueId=m.league_id, leagueName=m.league.name,
                 roundName=_round_name(m.round, m.league.draw_size),
-                teamA=_team_name(m.team_a), teamB=_team_name(m.team_b),
+                teamA=side(m.team_a), teamB=side(m.team_b),
                 scheduledAt=m.scheduled_at,
                 setsWonA=m.sets_won_a, setsWonB=m.sets_won_b,
-                winnerTeam=_team_name(winner),
+                winnerSide=won,
                 postedAt=m.schedule_posted_at, updatedAt=m.updated_at,
             )
         return out
@@ -755,19 +770,6 @@ class ActivityListService:
             for sid, created, sections in result.all()
             if snapshot_has_shifts(sections)
         ]
-
-
-def _team_name(team: object) -> str | None:
-    """팀을 활동 목록에서 부르는 이름 — 로스터 닉네임을 이어 붙인다.
-
-    리그 안에서는 팀을 라벨(A·B…)로 부르지만 그건 대진표라는 판이 있어야 뜻이 있는 이름이다
-    — 활동 목록에는 그 판이 없어서 "A가 B와 붙는다"로는 누구 얘긴지 알 수 없다. 로스터를
-    못 읽는 경우에만 라벨로 물러선다.
-    """
-    if team is None:
-        return None
-    names = [r.member.nickname for r in getattr(team, "roster", []) if r.member]
-    return "·".join(names) if names else getattr(team, "label", None)
 
 
 def _round_name(round_no: int, draw_size: int | None) -> str:

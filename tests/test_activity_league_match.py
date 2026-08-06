@@ -108,11 +108,10 @@ async def test_result_entry_shows_score_and_moves_updated_at(client):
         if i["leagueMatch"]["id"] == semi["id"]
     )
     assert (after["setsWonA"], after["setsWonB"]) == (2, 1)
-    winner_roster = next(
-        t for t in (await client.get(f"/api/leagues/{lid}", headers=headers)).json()["teams"]
-        if t["id"] == teams[0]["id"]
-    )["roster"]
-    assert after["winnerTeam"] == "·".join(r["nickname"] for r in winner_roster)
-    assert winner_roster, "로스터가 실제로 채워져야 이 검사가 뜻이 있다"
+    assert after["winnerSide"] == "a"
+    # 로스터는 사람 단위로 온다 — 카드가 세로로 한 줄씩 쌓기 때문이다(요청).
+    assert [m["memberId"] for m in after["teamA"]["members"]] == ["m0"]
+    assert after["teamB"]["members"] == []
+    assert after["teamB"]["label"]
     assert after["postedAt"] == before["postedAt"]
     assert after["updatedAt"] >= before["updatedAt"]

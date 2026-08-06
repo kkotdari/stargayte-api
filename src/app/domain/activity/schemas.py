@@ -134,6 +134,29 @@ class RankingShiftOut(BaseModel):
     sections: list[RankingShiftSection]
 
 
+class LeagueMatchMemberOut(BaseModel):
+    """리그 팀 로스터 한 사람 — 프사는 화면이 회원 목록에서 찾아 붙인다(닉네임만으로 충분)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    member_id: str = Field(alias="memberId")
+    nickname: str
+
+
+class LeagueMatchTeamActivityOut(BaseModel):
+    """맞붙는 한 편 — 로스터를 사람 단위로 내려보낸다.
+
+    한 문자열로 이어 붙여 보내던 것을 나눴다(요청: 본문은 로스터 세로로 배치) — 카드가
+    사람마다 프사와 닉네임을 한 줄씩 쌓으려면 이름이 낱개로 와야 한다. 로스터가 비어 있는
+    팀은 라벨(A·B)만 남는다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    label: str
+    members: list[LeagueMatchMemberOut] = Field(default_factory=list)
+
+
 class LeagueMatchActivityOut(BaseModel):
     """활동 목록에 뜨는 리그 경기 하나 — 일정이 적힌 경기만 여기 온다(요청: 리그 매치에
     일정 등록 시 활동에 띄움).
@@ -150,12 +173,13 @@ class LeagueMatchActivityOut(BaseModel):
     league_name: str = Field(alias="leagueName")
     # "8강" 같은 라운드 이름 — 결승까지의 거리로 붙인다.
     round_name: str = Field(alias="roundName")
-    team_a: str | None = Field(default=None, alias="teamA")
-    team_b: str | None = Field(default=None, alias="teamB")
+    team_a: LeagueMatchTeamActivityOut | None = Field(default=None, alias="teamA")
+    team_b: LeagueMatchTeamActivityOut | None = Field(default=None, alias="teamB")
     scheduled_at: datetime | None = Field(default=None, alias="scheduledAt")
     sets_won_a: int | None = Field(default=None, alias="setsWonA")
     sets_won_b: int | None = Field(default=None, alias="setsWonB")
-    winner_team: str | None = Field(default=None, alias="winnerTeam")
+    # 어느 쪽이 이겼나 — 팀 이름으로 견주면 두 팀 이름이 같을 때(빈 로스터끼리) 어긋난다.
+    winner_side: Literal["a", "b"] | None = Field(default=None, alias="winnerSide")
     # NEW는 '일정을 처음 적어 둔 때', UPDATE는 '마지막으로 손댄 때'로 가른다 — 너 나와의
     # createdAt/updatedAt과 같은 규칙이라 화면 쪽 판정을 그대로 쓴다.
     posted_at: datetime = Field(alias="postedAt")
