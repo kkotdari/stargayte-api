@@ -491,9 +491,22 @@ def _replay_order_key(game_started_at, match_date, match_no):
 
 
 def _replay_ratings(
-    rows, focal=None, by_race: bool = False,
+    rows, focal=None, by_race: bool = False, count_from: date | None = None,
 ) -> tuple[RatingEngine, dict[str, float], dict]:
     """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 TrueSkill을 누적한다.
+
+    재생은 늘 맨 처음부터 한다. count_from을 주면 '점수를 세기 시작하는 날'만 그날로 밀려서,
+    그 앞의 경기들은 레이팅(μ·σ)을 만드는 데만 쓰이고 표시 점수에는 안 들어간다(요청:
+    "월이 바뀌어도 지난달까지의 누적치를 가지고 상대강도를 계산해서 평가를 시작").
+
+    예전에는 이 이월이 없었다 — SQL에서 그 달 이전 경기를 아예 잘라내(rank_replay_rows의
+    date_from) 매달 전원이 μ0에서 다시 시작했다. 그러면 지난달까지 쌓인 정보가 통째로 버려져,
+    3연승한 신입과 3연승한 고수가 같은 점수를 받는다. 이제 그 정보를 그대로 들고 시작한다 —
+    같은 1승이라도 누구를 이겼느냐에 따라 값이 달라진다.
+
+    달이 바뀔 때마다 engine.season_reset()으로 σ만 되돌린다(rating.py의 SEASON_SIGMA 주석).
+    창(count_from~)과 무관하게 늘 같은 자리에서 일어나므로, 어느 달을 조회하든 그 달 경기의
+    Δ는 똑같이 나온다 — '올타임으로 본 3월'과 '3월만 본 3월'이 어긋나지 않는다.
 
     by_race=False면 레이팅 대상이 '회원'(member_pk)이고, True면 '(회원, 그 경기 종족)' 조합이다
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
@@ -532,6 +545,9 @@ def _replay_ratings(
             m = matches[r.match_id] = {
                 "team1": [], "team2": [], "result": r.result, "match_no": r.match_no,
                 "key": _replay_order_key(r.game_started_at, r.match_date, r.match_no),
+                # 점수를 셀 창(count_from)과 월초 σ 되돌리기의 기준은 둘 다 match_date다 —
+                # 화면의 기간 필터가 거는 것도 이 컬럼이라, 창 경계에서 어긋나지 않는다.
+                "date": r.match_date,
                 "outsider": False,
             }
         if r.team in ("team1", "team2"):
@@ -543,11 +559,24 @@ def _replay_ratings(
     engine = RatingEngine()
     deltas: dict[str, float] = {}
     running: dict = defaultdict(float)
+    # 달이 바뀔 때마다 σ를 되돌린다(rating.py의 SEASON_SIGMA) — 마지막으로 경기가 있었던 달을
+    # 들고 다니며, 건너뛴 달 수만큼 되돌린다. 오래 쉬면 그만큼 더 모르는 게 맞고, σ0을 넘지는
+    # 않으므로 몇 달을 쉬든 '처음 보는 사람'까지만 간다. 한 번에 열두 달까지만 세는 것은
+    # 데이터가 이상할 때(먼 과거의 한 판) 루프가 길어지지 않게 하는 안전장치일 뿐이다.
+    last_month: int | None = None
     for mid in sorted(matches, key=lambda k: matches[k]["key"]):
         mm = matches[mid]
         # 0점 경기 — 레이팅을 갱신하지도, 표시 점수를 더하지도 않는다(위 주석).
         if mm["outsider"]:
             continue
+        month = mm["date"].year * 12 + mm["date"].month
+        if last_month is not None and month > last_month:
+            for _ in range(min(month - last_month, 12)):
+                engine.season_reset()
+        last_month = month
+        # 창 밖(count_from 이전)의 경기는 레이팅만 만들고 표시 점수에는 안 들어간다 —
+        # 이게 곧 "지난달까지의 누적치로 상대강도를 계산해서 평가를 시작"이다(요청).
+        counted = count_from is None or mm["date"] >= count_from
         participants = [p for p in (mm["team1"] + mm["team2"]) if p is not None]
         pre = {p: engine.get(p).conservative for p in participants}
         engine.update(mm["team1"], mm["team2"], mm["result"])
@@ -558,6 +587,8 @@ def _replay_ratings(
             # Δ)를 여기 한 곳에서 10배로 키워 내려준다. 프론트는 이 값을 자연수로 반올림해
             # 보여주므로, 원래 소수 첫째자리에 있던 정보가 정수부에 보존된다. engine의
             # μ/σ 자체는 순수 TrueSkill 원 스케일 그대로다(내부 갱신용).
+            if not counted:
+                continue
             raw = (engine.get(p).conservative - pre[p]) * 10
             if is_decisive:
                 raw = max(raw, 0.0) if p in winners else min(raw, 0.0)
@@ -894,13 +925,18 @@ class GameResultService:
         # (아래 레이팅이 대신한다). person_score(우열)도 상세 참고값으로만 남긴다.
 
         # 랭킹 점수 = TrueSkill 레이팅(요청: "완전 교체"). 순우열 정규화 대신, 이 경기유형의
-        # 조회 기간(date_from~date_to) 경기만 '시간순으로 재생'해 회원별 실력(μ)과 불확실성(σ)을
-        # 추정한다. 카드에 보여줄 점수·순위는 보수추정(μ−3σ)으로 매긴다 — 표본이 적으면 σ가
-        # 커서 값이 낮게(잠정) 잡혀 소수표본 인플레를 막는다. date_from을 그대로 걸어 이전 기간
-        # 경기는 재생하지 않으므로 매 기간 리셋된다(요청) — '이 기간에 한 판이라도 뛴 사람'만
-        # 순위 대상으로 앞세운다.
+        # 경기를 '시간순으로 재생'해 회원별 실력(μ)과 불확실성(σ)을 추정한다. 카드에 보여줄
+        # 점수·순위는 보수추정(μ−3σ)으로 매긴다 — 표본이 적으면 σ가 커서 값이 낮게(잠정)
+        # 잡혀 소수표본 인플레를 막는다.
+        #
+        # 재생은 조회 기간이 아니라 맨 처음부터 한다(요청: "월별로 제로베이스에서 시작하는 게
+        # 오히려 객관적이지 않다 — 지난달까지의 누적치를 가지고 상대강도를 계산해서 평가를
+        # 시작"). date_from은 이제 '재생을 시작하는 날'이 아니라 '점수를 세기 시작하는 날'이라
+        # count_from으로만 넘긴다 — 그 앞의 경기는 상대강도를 만드는 데만 쓰인다.
+        # date_to는 그대로 SQL에 건다: 지난달을 보는데 이번 달 결과가 섞이면 안 된다.
+        # 이 기간에 한 판이라도 뛴 사람만 순위 대상으로 앞세우는 것은 그대로다.
         replay_rows = await self._repo.rank_replay_rows(
-            match_type=match_type, date_from=date_from, date_to=date_to,
+            match_type=match_type, date_from=None, date_to=date_to,
         )
         # 종족 필터가 걸리면 레이팅 대상을 '(회원, 종족)'으로 나눠 그 종족으로 낸 경기만 그
         # 회원의 그 종족 레이팅에 쌓는다(요청: "종족은 랭커의 종족"). '전체'면 회원 단위 하나.
@@ -917,7 +953,9 @@ class GameResultService:
                 return (pk, mains.get(pk))
             return (pk, race) if race_active else pk
 
-        engine, _, running = _replay_ratings(replay_rows, by_race=race_active)
+        engine, _, running = _replay_ratings(
+            replay_rows, by_race=race_active, count_from=date_from,
+        )
         # 카드/정렬에 쓰는 점수 — 보수추정치(μ−3σ) 기반은 유지하되(요청: "산정 로직은
         # 기존으로 롤백해야겠어" — 순수 실력치는 체감상 "말이 안 됨"), 원값(engine.
         # conservative) 대신 _replay_ratings가 반환하는 "경기마다 승패 방향에 맞게 눌러
@@ -977,30 +1015,38 @@ class GameResultService:
             r = engine.get(_rk(m.pk))
             entry.mu = round(r.mu, 1)
             entry.sigma = round(r.sigma, 1)
+            # 이제 통산 판수다(재생이 맨 처음부터라) — 조회한 달에 몇 판 뛰었나가 아니라
+            # 그 사람의 레이팅이 몇 판으로 여물었나. '잠정'이 뜻하려던 것도 원래 이쪽이다:
+            # 매달 리셋되던 시절에는 달이 바뀔 때마다 전원이 다시 잠정이 됐는데, 5년 친
+            # 사람이 새 달 첫 판에서 신입과 같은 취급을 받을 이유가 없다.
             entry.rating_games = engine.games.get(_rk(m.pk), 0)
-            # 잠정 = 이 경기유형(종족 필터 시 그 종족) 누적 경기 수가 기준 미만 — 덜 여문 상태.
             entry.provisional = engine.is_provisional(_rk(m.pk)) if played else None
 
     async def get_rating_history(
         self, *, member_id: str, match_type: str | None,
         date_from: str | None = None, date_to: str | None = None, race: str | None = None,
     ) -> RatingHistoryResponse:
-        """랭킹 상세의 '경기당 레이팅 변화' — 이 회원이 뛴 경기마다의 μ 증감. 랭킹 목록이
-        조회 기간(date_from~date_to)만으로 리셋해 매겨지므로(요청), 여기도 같은 기간만 재생한다
-        — 안 그러면 이 상세의 μ/σ/Δ 합이 목록의 리셋된 값과 어긋난다. 종족 필터가 걸리면
-        레이팅 대상이 '(회원, 그 종족)'이라 그 회원이 그 종족으로 낸 경기의 Δ만 병기한다.
+        """랭킹 상세의 '경기당 레이팅 변화' — 이 회원이 뛴 경기마다의 μ 증감. 목록(get_stats)과
+        똑같은 방식으로 재생해야 이 상세의 μ/σ/Δ 합이 목록 값과 어긋나지 않으므로, 거기와 같이
+        '재생은 맨 처음부터, 점수는 date_from부터'로 맞춘다. 종족 필터가 걸리면 레이팅 대상이
+        '(회원, 그 종족)'이라 그 회원이 그 종족으로 낸 경기의 Δ만 병기한다.
         프론트는 상세에 띄운 경기들(같은 period로 좁힌)만 match_no로 골라 병기한다."""
         member = await self._member_repo.get_by_login_id(member_id)
         if member is None:
             return RatingHistoryResponse(deltas={})
         rows = await self._repo.rank_replay_rows(
-            match_type=match_type, date_from=_parse_date(date_from), date_to=_parse_date(date_to),
+            match_type=match_type, date_from=None, date_to=_parse_date(date_to),
         )
         race_active = race is not None and race != "all"
         focal = (member.pk, race) if race_active else member.pk
-        engine, deltas, running = _replay_ratings(rows, focal=focal, by_race=race_active)
+        engine, deltas, running = _replay_ratings(
+            rows, focal=focal, by_race=race_active, count_from=_parse_date(date_from),
+        )
         r = engine.get(focal)
-        played = engine.games.get(focal, 0) > 0
+        # '이 기간에 뛰었나'는 engine.games(이제 통산 판수다)가 아니라 점수를 센 경기에
+        # 이름이 올랐는가로 본다 — 지난달까지만 뛴 사람이 이번 달 상세에서 0점으로 뜨면
+        # 목록('이 기간 0경기'라 빈칸)과 어긋난다.
+        played = focal in running
         return RatingHistoryResponse(
             deltas={mno: round(d, 1) for mno, d in deltas.items()},
             mu=round(r.mu, 1) if played else None,

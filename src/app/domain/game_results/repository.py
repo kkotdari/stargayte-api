@@ -472,10 +472,14 @@ class GameResultRepository:
     ) -> list[Row]:
         """레이팅(TrueSkill) 누적 계산용 — 이 경기유형의 경기를 '시간순으로 재생'하기 위한
         원본. 각 경기의 (match_id, team, member_pk, result)에 정렬 키(game_started_at·match_date·
-        match_no)를 함께 준다. 레이팅은 조회 기간(date_from~date_to)만으로 리셋해 다시 매긴다
-        (요청: "랭킹 조회시 해당 월이나 년도만의 리셋된 데이터로 조회") — date_from을 주면 그
-        이전 경기는 아예 재생 대상에서 빠져, 이 기간 시작 시점에 전원이 기본 레이팅(μ0)에서
-        다시 시작한 것과 같다. 컴퓨터/비회원(member_pk=NULL)도 포함해야 팀 구성(인원수)이 맞다."""
+        match_no)를 함께 준다. 컴퓨터/비회원(member_pk=NULL)도 포함해야 팀 구성(인원수)이 맞다.
+
+        랭킹은 이제 date_from을 여기 걸지 않는다(요청: 월별 제로베이스 대신 지난달까지의
+        누적치로 상대강도를 계산해서 시작) — 그 잘라내기가 곧 '매달 전원 μ0에서 다시 시작'
+        이었기 때문이다. 대신 서비스가 _replay_ratings(count_from=...)로 '점수를 세기 시작하는
+        날'만 밀어, 그 앞의 경기는 상대강도를 만드는 데만 쓰이게 한다. date_to는 그대로 건다:
+        지난달을 보는데 그 뒤에 친 경기가 섞이면 안 된다. 인자는 남겨 둔다 — 백테스트처럼
+        정말로 특정 구간만 재생하고 싶은 호출이 있다."""
         member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
         stmt = (
             select(
