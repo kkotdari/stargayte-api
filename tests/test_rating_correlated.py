@@ -141,3 +141,16 @@ def test_a_win_and_the_matching_loss_are_the_same_size():
     """한 판은 ±같은 크기다 — 이긴 쪽이 얻은 만큼 진 쪽이 잃는다."""
     games = [(1, 2, "team1", 0)]
     assert _deltas(games, focal=1)[0] == -_deltas(games, focal=2)[0]
+
+
+def test_losing_a_match_you_were_expected_to_win_costs_more_than_winning_it_pays():
+    """두 판 이긴 상대에게 지면, 같은 자리에서 이겨서 받았을 값보다 크게 깎인다.
+
+    지적: "팍규한테 두 판 이기다가 졌을 때 너무 적게 깎이는 거 아니야? 내 생각엔 이길
+    확률이 높으니까 많이 깎일 것 같은데". 한 판의 값이 '이길 확률'로 정해지므로, 이길
+    것 같던 판을 지면 그만큼 크게 잃는 것이 맞다."""
+    lead = [(1, 2, "team1", 0), (1, 2, "team1", 1)]
+    if_won = _last(lead + [(1, 2, "team1", 2)], focal=1)
+    if_lost = _last(lead + [(2, 1, "team1", 2)], focal=1)
+    assert if_won > 0 > if_lost
+    assert abs(if_lost) > if_won * 1.4, (if_won, if_lost)
