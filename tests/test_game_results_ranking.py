@@ -6,7 +6,12 @@
 
 from datetime import date
 
-from app.domain.game_results.service import RATING_BASE as BASE
+from app.domain.game_results.rating import Rating
+from app.domain.game_results.service import _rating_of
+
+# 레이팅이 한 번도 안 움직인 사람의 값 — 예전의 "0점" 자리다. 확신이 없는 만큼 깎여
+# 1000보다 아래에서 시작한다(service의 RATING_CONFIDENCE 주석).
+BASE = round(_rating_of(Rating()), 1)
 
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
@@ -175,11 +180,12 @@ async def test_team_match_ranks_as_individual_cross_product(client):
 async def test_team_match_rating_is_time_ordered(client):
     """팀전도 레이팅은 시간순으로 누적된다 — 두 팀경기: M1 [p1,p2]>[p3,p4], M2 [p5,p6]>[p1,p2].
 
-    p5·p6은 (이미 한 판 이겨 레이팅이 오른) p1·p2를 이겨 가장 높다. p1·p2는 1승 1패인데
-    이긴 상대(p3, 그때 μ0)보다 진 상대(p5, 그때도 μ0)가 낮은 평가는 아니었고 제 μ는 이미
-    올라 있었으므로, 잃은 쪽이 조금 더 크다 — 순수 실력치(μ)로 세니 소폭 음수가 맞다.
-    p3·p4는 1패뿐이라 더 아래. 같은 편끼리는 대칭이라 동점. 값 자체는 β 튜닝에 흔들리므로
-    대소·부호로만 검증한다."""
+    p5·p6은 (이미 한 판 이겨 레이팅이 오른) p1·p2를 이겨 가장 높다. p1·p2는 1승 1패라 실력
+    추정치가 제자리 근처고, p3·p4는 1패뿐이라 더 아래다. 같은 편끼리는 대칭이라 동점.
+
+    한 판도 안 뛴 사람(BASE)은 1승 1패인 p1 아래, 1패뿐인 p3 위에 선다 — 확신이 모자란 만큼
+    깎는 규칙이라 판을 쌓은 것만으로 그 몫이 덜 깎이지만, 실제로 진 사람은 그보다 더 내려간다
+    (service의 RATING_CONFIDENCE 주석). 값 자체는 β 튜닝에 흔들리므로 대소로만 검증한다."""
     headers = await _signup_many(client, 6)
     await _match(client, headers, ["player01", "player02"], ["player03", "player04"], "team1", TODAY)
     await _match(client, headers, ["player01", "player02"], ["player05", "player06"], "team2", TODAY)
@@ -188,9 +194,9 @@ async def test_team_match_rating_is_time_ordered(client):
     assert by_id["player05"]["rankScore"] == by_id["player06"]["rankScore"]
     assert by_id["player01"]["rankScore"] == by_id["player02"]["rankScore"]
     assert by_id["player03"]["rankScore"] == by_id["player04"]["rankScore"]
-    # 강해진 상대를 이긴 p5 > 0 > 1승1패 p1 > 1패뿐인 p3.
-    assert by_id["player05"]["rankScore"] > BASE > by_id["player01"]["rankScore"]
-    assert by_id["player01"]["rankScore"] > by_id["player03"]["rankScore"]
+    # 강해진 상대를 이긴 p5 > 1승1패 p1 > 한 판도 안 뛴 사람 > 1패뿐인 p3.
+    assert (by_id["player05"]["rankScore"] > by_id["player01"]["rankScore"]
+            > BASE > by_id["player03"]["rankScore"])
 
 
 async def test_race_filter_scopes_rank_score(client):

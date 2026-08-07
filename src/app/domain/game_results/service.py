@@ -19,7 +19,7 @@ from app.domain.game_results.models import (
     MinimapImage,
     ReplayMap,
 )
-from app.domain.game_results.rating import MU0, RatingEngine
+from app.domain.game_results.rating import MU0, SIGMA0, RatingEngine
 from app.domain.game_results.repository import GameResultRepository
 from app.domain.game_results.schemas import (
     COMPUTER_ID_PREFIX,
@@ -525,11 +525,34 @@ _REPLAY_CACHE_MAX = 6
 # 그래서 점수를 아예 레이팅 자체로 둔다. 기간 필터는 '그 기간에 번 점수'가 아니라 '그 시점까지의
 # 기록으로 본 점수'라는 뜻이 된다(요청: "이번 달에 번 점수는 필요없어").
 #
-# 화면 눈금은 배틀넷 래더를 따른다(요청: "배틀넷 구조로 가자") — 새 회원이 1000에서 시작하고
-# 음수가 없다. μ가 −25까지 내려가야 0이 되는데 한 판에 1~2밖에 안 움직이니 닿을 일이 없다
-# (24개월 클럽 실측 범위 559 ~ 1416).
+# 화면 눈금은 배틀넷 래더를 따른다(요청: "배틀넷 구조로 가자") — 자리 잡은 평범한 회원이
+# 1000 근처고 음수가 없다.
+#
+# 실력 추정치(μ)만 쓰면 표본이 얕은 사람이 위로 튄다. 실제로 세 판 뛴 사람이 열두 판 뛴
+# 사람을 눌렀다(지적: "각각 타센과 곰세마리한테만 3판씩 이긴 정구와 Rex가 미친마법사보다
+# 위인 게 이상해"). 셋의 μ는 32.46 / 32.29 / 31.16으로 사실상 같았는데 σ가 6.83 / 6.78 /
+# 5.09으로 갈렸다 — 순위가 '얼마나 확실한가'를 아예 안 보고 있었다.
+#
+# 그래서 확신이 모자란 만큼 깎는다. 다 자란 σ(RATING_SETTLED_SIGMA)를 기준으로 삼아 그보다
+# 덜 여문 만큼만 빼므로, 자리 잡은 사람은 깎이지 않고 새 회원만 아래에서 시작해 판을 쌓으며
+# 제자리를 찾아간다. 배틀넷 배치고사와 같은 모양이다.
+#
+#     레이팅 = 1000 + ((μ − μ0) − 확신부족 × (σ − 다자란σ)) × 20
+#
+# 확신부족(RATING_CONFIDENCE)을 키울수록 얕은 표본이 더 걸러진다 — 실측으로 3연승 신입이
+# 0이면 25명 중 9위, 1이면 11위, 2면 12위(가운데)다. 기존 회원끼리의 순위 정확도는 어느
+# 값에서나 0.990으로 같다: 자리 잡은 사람들은 σ가 비슷해 서로 상쇄되고, 얕은 표본만 걸러진다.
 RATING_BASE = 1000.0
 RATING_SCALE = 20.0
+RATING_CONFIDENCE = 2.0
+RATING_SETTLED_SIGMA = SIGMA0 / 3.0   # 2.78 — 열댓 판을 넘기면 이 근처로 내려온다
+
+
+def _rating_of(r) -> float:
+    """화면에 뜨는 레이팅 — 실력 추정치에서 '아직 덜 여문 만큼'을 뺀 값(위 주석)."""
+    return RATING_BASE + (
+        (r.mu - MU0) - RATING_CONFIDENCE * (r.sigma - RATING_SETTLED_SIGMA)
+    ) * RATING_SCALE
 
 
 def _replay_ratings(
@@ -1034,10 +1057,7 @@ class GameResultService:
         # 카드/정렬에 쓰는 점수 = 실력 추정치 자체다(RATING_SCALE 주석). 경기마다 번 점수를
         # 쌓는 값이 아니라 상한이 있는 값이라, 만만한 상대를 우려먹어도 안 오른다.
         # running은 '이 기간에 얼마나 움직였나'라 순위 대상 판정에만 쓴다.
-        score = {
-            m.pk: round(RATING_BASE + (engine.get(_rk(m.pk)).mu - MU0) * RATING_SCALE, 1)
-            for _, m in pairs
-        }
+        score = {m.pk: round(_rating_of(engine.get(_rk(m.pk))), 1) for _, m in pairs}
 
         # 레이팅에는 판수 문턱이 없다(요청: "포인트 컬럼은 최소 경기수 제약을 적용 안 하는
         # 곳이야"). 승률·APM 같은 평균값은 표본이 얕으면 못 믿을 수가 나오지만, 레이팅은
@@ -1119,7 +1139,7 @@ class GameResultService:
             mu=round(r.mu, 1) if played else None,
             sigma=round(r.sigma, 1) if played else None,
             # 카드에 뜨는 점수 — get_stats의 score와 같은 식(실력 추정치)이다.
-            conservative=round(RATING_BASE + (r.mu - MU0) * RATING_SCALE, 1) if played else None,
+            conservative=round(_rating_of(r), 1) if played else None,
             games=engine.games.get(focal, 0),
             provisional=engine.is_provisional(focal) if played else False,
         )
