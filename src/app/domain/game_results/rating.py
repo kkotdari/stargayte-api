@@ -189,19 +189,5 @@ class RatingEngine:
         for p in won + lost:
             self.games[p] += 1
 
-    def win_prob(self, side: list, foe: list) -> float:
-        """side가 foe를 이길 확률 — 실력차뿐 아니라 '이 맞대결을 얼마나 아는가'까지 담긴다.
-
-        갱신에 쓰는 것과 똑같은 자로 잰다(update의 c). 그래서 자주 붙은 사이일수록 같은 μ
-        차이라도 확률이 더 확실한 쪽으로 기운다 — 처음 만난 둘의 5점 차이와 백 번 붙은 둘의
-        5점 차이는 같은 말이 아니다."""
-        wi = [self._slot(p) for p in side]
-        li = [self._slot(p) for p in foe]
-        cov = self._cov
-        u = [sum(row[a] for a in wi) - sum(row[a] for a in li) for row in cov]
-        c2 = sum(u[a] for a in wi) - sum(u[a] for a in li) + (len(wi) + len(li)) * BETA ** 2
-        gap = sum(self._mu[a] for a in wi) - sum(self._mu[a] for a in li)
-        return _cdf(gap / math.sqrt(c2))
-
     def is_provisional(self, key) -> bool:
         return self.games.get(key, 0) < self.PROVISIONAL_GAMES
