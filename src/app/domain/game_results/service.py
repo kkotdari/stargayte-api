@@ -3,7 +3,7 @@ import io
 import logging
 import re
 import zipfile
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -490,42 +490,17 @@ def _replay_order_key(game_started_at, match_date, match_no):
     return (ts, match_no or "")
 
 
-# 같은 상대와 자꾸 붙을 때, 판마다 표시점수에 곱하는 감쇠(요청: "같은 사람에게 이겼을때/
-# 졌을때 얻고 잃는 점수가 너무 적게 줄어드는거 같아. 사실 4~5판 정도 이겼을 때부터는 거의
-# 0점이어야 한다고 생각되는데").
-#
-# TrueSkill만으로는 여기까지 못 간다 — 한 판이 μ를 1~2밖에 못 움직여서, 다섯 판으로는
-# 기대승률이 절반 근처를 못 벗어난다. β를 표준값까지 내려도 다섯 번째 승리가 첫 승의 30%
-# 아래로 안 떨어졌다. 그래서 맞대결 반복은 별개의 인자로 따로 센다.
-#
-# 세는 것은 '연승'이 아니라 '맞붙은 횟수'다. 처음엔 연승으로 세어 봤는데(같은 결과가 이어질
-# 때만 깎고 결과가 뒤집히면 처음부터) 클럽 전체로 돌리니 랭킹이 통째로 뒤집혔다 — 꾸준히
-# 이기는 사람은 계속 깎이는데 가끔 이변을 내는 쪽은 매번 제값을 받기 때문이다. 실측(24명·
-# 월 250판·24개월, 점수순위와 실제 실력의 순위상관):
-#     감쇠 없음                 0.83
-#     연승 기준 r=0.5          -0.96   ← 거의 정확히 뒤집힘
-#     맞대결 기준 r=0.5·반감기30일  0.96
-# 맞붙은 횟수로 세면 이기는 쪽·지는 쪽에 같은 인자가 걸려(요청: "이겼을때/졌을때") 한쪽으로
-# 기울지 않는다. 오히려 대진이 한쪽으로 몰린 사람이 점수를 퍼오는 걸 막아 주어, 감쇠가 없을
-# 때보다 순위가 더 정확해진다.
-#
-# 안 붙고 지나간 시간만큼 이 횟수는 다시 줄어든다(반감기 H2H_HALFLIFE_DAYS). 그래야 몇 달
-# 만에 다시 만난 사이가 예전 전적에 묶이지 않는다. 사흘 간격으로 잇달아 붙으면 감쇠가
-# 1.00 → 0.52 → 0.29 → 0.16 → 0.10 → 0.06으로 간다.
-#
-# 팀전도 같은 자리에서 센다 — '같은 편성 대 같은 편성'이 반복되는 경우다. 한 명이라도 바뀌면
-# 다른 맞대결이라 처음부터다. 무승부는 애초에 Δ가 0이라 세지 않는다.
-#
-# 엔진의 μ/σ는 이 감쇠와 무관하게 순수 TrueSkill 그대로 갱신된다. 화면에 노출하는 점수(경기별
-# Δ와 그 누적)에만 곱하므로 "Δ의 합 = 카드 점수" telescoping도 그대로다.
-H2H_REPEAT_DAMP = 0.5
-H2H_HALFLIFE_DAYS = 30.0
+# 재생 결과 기억 — 열쇠는 (종족별 여부, 경기 목록)이고 값은 (엔진, 경기별 점수 이동)이다.
+# 통계 화면이 기간·종족을 바꿔 가며 같은 재생을 여러 번 부르므로 몇 벌만 들고 있어도 충분하다.
+# 프로세스 안에만 사는 값이고, 경기가 하나라도 늘거나 바뀌면 열쇠가 달라져 저절로 새로 돈다.
+_REPLAY_CACHE: OrderedDict = OrderedDict()
+_REPLAY_CACHE_MAX = 4
 
 
 def _replay_ratings(
     rows, focal=None, by_race: bool = False, count_from: date | None = None,
 ) -> tuple[RatingEngine, dict[str, float], dict]:
-    """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 TrueSkill을 누적한다.
+    """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 레이팅을 누적한다.
 
     재생은 늘 맨 처음부터 한다. count_from을 주면 '점수를 세기 시작하는 날'만 그날로 밀려서,
     그 앞의 경기들은 레이팅(μ·σ)을 만드는 데만 쓰이고 표시 점수에는 안 들어간다(요청:
@@ -536,27 +511,29 @@ def _replay_ratings(
     3연승한 신입과 3연승한 고수가 같은 점수를 받는다. 이제 그 정보를 그대로 들고 시작한다 —
     같은 1승이라도 누구를 이겼느냐에 따라 값이 달라진다.
 
-    경기와 경기 사이에 engine.drift()로 σ만 쉰 날수에 비례해 되돌린다(rating.py의
-    SEASON_SIGMA 주석). 창(count_from~)과 무관하게 늘 같은 자리에서 일어나므로, 어느 달을
-    조회하든 그 달 경기의 Δ는 똑같이 나온다 — '올타임으로 본 3월'과 '3월만 본 3월'이
-    어긋나지 않는다.
+    창(count_from~) 밖의 경기도 레이팅은 똑같이 만들므로, 어느 달을 조회하든 그 달 경기의
+    Δ는 똑같이 나온다 — '올타임으로 본 3월'과 '3월만 본 3월'이 어긋나지 않는다.
 
     by_race=False면 레이팅 대상이 '회원'(member_pk)이고, True면 '(회원, 그 경기 종족)' 조합이다
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
     무슨 종족이든 상관없이, 각 참가자는 자기가 그 경기에서 낸 종족 레이팅으로 서로 겨뤄 갱신된다.
 
-    반환: (엔진, focal의 경기별 표시점수 변화, 전원의 누적 표시점수). 보수레이팅(μ−3σ)을
-    그대로 카드/순위 점수로 썼더니, σ가 크게 줄어드는 잠정 구간에서는 패배해도 μ−3σ가
-    순증가해 "졌는데 +점수"로 보이는 문제가 있었다(요청: "랭킹 산정시 졌는데 +점수를
-    받는 이상현상 발생"). 순수 실력치(μ)로 전부 바꿔도 봤지만 점수 체감이 "말이 안 된다"는
-    피드백으로 보수레이팅 기반은 유지하기로 했고(요청: "산정 로직은 기존으로 롤백해야겠어"),
-    대신 표시에 쓰는 화면용 점수 자체를 "경기마다의 보수레이팅 변화를 승패 방향에 맞게
-    눌러(패배 0 이하, 승리 0 이상) 누적한 값"으로 재정의했다(요청: "실제 계산도 패배는
-    0 이하 승리는 0 이상이어야하는데 아니야?" — 표시용 Δ만 눌러 화면상 모순은 없앴지만,
-    카드 점수(engine.conservative 원값)는 그대로라 "경기 이력 Δ의 합"과 "카드에 뜨는
-    실제 점수"가 여전히 어긋날 수 있었다. 이제 카드 점수 자체가 이 누적값이라 항상
-    정확히 일치한다). engine 자신(μ/σ)은 순수 TrueSkill 그대로 갱신되어 통계적으로
-    올바르고, 화면에 노출하는 숫자만 이 파생값을 쓴다.
+    반환: (엔진, focal의 경기별 표시점수 변화, 전원의 누적 표시점수).
+
+    표시점수는 "내가 뛴 경기가 내 실력 추정치(μ)를 얼마나 올렸나"의 누적이다(×10 스케일).
+    한때는 보수레이팅(μ−3σ)의 변화를 썼는데, σ가 크게 줄어드는 잠정 구간에서는 패배해도
+    μ−3σ가 순증가해 "졌는데 +점수"가 나왔다(요청: "랭킹 산정시 졌는데 +점수를 받는
+    이상현상 발생"). 상관 모형에서는 이긴 사람의 μ가 내려가거나 진 사람의 μ가 올라가는
+    일이 구조적으로 없어(실측 300판 0건) σ항을 뺄 수 있게 됐다. 그래도 눌러담기(승리 0
+    이상·패배 0 이하)는 남겨 둔다 — 값이 거의 안 드는 안전장치이고, "패배는 0 이하 승리는
+    0 이상"이라는 규칙 자체는 화면의 약속이다(요청).
+
+    상관 모형이라 안 뛴 사람의 μ도 조금 움직인다(내가 이긴 상대를 이긴 사람의 값이 같이
+    오르는, 정보 전파). 그 몫은 카드 점수에 안 싣는다 — 카드 점수는 어디까지나 '내 경기로
+    번 것'이고, 그래야 "경기 이력 Δ의 합 = 카드 점수"가 정확히 맞는다. 전파된 정보는
+    다음 판의 Δ에 녹아들어 제 몫을 한다(실측: 그렇게 해도 순위상관 0.98로, μ 자체를 쓰는
+    0.99와 사실상 같다).
+
     컴퓨터나 비회원이 한 명이라도 낀 경기는 아무의 점수도 움직이지 않는다 — 0점 처리다
     (요청: "비회원이 들어간 경기도 0점 처리해야 해"). 포인트는 상대의 실력치와 견줘
     오르내리는 값인데 컴퓨터·비회원에는 그 값이 없다. 일대일이라면 겨룰 상대가 아예 없어
@@ -578,8 +555,8 @@ def _replay_ratings(
             m = matches[r.match_id] = {
                 "team1": [], "team2": [], "result": r.result, "match_no": r.match_no,
                 "key": _replay_order_key(r.game_started_at, r.match_date, r.match_no),
-                # 점수를 셀 창(count_from)과 월초 σ 되돌리기의 기준은 둘 다 match_date다 —
-                # 화면의 기간 필터가 거는 것도 이 컬럼이라, 창 경계에서 어긋나지 않는다.
+                # 점수를 셀 창(count_from)의 기준은 match_date다 — 화면의 기간 필터가
+                # 거는 것도 이 컬럼이라, 창 경계에서 어긋나지 않는다.
                 "date": r.match_date,
                 "outsider": False,
             }
@@ -589,70 +566,66 @@ def _replay_ratings(
             if r.member_pk is None:
                 m["outsider"] = True
 
-    engine = RatingEngine()
+    order = sorted(matches, key=lambda k: matches[k]["key"])
+    # 재생 결과는 (경기 목록, 종족별 여부)만의 함수다 — focal·count_from은 그 위에서 싸게
+    # 걸러내면 된다. 상관 행렬을 들고 가면서 한 경기 갱신이 회원 수의 제곱이 됐고(회원 60명·
+    # 5000판에 7초), 통계 화면은 필터를 바꿀 때마다 이걸 다시 부른다. 그래서 재생 자체를
+    # 기억해 둔다 — 경기가 하나라도 늘거나 바뀌면 열쇠가 달라져 저절로 다시 돈다.
+    key = (by_race, tuple(
+        (matches[mid]["match_no"], matches[mid]["result"],
+         tuple(matches[mid]["team1"]), tuple(matches[mid]["team2"]))
+        for mid in order
+    ))
+    cached = _REPLAY_CACHE.get(key)
+    if cached is None:
+        cached = _run_replay(matches, order)
+        _REPLAY_CACHE[key] = cached
+        while len(_REPLAY_CACHE) > _REPLAY_CACHE_MAX:
+            _REPLAY_CACHE.pop(next(iter(_REPLAY_CACHE)))
+    else:
+        _REPLAY_CACHE.move_to_end(key)
+    engine, log = cached
+
     deltas: dict[str, float] = {}
     running: dict = defaultdict(float)
-    # 뛴 사람마다 마지막 경기 날짜를 들고 다니며, 다음 경기 직전에 그동안 쉰 날수만큼 σ를
-    # 되돌린다(rating.py의 SEASON_SIGMA·SEASON_VAR_PER_DAY). 오래 쉬면 그만큼 더 모르는 게
-    # 맞고, σ0을 넘지는 않으므로 몇 년을 쉬든 '처음 보는 사람'까지만 간다.
-    #
-    # 예전에는 달이 바뀌는 순간 전원에게 한 달치를 통째로 얹었다. 그러면 σ가 부풀어 있는
-    # 월초의 승리가 월말의 승리보다 값이 나갔다(실측 1.78배). 지금은 같은 양을 날마다 나눠
-    # 풀어 그 편향이 없다 — 자세한 실측은 rating.py의 상수 주석에 있다.
-    last_played: dict = {}
-    # 맞대결마다 (그동안 붙은 횟수, 마지막으로 붙은 날) — H2H_REPEAT_DAMP 주석 참고.
-    # 창(count_from)과 무관하게 맨 처음부터 센다. 창 앞에 세 번 붙은 걸 잊고 창 안의 첫 판을
-    # 제값으로 쳐주면, 같은 3월을 '올타임으로 볼 때'와 '3월만 볼 때'가 어긋난다.
-    h2h: dict[tuple, tuple[float, date]] = {}
-    for mid in sorted(matches, key=lambda k: matches[k]["key"]):
+    for match_no, when, moved in log:
+        # 창 밖(count_from 이전)의 경기는 레이팅만 만들고 표시 점수에는 안 들어간다 —
+        # 이게 곧 "지난달까지의 누적치로 상대강도를 계산해서 평가를 시작"이다(요청).
+        if count_from is not None and when < count_from:
+            continue
+        for ident, raw in moved:
+            running[ident] += raw
+            if ident == focal:
+                deltas[match_no] = raw
+    return engine, deltas, dict(running)
+
+
+def _run_replay(matches: dict, order: list) -> tuple[RatingEngine, list]:
+    """시간순으로 한 번 재생하고, 경기마다 '누가 몇 점 움직였나'를 남긴다.
+
+    남기는 값은 ×10 스케일이다(요청) — 화면에 노출되는 모든 점수(카드 점수, 상세의 경기당 Δ)를
+    여기 한 곳에서 10배로 키워 내려준다. 프론트가 자연수로 반올림해 보여주므로 원래 소수
+    첫째자리에 있던 정보가 정수부에 보존된다. 엔진의 μ/σ 자체는 원 스케일 그대로다."""
+    engine = RatingEngine()
+    log: list = []
+    for mid in order:
         mm = matches[mid]
         # 0점 경기 — 레이팅을 갱신하지도, 표시 점수를 더하지도 않는다(위 주석).
         if mm["outsider"]:
             continue
-        # 창 밖(count_from 이전)의 경기는 레이팅만 만들고 표시 점수에는 안 들어간다 —
-        # 이게 곧 "지난달까지의 누적치로 상대강도를 계산해서 평가를 시작"이다(요청).
-        counted = count_from is None or mm["date"] >= count_from
         participants = [p for p in (mm["team1"] + mm["team2"]) if p is not None]
-        # 이번에 뛰는 사람만, 각자 쉰 날수만큼 σ를 되돌린다. 안 뛰는 사람은 제 다음 경기
-        # 직전에 그때까지 쉰 날수를 한꺼번에 받으므로 결과가 같다 — 굳이 매 경기 전원을
-        # 훑지 않는다. pre를 재기 전에 끝나므로 이 되돌림 자체는 Δ를 만들지 않는다.
-        for p in participants:
-            gap = (mm["date"] - last_played[p]).days if p in last_played else 0
-            if gap > 0:
-                engine.drift((p,), gap)
-            last_played[p] = mm["date"]
-        pre = {p: engine.get(p).conservative for p in participants}
+        pre = {p: engine.get(p).mu for p in participants}
         engine.update(mm["team1"], mm["team2"], mm["result"])
         is_decisive = mm["result"] in ("team1", "team2")
         winners = set(mm[mm["result"]]) if is_decisive else set()
-        # 이 맞대결로 몇 번째 붙는 건가 — 자주 붙을수록 표시점수를 깎고, 안 붙고 지나간
-        # 시간만큼 그 횟수는 다시 줄어든다(H2H_REPEAT_DAMP 주석).
-        damp = 1.0
-        if is_decisive:
-            side1 = tuple(sorted(p for p in mm["team1"] if p is not None))
-            side2 = tuple(sorted(p for p in mm["team2"] if p is not None))
-            pair = (side1, side2) if side1 <= side2 else (side2, side1)
-            seen, met_on = h2h.get(pair, (0.0, mm["date"]))
-            rest = (mm["date"] - met_on).days
-            if rest > 0:
-                seen *= 0.5 ** (rest / H2H_HALFLIFE_DAYS)
-            damp = H2H_REPEAT_DAMP ** seen
-            h2h[pair] = (seen + 1.0, mm["date"])
+        moved = []
         for p in participants:
-            # ×10 스케일(요청) — 화면에 노출되는 모든 점수(카드 점수 running, 상세 경기당
-            # Δ)를 여기 한 곳에서 10배로 키워 내려준다. 프론트는 이 값을 자연수로 반올림해
-            # 보여주므로, 원래 소수 첫째자리에 있던 정보가 정수부에 보존된다. engine의
-            # μ/σ 자체는 순수 TrueSkill 원 스케일 그대로다(내부 갱신용).
-            if not counted:
-                continue
-            raw = (engine.get(p).conservative - pre[p]) * 10
+            raw = (engine.get(p).mu - pre[p]) * 10
             if is_decisive:
                 raw = max(raw, 0.0) if p in winners else min(raw, 0.0)
-                raw *= damp
-            running[p] += raw
-            if p == focal:
-                deltas[mm["match_no"]] = raw
-    return engine, deltas, dict(running)
+            moved.append((p, raw))
+        log.append((mm["match_no"], mm["date"], moved))
+    return engine, log
 
 
 def _to_match_slot(p: GameResultParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> GameResultSlot:

@@ -1,12 +1,36 @@
-"""TrueSkill 레이팅 엔진 — 경기 결과로 회원별 실력(μ)과 불확실성(σ)을 추정한다.
+"""레이팅 엔진 — 경기 결과로 회원별 실력(μ)과 불확실성(σ)을 추정한다.
 
-라이브러리(trueskill 패키지는 빌드가 깨져 미사용) 없이 2팀/1:1 케이스를 직접 구현한다.
-표준정규 pdf/cdf만 필요하고 math.erf로 충분하다(scipy 불필요).
+라이브러리(trueskill 패키지는 빌드가 깨져 미사용) 없이 직접 구현한다. 표준정규 pdf/cdf만
+필요하고 math.erf로 충분하다(scipy 불필요).
+
+TrueSkill과 같은 계열이되 **사람들 사이의 상관까지 들고 간다**. 흔한 구현은 사람마다 σ를
+하나씩만 두는데(대각 근사), 그러면 "A와 B의 격차는 확실히 아는데 둘의 절대 수준은 모른다"는
+상태를 표현할 방법이 없다. 우리 클럽은 모두가 모두와 고르게 붙지 않는다 — 어떤 둘은 백 판을
+붙고 어떤 사람은 세 판만 뛴다(지적: "모든 사람이 모든 사람에 대해 균등하게 경기하는 상황이
+아니고 특정 사람과만 많이 하고 어떤 사람은 적게나 안 할 수도 있기 때문에, 현재의 모든
+데이터를 정합한 예상결과에 대한 점수를 부여하는 거야"). 대각 근사로는 그 사정을 못 담아,
+같은 상대를 백 번 이겨도 값이 안 떨어지고 정보가 사람을 건너 퍼지지도 않는다.
+
+공분산 전체를 들고 가면 두 가지가 손대지 않아도 저절로 나온다:
+
+  · **같은 상대 반복은 저절로 값이 떨어진다.** k번째 판은 정보의 1/k만 준다 — 실측으로
+    같은 상대에게 8연승하면 54 → 27 → 17 → 12 → 9 → 7 → 5.7 → 4.8점. 예전에는 이걸
+    맞대결 감쇠 인자(H2H_REPEAT_DAMP)로 손수 얹어야 했다.
+  · **σ가 경기수에서 저절로 나온다.** 실측으로 93판 σ=2.98, 499판 σ=1.88, 892판 σ=1.84.
+    예전에는 σ가 단조 감소해 점수 폭이 해마다 쪼그라드는 걸 달마다 인위적으로 되돌려야
+    했다(SEASON_SIGMA). 이제 그 보정이 통째로 필요 없다(지적: "월 바뀌면서 인위적으로
+    보정하는 것보다는 사람들 경기수에 비례해서 하는 뭔가 더 깔끔한 방법이 있지 않을까").
+
+바뀐 뒤 실측(24명·월 250판·24개월, 점수순위와 실제 실력의 순위상관):
+    대각 근사(예전)                 0.83
+    대각 근사 + 맞대결 감쇠(예전)      0.96
+    상관 모형(지금)                 0.99   상위 5명 5/5
 
 핵심:
-  · 각 회원 = (μ, σ). 강한 상대를 이길수록 μ가 많이 오른다.
-  · 경기가 적으면 σ가 커서 값이 '잠정'. 순위는 보수 추정치(μ − 3σ)로 매겨 소수표본 인플레를 막는다.
-  · 팀 결과는 팀 실력합으로 기대승률을 내고, 각자 σ 비중만큼 μ가 갱신된다(팀→개인 분해).
+  · 각 회원 = μ(실력)와 서로 간의 공분산 한 벌. σ는 그 대각선의 제곱근이다.
+  · 한 경기는 '이긴 편 합 − 진 편 합' 방향으로 전체 평균·공분산을 한 번에 갱신한다.
+    그래서 안 뛴 사람의 μ도 조금 움직인다 — 내가 이긴 상대를 이긴 사람의 값이 같이 오르는,
+    그 정보 전파가 이 모형의 요점이다.
   · 개인전/팀전은 호출부가 서로 다른 Engine 인스턴스를 써서 분리한다.
 """
 from __future__ import annotations
@@ -18,49 +42,19 @@ from dataclasses import dataclass
 # TrueSkill 표준 초기값(μ0=25). 소규모 클럽에 맞게 나중에 튜닝 가능.
 MU0 = 25.0
 SIGMA0 = MU0 / 3.0        # 8.333 — 초기 불확실성
-# 경기당 실력 발휘 편차(스킬 폭). 이 값이 클수록 한 경기가 주는 정보가 적다고 보아 σ가
-# 천천히 줄고 μ도 덜 움직인다. 초기 conservative(μ0−3σ0 = 0)는 β와 무관해 그대로라,
-# 경기이력 Δ 합=카드점수 telescoping은 β를 어떻게 잡든 유지된다.
+# 경기당 실력 발휘 편차(스킬 폭). 이 값이 클수록 한 경기가 주는 정보가 적다고 보아 μ가
+# 덜 움직인다. 기대승률을 정하는 t = μ격차 / √(dᵀΣd + nβ²)의 분모를 좌우한다 —
+# 표준값(σ₀/2)은 우리 클럽에는 너무 예민했고, 한때 2σ₀까지 키웠더니 이번엔 μ격차가 분모에
+# 묻혀 실력차를 거의 못 느꼈다(지적: "같은 사람에게 계속 이기는데 얻는 점수가 너무 안
+# 줄어드는거 같은데"). 1σ₀가 그 사이다: μ격차 10이면 기대승률 74%, 20이면 90%.
+BETA = SIGMA0 * 1.0      # 8.333
+# 경기마다 되돌리는 불확실성 — '사람 실력은 시간이 지나면 변한다'는 몫이다. 이번에 뛴
+# 사람의 분산에만 더한다(지적: "사람들 경기수에 비례해서"). 달력에 기대지 않으므로 월초·월말
+# 같은 자리가 생기지 않는다.
 #
-# 한때 SIGMA0*2.0(16.667)까지 키웠었다 — 소수 경기 선수가 3판 전승만으로 상위권에 치솟는 걸
-# 막으려고 σ 감소를 늦춘 것이다(요청: "σ 천천히 감소"). 그 사정은 이제 없어졌다: 카드/순위
-# 점수가 그때의 보수레이팅(μ−3σ) 원값이 아니라 경기별 Δ를 누적한 값(service의 running)으로
-# 바뀌어, 판수에 단조증가한다. 3판 뛴 사람은 3판어치만 쌓여 애초에 위로 못 올라간다
-# (실측: β를 절반으로 내려도 3연승 신입은 12명 중 최하위권).
-#
-# 대신 큰 β가 남긴 부작용이 드러났다(지적: "같은 사람에게 계속 이기는데 얻는 점수가 너무
-# 안 줄어드는 거 같은데"). 기대승률을 정하는 t = μ격차 / √(2σ² + 2β²)에서 β=2σ₀면 분모의
-# 85%를 β가 차지해 μ격차가 묻힌다 — μ가 20이나 벌어져도 시스템은 승률 78%로밖에 안 본다.
-# 그래서 같은 상대를 계속 이겨도 한 판의 값이 잘 안 떨어졌다.
-#
-# 실측(12명·8개월·240판 뒤 같은 상대에게 6연승, 매 판 표시점수):
-#   β=2σ₀   18.5 16.3 14.4 12.9 11.7 10.6  → 4판째 30% 감소, 패/승 무게비 0.42
-#   β=1σ₀   22.7 17.7 14.2 11.8 10.0  8.6  → 4판째 48% 감소, 패/승 무게비 0.29
-#   β=σ₀/2  24.4 16.2 11.8  9.0  7.2  5.9  → 4판째 63% 감소, 패/승 무게비 0.21
-# 더 내리면 감소는 더 가팔라지지만 패배 한 판의 무게도 같이 가벼워져(표시점수의 σ항이 승패
-# 양쪽을 다 밀어올린다) "지든 말든 많이 뛰면 쌓인다"에 가까워진다. 1σ₀가 그 사이의 자리다.
-BETA = SIGMA0 * 1.0      # 8.333 — 같은 상대 연승 시 점수가 제대로 줄어들도록
-TAU = SIGMA0 / 100.0      # 0.0833 — 시간에 따른 실력 변동(매 경기 σ²에 더함)
-# 한 달치 시간이 되돌리는 불확실성(요청: 월별 제로베이스 대신 지난달까지의 누적치로
-# 상대강도를 계산해서 평가를 시작). μ(실력 추정)는 그대로 이월하고 σ만 이만큼 회복시킨다.
-#
-# 이월만 하고 이 되돌리기가 없으면 σ가 단조 감소해서 달마다의 점수 폭이 계속 쪼그라든다 —
-# 실측(24명·월 250판·24개월)으로 그 달 1위 점수가 1월 230점 → 6월 28점 → 12월 10점까지
-# 내려갔다. 상대강도는 정확해지지만 작년 1월과 올해 1월을 견줄 수 없게 된다는 뜻이다.
-# σ0/2를 되돌리면 같은 조건에서 자리를 잡는다(σ가 4.6 근처에서 평형). 되돌린 뒤에도 σ0을
-# 넘지는 않는다 — '처음 보는 사람'보다 더 모르는 상태는 없다.
-SEASON_SIGMA = SIGMA0 / 2.0  # 4.167 — 30일치 σ 되돌림 폭
-# 위 되돌림을 실제로 푸는 단위. 예전에는 달이 바뀌는 순간 한 사람도 빠짐없이 σ²에 SEASON_SIGMA²을
-# 통째로 얹었는데, 그러면 월초 승리가 월말 승리보다 값이 나간다 — 표시점수의 3분의 1이 σ항이라
-# σ가 부풀어 있는 동안 딴 점수가 그만큼 크다. 실측(같은 조건)으로 월 앞 3분의 1의 승리 한 판이
-# 뒤 3분의 1보다 1.78배였다. 같은 실력으로 같은 상대를 이겼는데 날짜 때문에 두 배 가까이
-# 차이가 나는 건 근거가 없다.
-#
-# 그래서 같은 양을 '경과일수에 비례해' 나눠 푼다(SEASON_SIGMA²/30 씩, 지난 경기 이후 며칠).
-# 같은 조건에서 편향이 1.78 → 1.00으로 사라지고, 점수 스케일도 연승 감소폭도 그대로다.
-# 덤으로 쉰 기간이 달 단위가 아니라 실제 날수대로 매겨져 — 반년 쉬고 온 사람과 한 달 쉰
-# 사람이 제대로 갈린다. σ0 상한은 그대로라 아무리 오래 쉬어도 '처음 보는 사람'까지만 간다.
-SEASON_VAR_PER_DAY = SEASON_SIGMA ** 2 / 30.0
+# 이게 0이면 σ가 한없이 줄어 모형이 굳는다 — 실력이 달마다 조금씩 변하는 클럽으로 재보면
+# 순위상관이 τ=0에서 0.970, σ₀/25에서 0.980으로 올라가고 그 위로는 더 안 오른다.
+TAU = SIGMA0 / 25.0      # 0.333
 
 _SQRT2 = math.sqrt(2.0)
 _SQRT2PI = math.sqrt(2.0 * math.pi)
@@ -93,91 +87,94 @@ class Rating:
     mu: float = MU0
     sigma: float = SIGMA0
 
-    @property
-    def conservative(self) -> float:
-        """리더보드/순위용 보수 추정치 — 아직 불확실하면(σ 큼) 낮게 잡힌다."""
-        return self.mu - 3.0 * self.sigma
-
-
-def _update(win: list[Rating], lose: list[Rating]) -> tuple[list[Rating], list[Rating]]:
-    """win 팀이 lose 팀을 이겼을 때 각 구성원의 새 Rating. (무승부 제외)"""
-    a = [(r.mu, r.sigma ** 2 + TAU ** 2) for r in win]
-    b = [(r.mu, r.sigma ** 2 + TAU ** 2) for r in lose]
-    mu_a, mu_b = sum(m for m, _ in a), sum(m for m, _ in b)
-    var_a, var_b = sum(v for _, v in a), sum(v for _, v in b)
-    n = len(a) + len(b)
-    c2 = var_a + var_b + n * BETA ** 2
-    c = math.sqrt(c2)
-    t = (mu_a - mu_b) / c
-    v, w = _v_win(t), _w_win(t)
-    new_win = [Rating(m + (var / c) * v, math.sqrt(max(var * (1.0 - (var / c2) * w), 1e-4)))
-               for (m, var) in a]
-    new_lose = [Rating(m - (var / c) * v, math.sqrt(max(var * (1.0 - (var / c2) * w), 1e-4)))
-                for (m, var) in b]
-    return new_win, new_lose
-
 
 class RatingEngine:
     """한 경기유형(개인전 또는 팀전)의 회원별 레이팅을 시간순으로 누적한다.
 
-    member_id=None(컴퓨터/비회원) 슬롯은 고정 기본 레이팅으로 경기 계산엔 넣되 갱신하지 않는다."""
+    member_id=None(컴퓨터/비회원) 슬롯은 자리를 아예 안 만든다 — 호출부가 그런 경기를
+    통째로 건너뛴다.
+
+    상태는 평균 벡터 하나와 공분산 행렬 하나다. 회원 수가 수십 명이라 조밀한 행렬로 들고
+    가도 한 경기 갱신이 n² — 수천 판을 재생해도 눈 깜짝할 새다."""
 
     PROVISIONAL_GAMES = 5  # 이 미만이면 '잠정'
 
     def __init__(self) -> None:
-        self.rating: dict[int, Rating] = {}
-        self.games: dict[int, int] = defaultdict(int)
+        self._at: dict = {}                 # 키 → 행렬에서의 자리
+        self._mu: list[float] = []
+        self._cov: list[list[float]] = []   # 대칭 n×n
+        self.games: dict = defaultdict(int)
 
-    def get(self, pk: int | None) -> Rating:
-        if pk is None:
-            return Rating()  # 비회원: 고정 기본값
-        return self.rating.get(pk, Rating())
+    def _slot(self, key) -> int:
+        """처음 보는 사람에게 자리를 하나 내준다 — μ0에, 아무와도 상관 없음(σ0²)."""
+        at = self._at.get(key)
+        if at is not None:
+            return at
+        at = len(self._mu)
+        self._at[key] = at
+        self._mu.append(MU0)
+        for row in self._cov:
+            row.append(0.0)
+        self._cov.append([0.0] * at + [SIGMA0 ** 2])
+        return at
 
-    def team_mu(self, side: list[int | None]) -> float:
-        return sum(self.get(p).mu for p in side)
+    def get(self, key) -> Rating:
+        at = self._at.get(key)
+        if at is None:
+            return Rating()  # 아직 한 판도 안 뛴 사람(그리고 비회원)
+        return Rating(self._mu[at], math.sqrt(max(self._cov[at][at], 1e-8)))
 
-    def predict(self, team1: list[int | None], team2: list[int | None]) -> str | None:
-        m1 = [p for p in team1 if p is not None]
-        m2 = [p for p in team2 if p is not None]
-        if not m1 or not m2:
-            return None
-        return "team1" if self.team_mu(team1) >= self.team_mu(team2) else "team2"
+    def update(self, team1: list, team2: list, result: str) -> None:
+        """team1/team2 중 이긴 편 기준으로 전체 평균·공분산을 한 번 갱신한다.
 
-    def update(self, team1: list[int | None], team2: list[int | None], result: str) -> None:
+        방향 벡터 d는 '이긴 편 전원 +1, 진 편 전원 −1'이다. 표준 칼만 갱신 그대로:
+            u  = Σd            (각자가 이 판에서 얼마나 흔들릴 수 있나)
+            c² = dᵀΣd + nβ²    (이 판 결과의 총 분산)
+            μ += u·v(t)/c ,  Σ −= u uᵀ·w(t)/c²
+        u가 전체 벡터라 안 뛴 사람의 μ도 상관이 있는 만큼 따라 움직인다 — 그게 이 모형을
+        쓰는 이유다."""
         m1 = [p for p in team1 if p is not None]
         m2 = [p for p in team2 if p is not None]
         if result not in ("team1", "team2") or not m1 or not m2:
-            return  # 무승부/한쪽 회원 없음 — 갱신 안 함
-        win_ids, lose_ids = (team1, team2) if result == "team1" else (team2, team1)
-        win_r = [self.get(p) for p in win_ids]
-        lose_r = [self.get(p) for p in lose_ids]
-        nw, nl = _update(win_r, lose_r)
-        for pk, r in zip(win_ids, nw):
-            if pk is not None:
-                self.rating[pk] = r
-                self.games[pk] += 1
-        for pk, r in zip(lose_ids, nl):
-            if pk is not None:
-                self.rating[pk] = r
-                self.games[pk] += 1
+            return  # 무승부/한쪽 편 없음 — 갱신 안 함
+        won, lost = (m1, m2) if result == "team1" else (m2, m1)
+        wi = [self._slot(p) for p in won]
+        li = [self._slot(p) for p in lost]
+        mu, cov = self._mu, self._cov
+        n = len(mu)
 
-    def is_provisional(self, pk: int) -> bool:
-        return self.games.get(pk, 0) < self.PROVISIONAL_GAMES
+        # 지난 경기 이후의 실력 변동(TAU) — 이번에 뛴 사람 몫만. σ0을 넘지는 않는다.
+        for k in wi + li:
+            cov[k][k] = min(SIGMA0 ** 2, cov[k][k] + TAU ** 2)
 
-    def drift(self, keys, days: float) -> None:
-        """쉰 날수만큼 σ만 되돌린다 — μ는 손대지 않는다(위 상수 주석).
+        # 1:1이 거의 전부라 그 경우만 따로 빠르게 — sum() 두 번 대신 뺄셈 하나다.
+        if len(wi) == 1 and len(li) == 1:
+            i, j = wi[0], li[0]
+            u = [row[i] - row[j] for row in cov]
+        else:
+            u = [sum(row[a] for a in wi) - sum(row[a] for a in li) for row in cov]
+        c2 = sum(u[a] for a in wi) - sum(u[a] for a in li) + (len(wi) + len(li)) * BETA ** 2
+        c = math.sqrt(c2)
+        t = (sum(mu[a] for a in wi) - sum(mu[a] for a in li)) / c
+        v, w = _v_win(t), _w_win(t)
 
-        점수를 깎는 것이 아니라 '앞으로 얼마나 움직일 수 있나'를 되살리는 일이다. 이 호출
-        자체는 어떤 Δ도 만들지 않는다: 재생 루프가 Δ를 경기 갱신 앞뒤의 차이로만 재는데,
-        되돌리기는 그 앞에서 끝나기 때문이다(_replay_ratings 참고). 그래서 카드 점수와
-        경기 이력 Δ의 합은 되돌린 뒤에도 계속 맞는다.
-
-        한 번도 안 뛴 사람(rating에 없음)은 건드리지 않는다 — 이미 σ0이라 되돌릴 것이 없다."""
-        if days <= 0:
-            return
-        add = SEASON_VAR_PER_DAY * days
-        for key in keys:
-            r = self.rating.get(key)
-            if r is None:
+        step = v / c
+        self._mu = mu = [m + x * step for m, x in zip(mu, u)]
+        # Σ −= f·u uᵀ. 안쪽을 리스트 조립으로 도는 게 첨자 루프보다 몇 배 빠르다 —
+        # 회원 수가 늘면 한 경기 갱신이 n²이라 이 한 줄이 재생 시간을 좌우한다.
+        f = w / c2
+        for a in range(n):
+            ua = u[a] * f
+            if ua == 0.0:
                 continue
-            self.rating[key] = Rating(r.mu, min(SIGMA0, math.sqrt(r.sigma ** 2 + add)))
+            row = cov[a]
+            cov[a] = [r - ua * x for r, x in zip(row, u)]
+        for a in range(n):  # 수치 오차로 분산이 음수로 내려가지 않게
+            if cov[a][a] < 1e-8:
+                cov[a][a] = 1e-8
+
+        for p in won + lost:
+            self.games[p] += 1
+
+    def is_provisional(self, key) -> bool:
+        return self.games.get(key, 0) < self.PROVISIONAL_GAMES
