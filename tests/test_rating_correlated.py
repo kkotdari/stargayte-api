@@ -13,7 +13,7 @@
 import datetime as dt
 from types import SimpleNamespace
 
-from app.domain.game_results.rating import SIGMA0, RatingEngine
+from app.domain.game_results.rating import MU0, SIGMA0, RatingEngine
 from app.domain.game_results.service import _replay_ratings
 
 DAY0 = dt.date(2024, 1, 1)
@@ -122,15 +122,21 @@ def test_the_score_never_moves_the_wrong_way():
                 assert delta <= 0, (pk, i, delta)
 
 
-def test_points_do_not_depend_on_how_much_you_have_played():
-    """오늘 처음 뛰는 사람이나 백 판 뛴 사람이나, 같은 상대를 이기면 비슷하게 받는다.
+def test_farming_an_easy_opponent_barely_moves_the_score():
+    """만만한 상대를 스무 판 우려먹어도 점수가 거의 안 오른다 — 이게 이 점수를 쓰는 이유다.
 
-    예전에는 점수가 '그 경기로 내 실력 추정치가 얼마나 올랐나'라서, 우리가 잘 모르는
-    사람일수록 한 판에 크게 움직였다 — 실측으로 11.6배까지 벌어졌다(지적)."""
-    seasoned = [(1, 2 + i % 4, "team1" if i % 3 else "team2", i) for i in range(60)]
-    rookie = _last(seasoned + [(1, 90, "team1", 60)], focal=1)      # 1번은 60판을 뛴 사람
-    fresh = _last(seasoned + [(80, 90, "team1", 60)], focal=80)     # 80번은 오늘 처음
-    assert 0.7 < rookie / fresh < 1.4, (rookie, fresh)
+    지적: "이길 게 뻔한 판을 계속하는 게 비등한 판을 하는 것보다 훨씬 낫잖아". 경기마다
+    번 점수를 쌓는 구조로는 이걸 못 막는다(service의 POINT_SCALE 주석). 상한이 있는 값,
+    즉 레이팅 자체를 점수로 두면 원천적으로 막힌다."""
+    ladder = [(2, 3, "team1", i) for i in range(30)]      # 3번을 확실히 약체로 만들어 둔다
+    one, _, _ = _replay_ratings(_rows(ladder + [(1, 5, "team1", 30)]))
+    many, _, _ = _replay_ratings(_rows(
+        ladder + [(1, 5, "team1", 30)] + [(1, 3, "team1", 31 + i) for i in range(20)]
+    ))
+    first_win = one.get(1).mu - MU0                       # 비등한 상대를 한 판 이겨 오른 만큼
+    farmed = many.get(1).mu - one.get(1).mu               # 약체를 스무 판 더 이겨 오른 만큼
+    # 우려먹기 한 판의 값이 비등한 판 하나의 5분의 1도 안 된다(스무 판 다 합쳐도 두 판어치).
+    assert farmed / 20 < first_win * 0.2, (first_win, farmed)
 
 
 def test_beating_a_stronger_opponent_pays_more():

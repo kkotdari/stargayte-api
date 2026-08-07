@@ -73,12 +73,12 @@ async def test_later_matches_do_not_leak_into_an_earlier_month(client):
     assert before["player01"]["rankScore"] == after["player01"]["rankScore"]
 
 
-async def test_all_time_score_equals_sum_of_each_month(client):
-    """올타임 점수 = 달마다의 점수를 더한 값.
+async def test_the_last_month_matches_the_all_time_view(client):
+    """마지막 달까지 본 점수 = 올타임 점수.
 
-    같은 재생을 창만 달리해 자르는 것이므로 정확히 맞아야 한다 — 이게 어긋나면 '올타임으로
-    본 2월'과 '2월만 본 2월'이 다른 값이라는 뜻이고, 월초 σ 되돌리기가 창에 따라 다른
-    자리에서 일어난다는 신호다.
+    점수는 '그 기간에 번 값'이 아니라 '그 시점까지의 기록으로 본 실력'이다(요청: "이번 달에
+    번 점수는 필요없어"). 그러니 마지막 경기가 든 달까지 보면 전체를 본 것과 같아야 한다.
+    달마다의 값은 그때그때의 실력이라 더하는 값이 아니다.
     """
     headers = await _signup_many(client, 6)
     await _match(client, headers, ["player01"], ["player02"], "team1", "2026-01-10")
@@ -86,15 +86,11 @@ async def test_all_time_score_equals_sum_of_each_month(client):
     await _match(client, headers, ["player01"], ["player03"], "team1", "2026-02-10")
     await _match(client, headers, ["player02"], ["player01"], "team1", "2026-03-05")
 
-    jan = await _stats(client, headers, date_from="2026-01-01", date_to="2026-01-31")
-    feb = await _stats(client, headers, date_from="2026-02-01", date_to="2026-02-28")
     mar = await _stats(client, headers, date_from="2026-03-01", date_to="2026-03-31")
     res = await client.get("/api/game-results/stats", headers=headers, params={"matchType": "0101"})
     assert res.status_code == 200, res.text
     total = {m["memberId"]: m for m in res.json()["members"]}["player01"]["rankScore"]
-
-    parts = sum(month["player01"]["rankScore"] for month in (jan, feb, mar))
-    assert abs(total - parts) < 0.3  # 각 창이 소수 첫째자리로 반올림된 값이라 그만큼만 허용
+    assert abs(total - mar["player01"]["rankScore"]) < 0.15
 
 
 async def test_sigma_drift_keeps_monthly_scores_comparable(client):

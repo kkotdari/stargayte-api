@@ -19,7 +19,7 @@ from app.domain.game_results.models import (
     MinimapImage,
     ReplayMap,
 )
-from app.domain.game_results.rating import RatingEngine
+from app.domain.game_results.rating import MU0, RatingEngine
 from app.domain.game_results.repository import GameResultRepository
 from app.domain.game_results.schemas import (
     COMPUTER_ID_PREFIX,
@@ -503,29 +503,21 @@ def _replay_order_key(game_started_at, match_date, match_no):
 _REPLAY_CACHE: list = []
 _REPLAY_CACHE_MAX = 6
 
-# 한 판의 값 — 이기면 +, 지면 −, 두 값의 크기는 같다.
+# 점수 = 실력 추정치(μ)를 화면용으로 옮긴 값. μ0에서 시작하니 새 회원은 0점이다.
 #
-#     한 판 = POINT_BASE × (1 + POINT_TILT × (1 − 2 × 이길 확률))
+# 한때는 '경기마다 번 점수를 쌓은 값'이었다. 그 구조로는 우려먹기를 못 막는다 — 한 판마다
+# 이긴 쪽이 X를 얻고 진 쪽이 X를 잃는 어떤 규칙을 써도 한 판의 기댓값이
+#     기본점 × (2p − 1) × (1 − 기울기)
+# 라서, 기울기가 1보다 조금이라도 작으면 만만한 상대를 고르는 것이 언제나 이득이고(실측:
+# 같은 20판을 만만한 상대로만 채우면 +218.6, 비등한 상대로 채우면 −1.7) 기울기가 1이면
+# 모두의 기댓값이 0이 되어 실력을 아예 못 가린다. 중간이 없다(지적: "이길 게 뻔한 판을
+# 계속하는 게 비등한 판을 하는 것보다 훨씬 낫잖아").
 #
-# 이길 확률은 모형이 그 경기 직전에 본 값 하나뿐이다(RatingEngine.win_prob). 두 사람 사이의
-# 사정 — 실력차든, 몇 번 붙어 봐서 얼마나 확실히 아는가든 — 은 전부 그 확률을 만들 때 이미
-# 들어간다(지적: "이변이든 뭐든 매 경기의 점수는 확률에 대한 결과값이야. 두 사람간의 관계성은
-# 여기서 계산되는 게 아니라 확률 자체를 계산할 때 이미 들어가야 해").
-#
-# 한때 여기에 '맞대결 반복 감쇠'를 따로 곱했다. 그게 틀린 값을 냈다 — 강자가 약자에게 두 판
-# 이기고 한 판 진 다음의 네 번째 판이, 관계가 좁혀졌는데도 되레 값이 떨어졌다(지적: "3번째
-# 판에 약자가 이겼으니 강약 관계가 달라져서 4번째 판에서는 강자가 점수를 더 받아야 돼").
-# 곱셈으로 얹은 인자는 관계를 두 번 세는 짓이라, 관계가 바뀌어도 그 인자는 안 따라온다.
-#
-# 우려먹기는 확률이 알아서 막는다: 이길 게 뻔한 판(99%)은 10.2점이고 비등한 판은 20점이라,
-# 만만한 상대만 잡는 것이 절반값이다. 그 판을 지면 −29.8점이다.
-#
-# POINT_TILT는 1보다 작아야 한다. 한 맞대결에서 센 쪽의 기댓값이 POINT_BASE×(2p−1)×(1−TILT)라,
-# 1이면 0이 되어 센 사람이 제 몫을 못 챙기고 랭킹이 뒤집힌다. 키울수록 우려먹기는 더 막히지만
-# 점수가 이변에 휘둘린다 — 실측(24명·월 250판·24개월)으로 월별 순위상관이 0.5에서 0.815,
-# 0.65에서 0.771, 0.8에서 0.625까지 떨어진다.
-POINT_BASE = 20.0
-POINT_TILT = 0.5
+# 우려먹을 수 없는 값은 상한이 있는 값뿐이다. 같은 20판을 우려먹어도 μ는 +1.4밖에 안 오른다 —
+# 이미 아는 상대를 또 이기는 것은 추정치를 못 움직이기 때문이다. 그래서 점수를 아예 레이팅
+# 자체로 둔다. 기간 필터는 '그 기간에 번 점수'가 아니라 '그 시점까지의 기록으로 본 점수'라는
+# 뜻이 된다(요청: "이번 달에 번 점수는 필요없어").
+POINT_SCALE = 10.0
 
 
 def _replay_ratings(
@@ -533,37 +525,29 @@ def _replay_ratings(
 ) -> tuple[RatingEngine, dict[str, float], dict]:
     """rank_replay_rows 결과를 경기 단위로 묶어 '시간순'으로 레이팅을 누적한다.
 
-    재생은 늘 맨 처음부터 한다. count_from을 주면 '점수를 세기 시작하는 날'만 그날로 밀려서,
-    그 앞의 경기들은 레이팅(μ·σ)을 만드는 데만 쓰이고 표시 점수에는 안 들어간다(요청:
-    "월이 바뀌어도 지난달까지의 누적치를 가지고 상대강도를 계산해서 평가를 시작").
+    재생은 늘 맨 처음부터 한다(요청: "월이 바뀌어도 지난달까지의 누적치를 가지고 상대강도를
+    계산해서 평가를 시작"). 예전에는 SQL에서 그 달 이전 경기를 아예 잘라내 매달 전원이 μ0에서
+    다시 시작했다. 그러면 지난달까지 쌓인 정보가 통째로 버려져, 3연승한 신입과 3연승한 고수가
+    같은 점수를 받는다.
 
-    예전에는 이 이월이 없었다 — SQL에서 그 달 이전 경기를 아예 잘라내(rank_replay_rows의
-    date_from) 매달 전원이 μ0에서 다시 시작했다. 그러면 지난달까지 쌓인 정보가 통째로 버려져,
-    3연승한 신입과 3연승한 고수가 같은 점수를 받는다. 이제 그 정보를 그대로 들고 시작한다 —
-    같은 1승이라도 누구를 이겼느냐에 따라 값이 달라진다.
-
-    창(count_from~) 밖의 경기도 레이팅은 똑같이 만들므로, 어느 달을 조회하든 그 달 경기의
-    Δ는 똑같이 나온다 — '올타임으로 본 3월'과 '3월만 본 3월'이 어긋나지 않는다.
+    count_from은 '어느 경기부터 상세 목록에 실을까'만 정한다 — 그 앞의 경기도 레이팅은 똑같이
+    만든다. 조회 기간의 끝(date_to)은 호출부가 SQL에 걸어 rows 자체를 자른다. 그래서 어느 달을
+    조회하든 그 달 경기의 Δ는 똑같이 나온다.
 
     by_race=False면 레이팅 대상이 '회원'(member_pk)이고, True면 '(회원, 그 경기 종족)' 조합이다
     (요청: "종족은 랭커의 종족" — 저그로 낸 경기는 그 회원의 저그 레이팅에만 쌓인다). 상대가
     무슨 종족이든 상관없이, 각 참가자는 자기가 그 경기에서 낸 종족 레이팅으로 서로 겨뤄 갱신된다.
 
-    반환: (엔진, focal의 경기별 표시점수 변화, 전원의 누적 표시점수).
+    반환: (엔진, focal의 경기별 점수 변화, 창 안에서 사람마다 움직인 총량).
 
-    표시점수는 "내가 뛴 경기가 내 실력 추정치(μ)를 얼마나 올렸나"의 누적이다(×10 스케일).
-    한때는 보수레이팅(μ−3σ)의 변화를 썼는데, σ가 크게 줄어드는 잠정 구간에서는 패배해도
-    μ−3σ가 순증가해 "졌는데 +점수"가 나왔다(요청: "랭킹 산정시 졌는데 +점수를 받는
-    이상현상 발생"). 상관 모형에서는 이긴 사람의 μ가 내려가거나 진 사람의 μ가 올라가는
-    일이 구조적으로 없어(실측 300판 0건) σ항을 뺄 수 있게 됐다. 그래도 눌러담기(승리 0
-    이상·패배 0 이하)는 남겨 둔다 — 값이 거의 안 드는 안전장치이고, "패배는 0 이하 승리는
-    0 이상"이라는 규칙 자체는 화면의 약속이다(요청).
+    카드에 뜨는 포인트는 이 반환값이 아니라 엔진의 실력 추정치에서 바로 뽑는다(POINT_SCALE
+    주석). 여기 값들은 '그 경기가 포인트를 얼마나 움직였나'로, 상세 목록에 쓴다. 셋째 반환값은
+    '이 기간에 뛰었나'를 가리는 데도 쓴다 — 통산 판수로 보면 지난달까지만 뛴 사람이 이번 달
+    상세에서 0점으로 떠 목록과 어긋난다.
 
-    상관 모형이라 안 뛴 사람의 μ도 조금 움직인다(내가 이긴 상대를 이긴 사람의 값이 같이
-    오르는, 정보 전파). 그 몫은 카드 점수에 안 싣는다 — 카드 점수는 어디까지나 '내 경기로
-    번 것'이고, 그래야 "경기 이력 Δ의 합 = 카드 점수"가 정확히 맞는다. 전파된 정보는
-    다음 판의 Δ에 녹아들어 제 몫을 한다(실측: 그렇게 해도 순위상관 0.98로, μ 자체를 쓰는
-    0.99와 사실상 같다).
+    눌러담기(승리 0 이상·패배 0 이하)는 남겨 둔다 — 상관 모형에서는 이긴 사람의 μ가 내려가는
+    일이 구조적으로 없어(실측 300판 0건) 값이 거의 안 드는 안전장치이지만, "패배는 0 이하
+    승리는 0 이상"이라는 규칙 자체는 화면의 약속이다(요청).
 
     컴퓨터나 비회원이 한 명이라도 낀 경기는 아무의 점수도 움직이지 않는다 — 0점 처리다
     (요청: "비회원이 들어간 경기도 0점 처리해야 해"). 포인트는 상대의 실력치와 견줘
@@ -659,12 +643,20 @@ def _run_replay(matches: dict, order: list, engine: RatingEngine, log: list, sta
         if mm["result"] in ("team1", "team2"):
             won = [p for p in mm[mm["result"]] if p is not None]
             lost = [p for p in mm["team2" if mm["result"] == "team1" else "team1"] if p is not None]
-        moved: list = []
-        if won and lost:
-            # 이변이었을수록 크게 오간다 — 이긴 쪽이 얻는 값과 진 쪽이 잃는 값은 같다.
-            point = POINT_BASE * (1.0 + POINT_TILT * (1.0 - 2.0 * engine.win_prob(won, lost)))
-            moved = [(p, point) for p in won] + [(p, -point) for p in lost]
+        participants = won + lost if (won and lost) else [
+            p for p in (mm["team1"] + mm["team2"]) if p is not None
+        ]
+        pre = {p: engine.get(p).mu for p in participants}
         engine.update(mm["team1"], mm["team2"], mm["result"])
+        # 이 경기가 내 점수를 얼마나 움직였나 — 카드 점수와 같은 단위다. 눌러담기(승리 0 이상·
+        # 패배 0 이하)는 값이 거의 안 드는 안전장치로 남긴다.
+        won_set = set(won)
+        moved = []
+        for p in participants:
+            raw = (engine.get(p).mu - pre[p]) * POINT_SCALE
+            if won and lost:
+                raw = max(raw, 0.0) if p in won_set else min(raw, 0.0)
+            moved.append((p, raw))
         log.append((mm["match_no"], mm["date"], moved))
     return engine, log
 
@@ -1027,20 +1019,10 @@ class GameResultService:
         engine, _, running = _replay_ratings(
             replay_rows, by_race=race_active, count_from=date_from,
         )
-        # 카드/정렬에 쓰는 점수 — 보수추정치(μ−3σ) 기반은 유지하되(요청: "산정 로직은
-        # 기존으로 롤백해야겠어" — 순수 실력치는 체감상 "말이 안 됨"), 원값(engine.
-        # conservative) 대신 _replay_ratings가 반환하는 "경기마다 승패 방향에 맞게 눌러
-        # 누적한" running 값을 쓴다. 원값을 그대로 쓰면 화면 Δ만 눈속임으로 눌러도 실제
-        # 카드 점수(패배 경기가 하나라도 순증가에 기여)는 그대로라, "많이 패배해서 승리
-        # 보다 점수를 더 쌓는" 실제 문제가 안 없어진다(요청: "실제 계산도 패배는 0 이하
-        # 승리는 0 이상이어야하는데 아니야?", "많이 패배해서 승리보다 점수를 쌓을수도
-        # 있는 문제가 있잖아") — running은 그 자체로 이미 이 규칙을 만족한다(잠정 선수를
-        # 낮게 잡는 안전장치도 그대로 유지된다 — 새 회원은 0에서 시작해 여전히 σ가 큰
-        # 동안은 표시 점수가 크게 못 오른다). 그 종족으로 한 판도 안 뛴 회원은 running이
-        # 0이라 자연히 공동 최하위로 내려간다.
-        # running은 _replay_ratings에서 이미 ×10 스케일(요청)이다 — 상세의 경기당 Δ와
-        # 같은 곳에서 스케일돼 "Δ의 합 = 카드 점수"가 스케일 후에도 정확히 유지된다.
-        score = {m.pk: round(running.get(_rk(m.pk), 0.0), 1) for _, m in pairs}
+        # 카드/정렬에 쓰는 점수 = 실력 추정치 자체다(POINT_SCALE 주석). 경기마다 번 점수를
+        # 쌓는 값이 아니라 상한이 있는 값이라, 만만한 상대를 우려먹어도 안 오른다.
+        # running은 '이 기간에 얼마나 움직였나'라 순위 대상 판정에만 쓴다.
+        score = {m.pk: round((engine.get(_rk(m.pk)).mu - MU0) * POINT_SCALE, 1) for _, m in pairs}
 
         # 포인트에는 판수 문턱이 없다(요청: "포인트 컬럼은 최소 경기수
         # 제약을 적용 안 하는 곳이야 — 편차가 없는 확정적 결과이기 때문"). 이 점수는 평균이
@@ -1122,9 +1104,8 @@ class GameResultService:
             deltas={mno: round(d, 1) for mno, d in deltas.items()},
             mu=round(r.mu, 1) if played else None,
             sigma=round(r.sigma, 1) if played else None,
-            # 카드에 뜨는 실제 점수(패배 비증가/승리 비감소 누적) — 원값(μ−3σ)이 아니라
-            # get_stats의 score와 같은 파생값이라야 "이력 Δ의 합 = 이 값"이 항상 맞는다.
-            conservative=round(running.get(focal, 0.0), 1) if played else None,
+            # 카드에 뜨는 점수 — get_stats의 score와 같은 식(실력 추정치)이다.
+            conservative=round((r.mu - MU0) * POINT_SCALE, 1) if played else None,
             games=engine.games.get(focal, 0),
             provisional=engine.is_provisional(focal) if played else False,
         )
