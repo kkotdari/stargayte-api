@@ -490,11 +490,18 @@ def _replay_order_key(game_started_at, match_date, match_no):
     return (ts, match_no or "")
 
 
-# 재생 결과 기억 — 열쇠는 (종족별 여부, 경기 목록)이고 값은 (엔진, 경기별 점수 이동)이다.
-# 통계 화면이 기간·종족을 바꿔 가며 같은 재생을 여러 번 부르므로 몇 벌만 들고 있어도 충분하다.
-# 프로세스 안에만 사는 값이고, 경기가 하나라도 늘거나 바뀌면 열쇠가 달라져 저절로 새로 돈다.
-_REPLAY_CACHE: OrderedDict = OrderedDict()
-_REPLAY_CACHE_MAX = 4
+# 재생 결과 기억 — 통계 화면이 기간·종족을 바꿔 가며 같은 재생을 여러 번 부르는데, 상관을
+# 들고 가면서 한 경기 갱신이 회원 수의 제곱이 됐다(회원 60명·5000판에 7.5초).
+#
+# 한 벌은 (종족별 여부, 경기 지문 목록, 엔진, 경기별 점수 이동)이다. 지문 목록을 들고 있는
+# 이유는 '이어 붙이기' 때문이다: 경기는 거의 언제나 뒤에만 덧붙으므로, 기억해 둔 목록이 새
+# 목록의 앞부분과 같으면 앞은 다시 안 돌고 뒤에 늘어난 것만 이어 재생한다. 그래서 경기 하나
+# 등록한 뒤의 첫 조회도 5000판이 아니라 한 판어치다.
+#
+# 중간이 바뀌었거나(경기 수정·삭제) 아예 다른 목록이면 앞부분이 안 맞으니 처음부터 돈다.
+# 프로세스 안에만 사는 값이라 서버가 다시 뜨면 비고, 그때 한 번은 제값을 치른다.
+_REPLAY_CACHE: list = []
+_REPLAY_CACHE_MAX = 6
 
 
 def _replay_ratings(
@@ -571,20 +578,12 @@ def _replay_ratings(
     # 걸러내면 된다. 상관 행렬을 들고 가면서 한 경기 갱신이 회원 수의 제곱이 됐고(회원 60명·
     # 5000판에 7초), 통계 화면은 필터를 바꿀 때마다 이걸 다시 부른다. 그래서 재생 자체를
     # 기억해 둔다 — 경기가 하나라도 늘거나 바뀌면 열쇠가 달라져 저절로 다시 돈다.
-    key = (by_race, tuple(
+    marks = tuple(
         (matches[mid]["match_no"], matches[mid]["result"],
          tuple(matches[mid]["team1"]), tuple(matches[mid]["team2"]))
         for mid in order
-    ))
-    cached = _REPLAY_CACHE.get(key)
-    if cached is None:
-        cached = _run_replay(matches, order)
-        _REPLAY_CACHE[key] = cached
-        while len(_REPLAY_CACHE) > _REPLAY_CACHE_MAX:
-            _REPLAY_CACHE.pop(next(iter(_REPLAY_CACHE)))
-    else:
-        _REPLAY_CACHE.move_to_end(key)
-    engine, log = cached
+    )
+    engine, log = _replay_from_cache(by_race, marks, matches, order)
 
     deltas: dict[str, float] = {}
     running: dict = defaultdict(float)
@@ -600,15 +599,38 @@ def _replay_ratings(
     return engine, deltas, dict(running)
 
 
-def _run_replay(matches: dict, order: list) -> tuple[RatingEngine, list]:
+def _replay_from_cache(by_race: bool, marks: tuple, matches: dict, order: list):
+    """기억해 둔 것 중 앞부분이 맞는 게 있으면 이어 붙이고, 없으면 처음부터 돈다.
+
+    맞는 것이 여럿이면 가장 길게 맞는 쪽을 고른다 — 다시 돌 판이 가장 적다."""
+    best = None
+    for i, (flag, kept, _engine, _log) in enumerate(_REPLAY_CACHE):
+        if flag is by_race and len(kept) <= len(marks) and marks[:len(kept)] == kept:
+            if best is None or len(kept) > len(_REPLAY_CACHE[best][1]):
+                best = i
+    if best is None:
+        engine, log = _run_replay(matches, order, RatingEngine(), [], 0)
+    else:
+        _, kept, base, base_log = _REPLAY_CACHE.pop(best)
+        if len(kept) == len(marks):
+            engine, log = base, base_log      # 그대로 — 다시 돌 것이 없다
+        else:
+            engine, log = _run_replay(matches, order, base.clone(), list(base_log), len(kept))
+    _REPLAY_CACHE.append((by_race, marks, engine, log))
+    while len(_REPLAY_CACHE) > _REPLAY_CACHE_MAX:
+        _REPLAY_CACHE.pop(0)
+    return engine, log
+
+
+def _run_replay(matches: dict, order: list, engine: RatingEngine, log: list, start: int):
     """시간순으로 한 번 재생하고, 경기마다 '누가 몇 점 움직였나'를 남긴다.
+
+    start부터 이어 돈다 — 앞은 이미 engine·log에 담겨 온다(_replay_from_cache).
 
     남기는 값은 ×10 스케일이다(요청) — 화면에 노출되는 모든 점수(카드 점수, 상세의 경기당 Δ)를
     여기 한 곳에서 10배로 키워 내려준다. 프론트가 자연수로 반올림해 보여주므로 원래 소수
     첫째자리에 있던 정보가 정수부에 보존된다. 엔진의 μ/σ 자체는 원 스케일 그대로다."""
-    engine = RatingEngine()
-    log: list = []
-    for mid in order:
+    for mid in order[start:]:
         mm = matches[mid]
         # 0점 경기 — 레이팅을 갱신하지도, 표시 점수를 더하지도 않는다(위 주석).
         if mm["outsider"]:

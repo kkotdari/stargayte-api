@@ -118,6 +118,19 @@ class RatingEngine:
         self._cov.append([0.0] * at + [SIGMA0 ** 2])
         return at
 
+    def clone(self) -> "RatingEngine":
+        """지금 상태 그대로 한 벌 뜬다 — 여기서부터 뒤 경기만 이어 재생하려고 쓴다.
+
+        기억해 둔 엔진을 곧바로 이어 쓰면, 그걸 이미 받아 간 쪽(다른 요청)의 μ·σ가 발밑에서
+        바뀐다. 뜨는 값이 회원 수의 제곱이라 안 싼 일이지만, 한 경기 갱신 한 번어치일 뿐이라
+        수천 판을 다시 도는 것에 비하면 아무것도 아니다."""
+        twin = RatingEngine()
+        twin._at = dict(self._at)
+        twin._mu = list(self._mu)
+        twin._cov = [row[:] for row in self._cov]
+        twin.games = defaultdict(int, self.games)
+        return twin
+
     def get(self, key) -> Rating:
         at = self._at.get(key)
         if at is None:
