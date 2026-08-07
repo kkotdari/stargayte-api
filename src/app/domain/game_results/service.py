@@ -503,6 +503,41 @@ def _replay_order_key(game_started_at, match_date, match_no):
 _REPLAY_CACHE: list = []
 _REPLAY_CACHE_MAX = 6
 
+# 한 판의 값 — 이기면 +, 지면 −, 두 값의 크기는 같다.
+#
+# 예전에는 "그 경기로 내 실력 추정치(μ)가 얼마나 올랐나"를 그대로 점수로 썼다. 그런데 그
+# 상승폭은 우리가 그 사람을 얼마나 아느냐에 지배된다 — 실측으로 같은 상대를 이겨도 경기가
+# 적은 사람은 48.2점, 400판 뛴 사람은 4.2점(11.6배)이었다. 상대가 얼마나 센가에 따른 차이는
+# 3배뿐이라, 점수가 '성과'가 아니라 '우리가 너를 얼마나 몰랐나'를 재고 있었다(지적: "정구는
+# 타센만 이겼고 미친마법사는 곰세마리 태섭 크리스를 이겼는데 왜 미친마법사가 더 낮지").
+# 특히 달 단위로 보면 자리 잡은 사람은 한 달 Δ가 0 언저리라, 월별 점수가 사실상 잡음이었다
+# (24개월 클럽 실측: 월별 점수와 그 달 실력의 순위상관 0.087, 승수가 더 많은데 점수는 낮은
+# 쌍이 35.5%).
+#
+# 이제 모형은 '상대가 얼마나 센가'를 재는 일만 하고, 점수는 그 잣대로 매긴 성적이다:
+#     한 판 = POINT_BASE × (1 + POINT_TILT × 이변의 정도)
+# 이변의 정도는 두 편 실력차를 POINT_SPAN으로 잰 값(−1~+1)이다. 센 상대를 이기면 27점,
+# 비슷하면 20점, 약한 상대면 13점. 지는 쪽은 같은 크기를 잃는다 — 내가 셌는데 졌으면 크게.
+# 같은 조건 실측: 월별 순위상관 0.087 → 0.85, 승수 어긋남 35.5% → 1.4%, 통산 0.90.
+POINT_BASE = 20.0
+POINT_TILT = 0.35
+POINT_SPAN = 15.0
+
+# 같은 상대와 자꾸 붙으면 그 판의 값을 깎는다(요청: "같은 사람에게 이겼을때/졌을때 얻고 잃는
+# 점수가 너무 적게 줄어드는거 같아. 사실 4~5판 정도 이겼을 때부터는 거의 0점이어야 한다고
+# 생각되는데"). 붙을 때마다 절반씩 — 20 → 10 → 5 → 2.5 → 1.2 → 0.6.
+#
+# 세는 것은 '연승'이 아니라 '맞붙은 횟수'다. 연승으로 세면(결과가 뒤집힐 때마다 초기화) 꾸준히
+# 이기는 사람만 깎이고 들쭉날쭉한 쪽이 이득을 봐, 실측으로 클럽 랭킹이 통째로 뒤집혔다.
+# 맞붙은 횟수로 세면 이기는 쪽·지는 쪽에 같은 인자가 걸려 한쪽으로 기울지 않고, 오히려 대진이
+# 몰린 사람이 점수를 퍼오는 걸 막아 준다(통산 순위상관 0.90 → 0.95).
+#
+# 안 붙고 지나간 날수만큼 이 횟수는 반감기로 줄어든다 — 몇 달 만에 다시 만난 사이가 예전
+# 전적에 묶이지 않게. 서로 다른 사람을 이긴 것은 애초에 다른 맞대결이라 감쇠가 안 걸린다.
+# 팀전은 편성 단위로 센다 — 한 명이라도 바뀌면 다른 맞대결이다.
+H2H_REPEAT_DAMP = 0.5
+H2H_HALFLIFE_DAYS = 30.0
+
 
 def _replay_ratings(
     rows, focal=None, by_race: bool = False, count_from: date | None = None,
@@ -604,50 +639,69 @@ def _replay_from_cache(by_race: bool, marks: tuple, matches: dict, order: list):
 
     맞는 것이 여럿이면 가장 길게 맞는 쪽을 고른다 — 다시 돌 판이 가장 적다."""
     best = None
-    for i, (flag, kept, _engine, _log) in enumerate(_REPLAY_CACHE):
+    for i, (flag, kept, *_rest) in enumerate(_REPLAY_CACHE):
         if flag is by_race and len(kept) <= len(marks) and marks[:len(kept)] == kept:
             if best is None or len(kept) > len(_REPLAY_CACHE[best][1]):
                 best = i
     if best is None:
-        engine, log = _run_replay(matches, order, RatingEngine(), [], 0)
+        engine, log, h2h = _run_replay(matches, order, RatingEngine(), [], {}, 0)
     else:
-        _, kept, base, base_log = _REPLAY_CACHE.pop(best)
+        _, kept, base, base_log, base_h2h = _REPLAY_CACHE.pop(best)
         if len(kept) == len(marks):
-            engine, log = base, base_log      # 그대로 — 다시 돌 것이 없다
+            engine, log, h2h = base, base_log, base_h2h   # 그대로 — 다시 돌 것이 없다
         else:
-            engine, log = _run_replay(matches, order, base.clone(), list(base_log), len(kept))
-    _REPLAY_CACHE.append((by_race, marks, engine, log))
+            engine, log, h2h = _run_replay(
+                matches, order, base.clone(), list(base_log), dict(base_h2h), len(kept),
+            )
+    _REPLAY_CACHE.append((by_race, marks, engine, log, h2h))
     while len(_REPLAY_CACHE) > _REPLAY_CACHE_MAX:
         _REPLAY_CACHE.pop(0)
     return engine, log
 
 
-def _run_replay(matches: dict, order: list, engine: RatingEngine, log: list, start: int):
-    """시간순으로 한 번 재생하고, 경기마다 '누가 몇 점 움직였나'를 남긴다.
+def _side_mu(engine: RatingEngine, side: list) -> float:
+    """한 편의 실력 — 사람 수가 달라도 견줄 수 있게 평균으로 본다."""
+    return sum(engine.get(p).mu for p in side) / len(side)
 
-    start부터 이어 돈다 — 앞은 이미 engine·log에 담겨 온다(_replay_from_cache).
 
-    남기는 값은 ×10 스케일이다(요청) — 화면에 노출되는 모든 점수(카드 점수, 상세의 경기당 Δ)를
-    여기 한 곳에서 10배로 키워 내려준다. 프론트가 자연수로 반올림해 보여주므로 원래 소수
-    첫째자리에 있던 정보가 정수부에 보존된다. 엔진의 μ/σ 자체는 원 스케일 그대로다."""
+def _repeat_damp(h2h: dict, won: list, lost: list, when: date) -> float:
+    """이 맞대결로 몇 번째 붙는 건가 — 자주 붙을수록 값을 깎는다(H2H_REPEAT_DAMP 주석).
+
+    맞대결은 편성 단위로 센다. 한 명이라도 다르면 다른 맞대결이라 처음부터다."""
+    a, b = tuple(sorted(won)), tuple(sorted(lost))
+    pair = (a, b) if a <= b else (b, a)
+    seen, met_on = h2h.get(pair, (0.0, when))
+    rest = (when - met_on).days
+    if rest > 0:
+        seen *= 0.5 ** (rest / H2H_HALFLIFE_DAYS)
+    h2h[pair] = (seen + 1.0, when)
+    return H2H_REPEAT_DAMP ** seen
+
+
+def _run_replay(matches: dict, order: list, engine: RatingEngine, log: list,
+                h2h: dict, start: int):
+    """시간순으로 한 번 재생하고, 경기마다 '누가 몇 점 얻고 잃었나'를 남긴다.
+
+    start부터 이어 돈다 — 앞은 이미 engine·log·h2h에 담겨 온다(_replay_from_cache)."""
     for mid in order[start:]:
         mm = matches[mid]
         # 0점 경기 — 레이팅을 갱신하지도, 표시 점수를 더하지도 않는다(위 주석).
         if mm["outsider"]:
             continue
-        participants = [p for p in (mm["team1"] + mm["team2"]) if p is not None]
-        pre = {p: engine.get(p).mu for p in participants}
+        won = lost = []
+        if mm["result"] in ("team1", "team2"):
+            won = [p for p in mm[mm["result"]] if p is not None]
+            lost = [p for p in mm["team2" if mm["result"] == "team1" else "team1"] if p is not None]
+        moved: list = []
+        if won and lost:
+            # 이변이었을수록 크게 오간다 — 이긴 쪽이 얻는 값과 진 쪽이 잃는 값은 같다.
+            edge = (_side_mu(engine, lost) - _side_mu(engine, won)) / POINT_SPAN
+            point = POINT_BASE * (1.0 + POINT_TILT * max(-1.0, min(1.0, edge)))
+            point *= _repeat_damp(h2h, won, lost, mm["date"])
+            moved = [(p, point) for p in won] + [(p, -point) for p in lost]
         engine.update(mm["team1"], mm["team2"], mm["result"])
-        is_decisive = mm["result"] in ("team1", "team2")
-        winners = set(mm[mm["result"]]) if is_decisive else set()
-        moved = []
-        for p in participants:
-            raw = (engine.get(p).mu - pre[p]) * 10
-            if is_decisive:
-                raw = max(raw, 0.0) if p in winners else min(raw, 0.0)
-            moved.append((p, raw))
         log.append((mm["match_no"], mm["date"], moved))
-    return engine, log
+    return engine, log, h2h
 
 
 def _to_match_slot(p: GameResultParticipant, alias_by_player_name: dict[str, ReplayAlias]) -> GameResultSlot:

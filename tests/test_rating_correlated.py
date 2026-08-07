@@ -5,8 +5,10 @@
 부여하는 거야" / "월 바뀌면서 인위적으로 보정하는 것보다는 사람들 경기수에 비례해서 하는
 뭔가 더 깔끔한 방법이 있지 않을까".
 
-여기서 못 박는 것은 손으로 얹은 장치(월초 σ 되돌림, 맞대결 감쇠) 없이도 같은 성질이
-모형에서 저절로 나온다는 점이다 — 그 장치들을 다시 넣고 싶어지면 먼저 이 파일을 볼 것.
+여기서 못 박는 것은 두 가지다. 모형 쪽으로는 월초 σ 되돌림 없이도 σ가 경기수에서 나온다는
+것, 점수 쪽으로는 그 점수가 '우리가 너를 얼마나 몰랐나'가 아니라 '누구를 이겼나'를 잰다는 것
+(지적: "정구는 타센만 이겼고 미친마법사는 곰세마리 태섭 크리스를 이겼는데 왜 미친마법사가
+더 낮지"). 자세한 사정은 service의 POINT_BASE·H2H_REPEAT_DAMP 주석에 있다.
 """
 import datetime as dt
 from types import SimpleNamespace
@@ -35,11 +37,15 @@ def _deltas(games, focal):
     return [d[f"M{i}"] for i in range(1, len(games) + 1)]
 
 
-def test_repeat_wins_decay_on_their_own():
-    """같은 상대에게 내리 이기면 판마다 값이 떨어진다 — 감쇠 인자 없이, 모형 스스로.
+def _last(games, focal):
+    """마지막 경기에서 focal이 얻은 점수 — 그 앞은 판을 깔아 두는 용도다."""
+    _, d, _ = _replay_ratings(_rows(games), focal=focal)
+    return d[f"M{len(games)}"]
 
-    k번째 판은 그 맞대결에 대한 정보의 1/k만 주기 때문이다. 다섯 번째 승리는 첫 승의
-    5분의 1 언저리다."""
+
+def test_repeat_wins_decay():
+    """같은 상대에게 내리 이기면 판마다 값이 절반씩 떨어진다(요청: "4~5판 정도 이겼을
+    때부터는 거의 0점")."""
     got = _deltas([(1, 2, "team1", 3 * i) for i in range(8)], focal=1)
     assert all(got[i] > got[i + 1] for i in range(7)), got
     assert got[4] < got[0] * 0.25, got
@@ -107,3 +113,31 @@ def test_the_score_never_moves_the_wrong_way():
                 assert delta >= 0, (pk, i, delta)
             else:
                 assert delta <= 0, (pk, i, delta)
+
+
+def test_points_do_not_depend_on_how_much_you_have_played():
+    """오늘 처음 뛰는 사람이나 백 판 뛴 사람이나, 같은 상대를 이기면 비슷하게 받는다.
+
+    예전에는 점수가 '그 경기로 내 실력 추정치가 얼마나 올랐나'라서, 우리가 잘 모르는
+    사람일수록 한 판에 크게 움직였다 — 실측으로 11.6배까지 벌어졌다(지적)."""
+    seasoned = [(1, 2 + i % 4, "team1" if i % 3 else "team2", i) for i in range(60)]
+    rookie = _last(seasoned + [(1, 90, "team1", 60)], focal=1)      # 1번은 60판을 뛴 사람
+    fresh = _last(seasoned + [(80, 90, "team1", 60)], focal=80)     # 80번은 오늘 처음
+    assert 0.7 < rookie / fresh < 1.4, (rookie, fresh)
+
+
+def test_beating_a_stronger_opponent_pays_more():
+    """센 상대를 이길수록 많이 받는다 — 점수가 재는 것은 이것 하나다."""
+    ladder = []
+    for i in range(40):                      # 2번을 세게, 3번을 약하게 만들어 둔다
+        ladder.append((2, 4 + i % 5, "team1", i))
+        ladder.append((4 + i % 5, 3, "team1", i))
+    strong = _last(ladder + [(1, 2, "team1", 40)], focal=1)
+    weak = _last(ladder + [(1, 3, "team1", 40)], focal=1)
+    assert strong > weak * 1.5, (strong, weak)
+
+
+def test_a_win_and_the_matching_loss_are_the_same_size():
+    """한 판은 ±같은 크기다 — 이긴 쪽이 얻은 만큼 진 쪽이 잃는다."""
+    games = [(1, 2, "team1", 0)]
+    assert _deltas(games, focal=1)[0] == -_deltas(games, focal=2)[0]
