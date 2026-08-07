@@ -1,7 +1,7 @@
 import calendar
 import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from app.domain.activity.schemas import (
 )
 from app.domain.members.models import Member
 from app.domain.members.repository import MemberRepository
+from app.domain.schedules.schemas import ScheduleOut
 
 logger = logging.getLogger(__name__)
 
@@ -486,6 +487,7 @@ class ActivityListService:
         games = await self._game_rows()
         shifts = await self._shift_rows()
         leagues = await self._league_match_rows()
+        schedules = await self._schedule_rows()
 
         now_ms = datetime.now(UTC).timestamp() * 1000
         entries: list[tuple[float, str, str, str]] = []  # (정렬키ms, kind, key, 세션날짜)
@@ -497,6 +499,8 @@ class ActivityListService:
             entries.append((sort_ms, "rankingShift", f"rs-{sid}", ""))
         for mid, sort_ms in leagues:
             entries.append((sort_ms, "leagueMatch", f"lm-{mid}", ""))
+        for sid, sort_ms in schedules:
+            entries.append((sort_ms, "schedule", f"sc-{sid}", ""))
 
         # 최신이 위. 같은 시각인 것들의 순서는 '넣은 순서'가 정한다 — 파이썬 sort는 안정
         # 정렬이라 동점끼리는 위에서 담은 차례가 그대로 남는다. 프론트도 [도전장, 게임결과,
@@ -570,6 +574,7 @@ class ActivityListService:
         shift_by_id = await self._shifts_by_id(by_kind.get("rankingShift", []))
         game_by_id = await self._games_by_id(by_kind.get("gameResultPost", []), actor=actor, storage=storage)
         league_by_id = await self._league_matches_by_id(by_kind.get("leagueMatch", []))
+        schedule_by_id = await self._schedules_by_id(by_kind.get("schedule", []))
 
         # 댓글은 한 번에 받아 대상별로 나눠 담는다 — 줄마다 물어보면 페이지 크기만큼
         # 질의가 나간다. 댓글은 한 줄짜리라 전부 합쳐도 가볍다.
@@ -583,6 +588,7 @@ class ActivityListService:
                 "challenge": "challenge",
                 "rankingShift": "rankingShift",
                 "leagueMatch": "leagueMatch",
+                "schedule": "schedule",
             }.get(kind, "gameResult")
             return [c for i in ids for c in by_target.get((target, i), [])]
 
@@ -598,6 +604,7 @@ class ActivityListService:
                     game_results=[game_by_id[i] for i in r.ids if i in game_by_id]
                     if r.kind == "gameResultPost" else [],
                     league_match=league_by_id.get(r.ids[0]) if r.kind == "leagueMatch" else None,
+                    schedule=schedule_by_id.get(r.ids[0]) if r.kind == "schedule" else None,
                     comments=mine(r.kind, r.ids),
                 ))
             except Exception:
@@ -747,6 +754,46 @@ class ActivityListService:
         # 담은 차례가 정하므로(안정 정렬) 여기서도 정해 둔다.
         out.sort(key=lambda x: -x[1])
         return out
+
+    async def _schedule_rows(self) -> list[tuple[int, float]]:
+        """모임 일정 — 꽂히는 자리는 리그 경기와 같은 생각이다.
+
+        아직 안 지난 일정은 '앞으로 있을 일'이라 지금 바로 위에 두고(먼 날일수록 더 위),
+        지난 일정은 그날에 그대로 둔다. 너 나와처럼 성사/폐기 같은 상태가 없어서, 지났나
+        안 지났나가 자리를 정하는 유일한 잣대다.
+
+        시각을 안 정한 일정은 그날 끝(23:59:59)으로 잡는다 — 자정으로 잡으면 그날 열린
+        경기들보다 아래로 내려가, 아직 안 온 일이 이미 끝난 일 밑에 깔린다.
+        """
+        from sqlalchemy import select
+
+        from app.domain.schedules.models import Schedule
+
+        rows = (await self._session.scalars(select(Schedule))).all()
+        now_ms = datetime.now(UTC).timestamp() * 1000
+        out: list[tuple[int, float]] = []
+        for s in rows:
+            at = datetime.combine(
+                s.scheduled_date, s.scheduled_time or time(23, 59, 59), tzinfo=_KST,
+            )
+            at_ms = at.timestamp() * 1000
+            out.append((s.id, at_ms if at_ms <= now_ms else max(at_ms, now_ms + 1)))
+        out.sort(key=lambda x: -x[1])
+        return out
+
+    async def _schedules_by_id(self, ids: list[int]) -> dict[int, "ScheduleOut"]:
+        """이 페이지에 실린 일정만 내용을 채운다."""
+        if not ids:
+            return {}
+        from sqlalchemy import select
+
+        from app.domain.schedules.models import Schedule
+        from app.domain.schedules.service import to_schedule_out
+
+        rows = (await self._session.scalars(
+            select(Schedule).where(Schedule.id.in_(ids))
+        )).unique().all()
+        return {s.id: to_schedule_out(s) for s in rows}
 
     async def _shift_rows(self) -> list[tuple[int, float]]:
         """화면에 실제로 뜨는 스냅샷만 — list_events와 같은 잣대여야 한다.

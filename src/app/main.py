@@ -40,6 +40,7 @@ async def _ensure_schema() -> None:
     from app.domain.activity import models as _activity_models  # noqa: F401
     from app.domain.game_results import models as _game_results_models  # noqa: F401
     from app.domain.members import models as _members_models  # noqa: F401
+    from app.domain.schedules import models as _schedules_models  # noqa: F401
 
     # 각 단계를 사바포인트(begin_nested)로 감싼다. 이게 없으면 PostgreSQL에서는 단계 하나가
     # 실패한 순간 트랜잭션 전체가 aborted가 되고, 그 뒤 단계들은 무엇을 하든

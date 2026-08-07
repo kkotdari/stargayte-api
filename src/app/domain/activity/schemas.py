@@ -8,11 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field
 # 순환이 생기지 않는다).
 from app.domain.challenges.schemas import ChallengeOut
 from app.domain.game_results.schemas import GameResultOut
+from app.domain.schedules.schemas import ScheduleOut
 
 COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 활동 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
-ActivityTargetType = Literal["gameResult", "challenge", "rankingShift", "leagueMatch"]
+ActivityTargetType = Literal["gameResult", "challenge", "rankingShift", "leagueMatch", "schedule"]
 # 위 목록을 그대로 집합으로 — 손으로 한 벌 더 적으면 종류를 늘릴 때 한쪽만 고치게 된다.
 KNOWN_TARGET_TYPES = frozenset(get_args(ActivityTargetType))
 
@@ -24,7 +25,7 @@ LEGACY_FEED_TARGET_TYPES = {"match": "gameResult", "rankshift": "rankingShift"}
 # 요청으로 들어오는 값 — 위 이유로 옛 이름까지 허용하고, normalize_target_type으로 새
 # 이름 하나로 모아서 저장/조회한다.
 ActivityTargetTypeInput = Literal[
-    "gameResult", "challenge", "rankingShift", "leagueMatch", "match", "rankshift",
+    "gameResult", "challenge", "rankingShift", "leagueMatch", "schedule", "match", "rankshift",
 ]
 
 
@@ -200,13 +201,15 @@ class ActivityItemOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     key: str
-    kind: Literal["challenge", "rankingShift", "gameResultPost", "leagueMatch"]
+    kind: Literal["challenge", "rankingShift", "gameResultPost", "leagueMatch", "schedule"]
     # 아래에서부터 센 번호(가장 오래된 줄이 1).
     no: int
     challenge: ChallengeOut | None = None
     ranking_shift: RankingShiftOut | None = Field(default=None, alias="rankingShift")
     game_results: list[GameResultOut] = Field(default_factory=list, alias="gameResults")
     league_match: LeagueMatchActivityOut | None = Field(default=None, alias="leagueMatch")
+    # 모임 일정 — 도메인 스키마를 그대로 쓴다(카드가 폼과 같은 것을 보여주므로 줄일 칸이 없다).
+    schedule: ScheduleOut | None = None
     comments: list[ActivityCommentOut] = Field(default_factory=list)
 
 
