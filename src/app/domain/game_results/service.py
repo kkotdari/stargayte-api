@@ -503,7 +503,8 @@ def _replay_order_key(game_started_at, match_date, match_no):
 _REPLAY_CACHE: list = []
 _REPLAY_CACHE_MAX = 6
 
-# 점수 = 실력 추정치(μ)를 화면용으로 옮긴 값. μ0에서 시작하니 새 회원은 0점이다.
+# 레이팅 = 실력 추정치(μ)를 화면용 눈금으로 옮긴 값(요청: "포인트라기보다 레벨이나 그런 용어가
+# 나을 듯" → 배틀넷 래더와 같은 말인 "레이팅").
 #
 # 한때는 '경기마다 번 점수를 쌓은 값'이었다. 그 구조로는 우려먹기를 못 막는다 — 한 판마다
 # 이긴 쪽이 X를 얻고 진 쪽이 X를 잃는 어떤 규칙을 써도 한 판의 기댓값이
@@ -523,7 +524,12 @@ _REPLAY_CACHE_MAX = 6
 #
 # 그래서 점수를 아예 레이팅 자체로 둔다. 기간 필터는 '그 기간에 번 점수'가 아니라 '그 시점까지의
 # 기록으로 본 점수'라는 뜻이 된다(요청: "이번 달에 번 점수는 필요없어").
-POINT_SCALE = 10.0
+#
+# 화면 눈금은 배틀넷 래더를 따른다(요청: "배틀넷 구조로 가자") — 새 회원이 1000에서 시작하고
+# 음수가 없다. μ가 −25까지 내려가야 0이 되는데 한 판에 1~2밖에 안 움직이니 닿을 일이 없다
+# (24개월 클럽 실측 범위 559 ~ 1416).
+RATING_BASE = 1000.0
+RATING_SCALE = 20.0
 
 
 def _replay_ratings(
@@ -546,7 +552,7 @@ def _replay_ratings(
 
     반환: (엔진, focal의 경기별 점수 변화, 창 안에서 사람마다 움직인 총량).
 
-    카드에 뜨는 포인트는 이 반환값이 아니라 엔진의 실력 추정치에서 바로 뽑는다(POINT_SCALE
+    카드에 뜨는 포인트는 이 반환값이 아니라 엔진의 실력 추정치에서 바로 뽑는다(RATING_SCALE
     주석). 여기 값들은 '그 경기가 포인트를 얼마나 움직였나'로, 상세 목록에 쓴다. 셋째 반환값은
     '이 기간에 뛰었나'를 가리는 데도 쓴다 — 통산 판수로 보면 지난달까지만 뛴 사람이 이번 달
     상세에서 0점으로 떠 목록과 어긋난다.
@@ -659,7 +665,7 @@ def _run_replay(matches: dict, order: list, engine: RatingEngine, log: list, sta
         won_set = set(won)
         moved = []
         for p in participants:
-            raw = (engine.get(p).mu - pre[p]) * POINT_SCALE
+            raw = (engine.get(p).mu - pre[p]) * RATING_SCALE
             if won and lost:
                 raw = max(raw, 0.0) if p in won_set else min(raw, 0.0)
             moved.append((p, raw))
@@ -1025,10 +1031,13 @@ class GameResultService:
         engine, _, running = _replay_ratings(
             replay_rows, by_race=race_active, count_from=date_from,
         )
-        # 카드/정렬에 쓰는 점수 = 실력 추정치 자체다(POINT_SCALE 주석). 경기마다 번 점수를
+        # 카드/정렬에 쓰는 점수 = 실력 추정치 자체다(RATING_SCALE 주석). 경기마다 번 점수를
         # 쌓는 값이 아니라 상한이 있는 값이라, 만만한 상대를 우려먹어도 안 오른다.
         # running은 '이 기간에 얼마나 움직였나'라 순위 대상 판정에만 쓴다.
-        score = {m.pk: round((engine.get(_rk(m.pk)).mu - MU0) * POINT_SCALE, 1) for _, m in pairs}
+        score = {
+            m.pk: round(RATING_BASE + (engine.get(_rk(m.pk)).mu - MU0) * RATING_SCALE, 1)
+            for _, m in pairs
+        }
 
         # 포인트에는 판수 문턱이 없다(요청: "포인트 컬럼은 최소 경기수
         # 제약을 적용 안 하는 곳이야 — 편차가 없는 확정적 결과이기 때문"). 이 점수는 평균이
@@ -1111,7 +1120,7 @@ class GameResultService:
             mu=round(r.mu, 1) if played else None,
             sigma=round(r.sigma, 1) if played else None,
             # 카드에 뜨는 점수 — get_stats의 score와 같은 식(실력 추정치)이다.
-            conservative=round((r.mu - MU0) * POINT_SCALE, 1) if played else None,
+            conservative=round(RATING_BASE + (r.mu - MU0) * RATING_SCALE, 1) if played else None,
             games=engine.games.get(focal, 0),
             provisional=engine.is_provisional(focal) if played else False,
         )

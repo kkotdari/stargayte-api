@@ -6,6 +6,8 @@
 
 from datetime import date
 
+from app.domain.game_results.service import RATING_BASE as BASE
+
 
 async def _signup(client, member_id: str, battletag: str) -> dict:
     res = await client.post(
@@ -66,7 +68,7 @@ async def test_rank_beating_strong_opponent_scores_more(client):
     await _match(client, headers, ["player02"], ["player04"], "team1", TODAY)  # p2 > 강한 p4
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["rankScore"] > 0
+    assert by_id["player01"]["rankScore"] > BASE
     # 더 센 상대를 이긴 p2가 신규를 이긴 p1보다 점수가 높다.
     assert by_id["player02"]["rankScore"] > by_id["player01"]["rankScore"]
     assert by_id["player02"]["sortOrder"] < by_id["player01"]["sortOrder"]
@@ -85,7 +87,7 @@ async def test_rank_losing_to_weak_hurts_more(client):
 
     by_id = await _stats(client, headers)
     # 더 약한 상대에게 진 p1이 더 센 상대에게 진 p2보다 낮다(둘 다 음수).
-    assert by_id["player01"]["rankScore"] < by_id["player02"]["rankScore"] < 0
+    assert by_id["player01"]["rankScore"] < by_id["player02"]["rankScore"] < BASE
     assert by_id["player02"]["sortOrder"] < by_id["player01"]["sortOrder"]
 
 
@@ -100,8 +102,8 @@ async def test_rank_repeated_wins_accumulate_per_game(client):
 
     by_id = await _stats(client, headers)
     # 3승 누적 > 1승 > 0, 3패 누적 < 1패 < 0.
-    assert by_id["player01"]["rankScore"] > by_id["player03"]["rankScore"] > 0
-    assert by_id["player02"]["rankScore"] < by_id["player04"]["rankScore"] < 0
+    assert by_id["player01"]["rankScore"] > by_id["player03"]["rankScore"] > BASE
+    assert by_id["player02"]["rankScore"] < by_id["player04"]["rankScore"] < BASE
 
 
 async def test_rank_player_beats_no_show_even_when_negative(client):
@@ -111,7 +113,7 @@ async def test_rank_player_beats_no_show_even_when_negative(client):
     await _match(client, headers, ["player02"], ["player01"], "team1", TODAY)  # p1 짐(음수)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["rankScore"] < 0             # p1 음수
+    assert by_id["player01"]["rankScore"] < BASE             # p1은 기준 아래
     assert by_id["player03"]["sortOrder"] is not None     # 0경기도 순위가 매겨짐
     assert by_id["player01"]["tieGroup"] < by_id["player03"]["tieGroup"]  # 진 p1 > 안 뛴 p3
     assert by_id["player03"]["tieGroup"] == by_id["player04"]["tieGroup"]  # 안 뛴 둘 공동
@@ -126,7 +128,7 @@ async def test_rank_ties_ordered_by_nickname(client):
 
     by_id = await _stats(client, headers)
     # 완전히 대칭인 상황이라 레이팅(rankScore)이 같아 동률(같은 tieGroup)이고, 나열만 닉네임 순.
-    assert by_id["player01"]["rankScore"] == by_id["player02"]["rankScore"] > 0
+    assert by_id["player01"]["rankScore"] == by_id["player02"]["rankScore"] > BASE
     assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
     assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
 
@@ -137,8 +139,8 @@ async def test_rank_draw_scores_zero(client):
     await _match(client, headers, ["player01"], ["player02"], "draw", TODAY)
 
     by_id = await _stats(client, headers)
-    assert by_id["player01"]["rankScore"] == 0
-    assert by_id["player02"]["rankScore"] == 0
+    assert by_id["player01"]["rankScore"] == BASE
+    assert by_id["player02"]["rankScore"] == BASE
     assert by_id["player01"]["tieGroup"] == by_id["player02"]["tieGroup"]
     # 동률 안에서는 닉네임 순(Tag01 < Tag02) → p1이 앞.
     assert by_id["player01"]["sortOrder"] < by_id["player02"]["sortOrder"]
@@ -156,8 +158,8 @@ async def test_team_match_ranks_as_individual_cross_product(client):
 
     team = await _stats(client, headers, match_type="0102")
     # 이긴 편은 양수, 진 편은 음수. 같은 편끼리는 대칭이라 동점.
-    assert team["player01"]["rankScore"] == team["player02"]["rankScore"] > 0
-    assert team["player03"]["rankScore"] == team["player04"]["rankScore"] < 0
+    assert team["player01"]["rankScore"] == team["player02"]["rankScore"] > BASE
+    assert team["player03"]["rankScore"] == team["player04"]["rankScore"] < BASE
     assert team["player01"]["sortOrder"] < team["player03"]["sortOrder"]
     # 승패 기록은 경기 단위(2:2 한 판이면 1승/1패), 우열 인원은 상대별.
     assert team["player01"]["overall"]["plays"] == 10
@@ -187,7 +189,7 @@ async def test_team_match_rating_is_time_ordered(client):
     assert by_id["player01"]["rankScore"] == by_id["player02"]["rankScore"]
     assert by_id["player03"]["rankScore"] == by_id["player04"]["rankScore"]
     # 강해진 상대를 이긴 p5 > 0 > 1승1패 p1 > 1패뿐인 p3.
-    assert by_id["player05"]["rankScore"] > 0 > by_id["player01"]["rankScore"]
+    assert by_id["player05"]["rankScore"] > BASE > by_id["player01"]["rankScore"]
     assert by_id["player01"]["rankScore"] > by_id["player03"]["rankScore"]
 
 
@@ -301,8 +303,8 @@ async def test_rank_score_is_null_without_games(client):
 
     by_id = await _stats(client, headers)
     # 붙은 두 사람은 점수가 있고(승자 양수·패자 음수),
-    assert by_id["player01"]["rankScore"] > 0
-    assert by_id["player02"]["rankScore"] < 0
+    assert by_id["player01"]["rankScore"] > BASE
+    assert by_id["player02"]["rankScore"] < BASE
     # 한 판도 안 한 사람은 아예 값이 없다.
     assert by_id["player03"]["rankScore"] is None
     assert by_id["player04"]["rankScore"] is None
@@ -322,8 +324,8 @@ async def test_team_rank_ignores_min_plays(client):
 
     nine = await _stats(client, headers, match_type="0102")
     assert nine["player01"]["overall"]["plays"] == 9
-    assert nine["player01"]["rankScore"] > 0   # 아홉 판이어도 그대로 나온다
-    assert nine["player03"]["rankScore"] < 0
+    assert nine["player01"]["rankScore"] > BASE   # 아홉 판이어도 그대로 나온다
+    assert nine["player03"]["rankScore"] < BASE
 
 
 async def test_solo_rank_ignores_min_plays(client):
@@ -335,8 +337,8 @@ async def test_solo_rank_ignores_min_plays(client):
 
     two = await _stats(client, headers, match_type="0101")
     assert two["player01"]["overall"]["plays"] == 2
-    assert two["player01"]["rankScore"] > 0
-    assert two["player02"]["rankScore"] < 0
+    assert two["player01"]["rankScore"] > BASE
+    assert two["player02"]["rankScore"] < BASE
     assert two["player03"]["rankScore"] is None  # 안 뛴 사람만 없다
 
 
@@ -408,12 +410,12 @@ async def test_game_with_non_member_scores_zero(client, db_session):
     assert by_id["player01"]["overall"]["wins"] == 1
     assert by_id["player01"]["overall"]["winRate"] == 100.0
     # 포인트만 0 — 그 경기로는 누구의 점수도 안 움직인다.
-    assert by_id["player01"]["rankScore"] == 0
-    assert by_id["player02"]["rankScore"] == 0
-    assert by_id["player03"]["rankScore"] == 0
+    assert by_id["player01"]["rankScore"] == BASE
+    assert by_id["player02"]["rankScore"] == BASE
+    assert by_id["player03"]["rankScore"] == BASE
 
     # 회원끼리만 붙은 경기는 그대로 점수가 움직인다(같은 표에서 대조).
     await _match(client, headers, ["player01", "player02"], ["player03", "player05"], "team1", TODAY)
     by_id = await _stats(client, headers, match_type="0102")
-    assert by_id["player01"]["rankScore"] > 0
-    assert by_id["player03"]["rankScore"] < 0
+    assert by_id["player01"]["rankScore"] > BASE
+    assert by_id["player03"]["rankScore"] < BASE

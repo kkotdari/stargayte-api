@@ -11,6 +11,8 @@
 
 from datetime import date
 
+from app.domain.game_results.service import RATING_BASE as BASE
+
 TODAY = date.today().isoformat()
 
 
@@ -88,8 +90,8 @@ async def test_short_of_min_plays_still_gets_real_ranks(client):
     assert by_id["player01"]["to"] == 1
     assert by_id["player02"]["to"] == 2
     # 점수도 실려 나간다 — 예전에는 rank_score가 null이라 전원 0점이었다.
-    assert by_id["player01"]["toPoints"] > 0
-    assert by_id["player02"]["toPoints"] < 0
+    assert by_id["player01"]["toPoints"] > BASE
+    assert by_id["player02"]["toPoints"] < BASE
 
 
 async def test_only_players_with_games_are_ranked(client):
