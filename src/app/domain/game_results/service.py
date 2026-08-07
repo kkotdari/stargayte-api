@@ -1066,29 +1066,43 @@ class GameResultService:
         # 레이팅에는 판수 문턱이 없다(요청: "포인트 컬럼은 최소 경기수 제약을 적용 안 하는
         # 곳이야"). 승률·APM 같은 평균값은 표본이 얕으면 못 믿을 수가 나오지만, 레이팅은
         # 모르는 만큼 기준값(1000) 근처에 머무는 값이라 적게 뛴 사람이 위로 튀지 않는다.
-        # 대신 아직 여물지 않았다는 표시로 '잠정' 배지가 붙는다.
         #
-        # 갈라 두는 것은 '한 판이라도 뛰었나' 하나뿐이다. 0경기와 낮은 레이팅은 다른 말이라
-        # (잰 적이 없는 것과 실제로 낮은 것) 값을 null로 두고, 기준값 아래인 사람이라도 안 뛴
-        # 사람보다는 위에 둔다(요청: "1경기라도 뛰면 점수가 음수여도 0경기 회원보다 무조건 위").
-        def _played(idx: int) -> bool:
-            return pairs[idx][0].overall.plays > 0
+        # 갈라 두는 것은 '이 시점까지 한 판이라도 뛰었나' 하나뿐이다 — 조회한 달에 뛰었나가
+        # 아니다(요청: "월 선택하면 레이팅과 랭킹은 그 월 당시의 기록이 나와야 해. 다른
+        # 데이터는 플레이를 했어야만 나오지만 그 두개는 나올 수밖에 없어").
+        #
+        # 레이팅은 처음부터 date_to까지 재생해 얻은 값이라 이미 '그 달 말일의 실력'이다.
+        # 지난달에 쉰 사람도 그날 그 레이팅을 들고 있었고 순위표에도 그 자리에 있었다 —
+        # 그 달에 안 뛰었다는 이유로 값을 지우면, 남은 사람끼리 순위를 다시 매긴 다른 표가
+        # 된다. 게임수·승률·APM처럼 그 달에 실제로 친 것에서 나오는 값만 계속 비어 있는다.
+        #
+        # 0경기와 낮은 레이팅은 다른 말이라(잰 적이 없는 것과 실제로 낮은 것) 한 판도 안 뛴
+        # 사람만 null로 두고 맨 아래 한 덩어리로 모은다.
+        # 두 갈래를 합친다: 재생이 실제로 값을 매긴 사람(engine.games)과, 이 기간에 나와서
+        # 치기는 했는데 잴 것이 없었던 사람. 뒤쪽은 무승부만 했거나 비회원·컴퓨터하고만 붙은
+        # 경우다 — 그런 판은 레이팅을 못 움직이지만(update가 건너뛴다) 나온 건 나온 거라
+        # 예전부터 기준값(1000)으로 표에 서 있었다. 앞쪽만 보면 그 사람들이 "-"로 사라진다.
+        def _rated(idx: int) -> bool:
+            return (
+                engine.games.get(_rk(pairs[idx][1].pk), 0) > 0
+                or pairs[idx][0].overall.plays > 0
+            )
 
         order = sorted(
             range(len(pairs)),
             key=lambda i: (
-                0 if _played(i) else 1,
+                0 if _rated(i) else 1,
                 -score[pairs[i][1].pk],
                 pairs[i][1].nickname,
                 pairs[i][1].id,
             ),
         )
-        # tie_group = (뛴 적 있나, 점수)가 같으면 동률. 0경기 회원은 전원 맨 아래 한 덩어리다.
+        # tie_group = (레이팅이 있나, 점수)가 같으면 동률. 레이팅이 없는 회원은 맨 아래 한 덩어리.
         prev_key: tuple[bool, float | None] | None = None
         group = -1
         for pos, i in enumerate(order):
             entry, m = pairs[i]
-            played = entry.overall.plays > 0
+            played = _rated(i)
             key = (played, score[m.pk] if played else None)
             if key != prev_key:
                 group += 1

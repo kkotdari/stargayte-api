@@ -39,12 +39,15 @@ async def test_last_month_decides_who_is_the_strong_opponent(client):
     assert feb["player01"]["rankScore"] > feb["player02"]["rankScore"]
 
 
-async def test_score_counts_only_the_window_but_rating_carries(client):
-    """점수는 조회한 달에 번 것만 센다 — 지난달 승수가 이번 달 점수에 얹히지 않는다.
+async def test_rating_stays_for_someone_who_sat_out_the_month(client):
+    """그 달에 안 뛰어도 레이팅은 그대로 있다 — 그 시점의 실력이지 그 달에 번 값이 아니다.
 
-    p3는 1월에 두 판을 이기고 2월엔 한 판도 안 뛴다. 2월 조회에서 p3는 '이 기간 0경기'라
-    점수가 빈칸이어야 한다(이월된 것은 실력 추정이지 점수가 아니다). 1월 조회에서는 제 점수가
-    그대로 있다.
+    (요청: "월 선택하면 레이팅과 랭킹은 그 월 당시의 기록이 나와야 해. 다른 데이터는
+    플레이를 했어야만 나오지만 그 두개는 나올 수밖에 없어".)
+
+    p3는 1월에 두 판을 이기고 2월엔 한 판도 안 뛴다. 2월 조회에서도 p3는 1월에 얻은 그
+    레이팅을 그대로 들고 서 있어야 한다 — 2월 1일의 p3는 실제로 그 실력이었다. 대신 그 달에
+    실제로 친 것에서 나오는 값(게임수)만 0으로 비어 있다.
     """
     headers = await _signup_many(client, 6)
     await _match(client, headers, ["player03"], ["player05"], "team1", "2026-01-10")
@@ -55,7 +58,19 @@ async def test_score_counts_only_the_window_but_rating_carries(client):
     assert jan["player03"]["rankScore"] is not None and jan["player03"]["rankScore"] > 0
 
     feb = await _stats(client, headers, date_from="2026-02-01", date_to="2026-02-28")
-    assert feb["player03"]["rankScore"] is None
+    assert feb["player03"]["overall"]["plays"] == 0
+    assert feb["player03"]["rankScore"] == jan["player03"]["rankScore"]
+    # 순위 대상에서도 안 빠진다 — 자리번호가 매겨져 있어야 화면이 "N위"를 적을 수 있다.
+    assert feb["player03"]["sortOrder"] is not None
+
+
+async def test_someone_who_never_played_has_no_rating(client):
+    """한 판도 안 뛴 회원은 계속 빈칸이다 — 0경기와 낮은 레이팅은 다른 말이다."""
+    headers = await _signup_many(client, 6)
+    await _match(client, headers, ["player01"], ["player02"], "team1", "2026-02-10")
+
+    feb = await _stats(client, headers, date_from="2026-02-01", date_to="2026-02-28")
+    assert feb["player05"]["rankScore"] is None
 
 
 async def test_later_matches_do_not_leak_into_an_earlier_month(client):
