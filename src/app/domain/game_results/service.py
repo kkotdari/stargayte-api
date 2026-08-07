@@ -525,34 +525,35 @@ _REPLAY_CACHE_MAX = 6
 # 그래서 점수를 아예 레이팅 자체로 둔다. 기간 필터는 '그 기간에 번 점수'가 아니라 '그 시점까지의
 # 기록으로 본 점수'라는 뜻이 된다(요청: "이번 달에 번 점수는 필요없어").
 #
-# 화면 눈금은 배틀넷 래더를 따른다(요청: "배틀넷 구조로 가자") — 자리 잡은 평범한 회원이
-# 1000 근처고 음수가 없다.
+# 화면 눈금은 배틀넷 래더를 따른다(요청: "배틀넷 구조로 가자") — 새 회원이 1000에서 시작하고
+# 음수가 없다.
 #
-# 실력 추정치(μ)만 쓰면 표본이 얕은 사람이 위로 튄다. 실제로 세 판 뛴 사람이 열두 판 뛴
-# 사람을 눌렀다(지적: "각각 타센과 곰세마리한테만 3판씩 이긴 정구와 Rex가 미친마법사보다
-# 위인 게 이상해"). 셋의 μ는 32.46 / 32.29 / 31.16으로 사실상 같았는데 σ가 6.83 / 6.78 /
-# 5.09으로 갈렸다 — 순위가 '얼마나 확실한가'를 아예 안 보고 있었다.
+# 실력 추정치(μ)를 그대로 쓰면 표본이 얕은 사람이 위로 튄다. 실제로 세 판 뛴 사람이 열두 판
+# 뛴 사람을 눌렀다(지적: "각각 타센과 곰세마리한테만 3판씩 이긴 정구와 Rex가 미친마법사보다
+# 위인 게 이상해" → "정구가 미친마법사보다 위인 건 말이 안 돼").
 #
-# 그래서 확신이 모자란 만큼 깎는다. 다 자란 σ(RATING_SETTLED_SIGMA)를 기준으로 삼아 그보다
-# 덜 여문 만큼만 빼므로, 자리 잡은 사람은 깎이지 않고 새 회원만 아래에서 시작해 판을 쌓으며
-# 제자리를 찾아간다. 배틀넷 배치고사와 같은 모양이다.
+# 그래서 판이 적으면 그만큼 덜 반영한다:
 #
-#     레이팅 = 1000 + ((μ − μ0) − 확신부족 × (σ − 다자란σ)) × 20
+#     레이팅 = 1000 + (μ − μ0) × 20 × 판수 / (판수 + RATING_SETTLE_GAMES)
 #
-# 확신부족(RATING_CONFIDENCE)을 키울수록 얕은 표본이 더 걸러진다 — 실측으로 3연승 신입이
-# 0이면 25명 중 9위, 1이면 11위, 2면 12위(가운데)다. 기존 회원끼리의 순위 정확도는 어느
-# 값에서나 0.990으로 같다: 자리 잡은 사람들은 σ가 비슷해 서로 상쇄되고, 얕은 표본만 걸러진다.
+# 한때 σ(모형이 들고 있는 불확실성)로 깎아 봤는데 두 가지가 안 맞았다.
+#   · 우리 클럽은 아직 경기가 적어 모두의 σ가 높은 구간이다 — 실측으로 3판 σ=6.33, 12판
+#     σ=5.90로 7%밖에 안 벌어졌다. 판수는 4배 차이인데. 계수를 5 넘게 올려야 겨우 뒤집혔고
+#     그러면 새 회원이 444에서 시작했다.
+#   · 이긴 판의 15.2%에서 레이팅이 되레 내려갔다. 이길 게 뻔한 판은 μ가 거의 안 오르는데
+#     σ는 시간 몫(TAU)만큼 부풀어서, μ−kσ가 순감소해 버린다. 판수로 깎으면 0%다.
+#
+# RATING_SETTLE_GAMES는 '이만큼 뛰면 절반쯤 반영된다'는 뜻이다. 10이면 3판 23%, 12판 55%,
+# 30판 75%. 기존 회원끼리의 순위는 거의 안 흔들린다(24개월 클럽 실측 순위상관 0.990 → 0.987,
+# 상위 5명 5/5 그대로) — 판이 쌓인 사람들은 비중이 다 1에 가까워 서로 상쇄되기 때문이다.
 RATING_BASE = 1000.0
 RATING_SCALE = 20.0
-RATING_CONFIDENCE = 2.0
-RATING_SETTLED_SIGMA = SIGMA0 / 3.0   # 2.78 — 열댓 판을 넘기면 이 근처로 내려온다
+RATING_SETTLE_GAMES = 10.0
 
 
-def _rating_of(r) -> float:
-    """화면에 뜨는 레이팅 — 실력 추정치에서 '아직 덜 여문 만큼'을 뺀 값(위 주석)."""
-    return RATING_BASE + (
-        (r.mu - MU0) - RATING_CONFIDENCE * (r.sigma - RATING_SETTLED_SIGMA)
-    ) * RATING_SCALE
+def _rating_of(r, games: int) -> float:
+    """화면에 뜨는 레이팅 — 실력 추정치를 판수만큼만 반영한 값(위 주석)."""
+    return RATING_BASE + (r.mu - MU0) * RATING_SCALE * games / (games + RATING_SETTLE_GAMES)
 
 
 def _replay_ratings(
@@ -1057,7 +1058,10 @@ class GameResultService:
         # 카드/정렬에 쓰는 점수 = 실력 추정치 자체다(RATING_SCALE 주석). 경기마다 번 점수를
         # 쌓는 값이 아니라 상한이 있는 값이라, 만만한 상대를 우려먹어도 안 오른다.
         # running은 '이 기간에 얼마나 움직였나'라 순위 대상 판정에만 쓴다.
-        score = {m.pk: round(_rating_of(engine.get(_rk(m.pk))), 1) for _, m in pairs}
+        score = {
+            m.pk: round(_rating_of(engine.get(_rk(m.pk)), engine.games.get(_rk(m.pk), 0)), 1)
+            for _, m in pairs
+        }
 
         # 레이팅에는 판수 문턱이 없다(요청: "포인트 컬럼은 최소 경기수 제약을 적용 안 하는
         # 곳이야"). 승률·APM 같은 평균값은 표본이 얕으면 못 믿을 수가 나오지만, 레이팅은
@@ -1139,7 +1143,7 @@ class GameResultService:
             mu=round(r.mu, 1) if played else None,
             sigma=round(r.sigma, 1) if played else None,
             # 카드에 뜨는 점수 — get_stats의 score와 같은 식(실력 추정치)이다.
-            conservative=round(_rating_of(r), 1) if played else None,
+            conservative=round(_rating_of(r, engine.games.get(focal, 0)), 1) if played else None,
             games=engine.games.get(focal, 0),
             provisional=engine.is_provisional(focal) if played else False,
         )

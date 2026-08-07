@@ -11,12 +11,7 @@
 
 from datetime import date
 
-from app.domain.game_results.rating import Rating
-from app.domain.game_results.service import _rating_of
-
-# 레이팅이 한 번도 안 움직인 사람의 값 — 예전의 "0점" 자리다. 확신이 없는 만큼 깎여
-# 1000보다 아래에서 시작한다(service의 RATING_CONFIDENCE 주석).
-BASE = round(_rating_of(Rating()), 1)
+from app.domain.game_results.service import RATING_BASE as BASE
 
 TODAY = date.today().isoformat()
 
