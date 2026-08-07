@@ -44,26 +44,33 @@ def _last(games, focal):
 
 
 def test_repeat_wins_decay():
-    """같은 상대에게 내리 이기면 판마다 값이 절반씩 떨어진다(요청: "4~5판 정도 이겼을
-    때부터는 거의 0점")."""
+    """같은 상대에게 내리 이기면 판마다 값이 떨어진다 — 이길 확률이 올라가기 때문이다.
+
+    떨어지는 속도는 근거가 쌓이는 속도만큼이다. 여덟 판을 이겨도 실력이 비등한 사이라면
+    확률이 60% 후반까지밖에 안 가므로 값도 그만큼만 준다 — 그게 맞는 답이다. 한때는 여기에
+    '맞대결 반복 감쇠'를 곱해 억지로 0에 밀어붙였는데, 그건 관계를 두 번 세는 짓이었다."""
     got = _deltas([(1, 2, "team1", 3 * i) for i in range(8)], focal=1)
     assert all(got[i] > got[i + 1] for i in range(7)), got
-    assert got[4] < got[0] * 0.25, got
-    assert got[7] < got[0] * 0.15, got
 
 
 def test_the_loser_stops_losing_too():
-    """지는 쪽도 같이 줄어든다 — 늘 지던 상대에게 또 지는 것도 새 정보가 아니다."""
+    """지는 쪽도 같이 줄어든다 — 한 판은 ±같은 크기라 저절로 그렇게 된다."""
     got = _deltas([(1, 2, "team1", 3 * i) for i in range(8)], focal=2)
     assert all(g < 0 for g in got), got
-    assert abs(got[4]) < abs(got[0]) * 0.25, got
+    assert all(got[i] < got[i + 1] for i in range(7)), got
 
 
-def test_a_different_opponent_pays_much_more():
-    """같은 상대만 잡은 여덟 판째와, 매번 새 상대를 잡은 여덟 판째의 차이."""
-    varied = _deltas([(1, 10 + i, "team1", 3 * i) for i in range(8)], focal=1)
-    same = _deltas([(1, 2, "team1", 3 * i) for i in range(8)], focal=1)
-    assert same[7] < varied[7] * 0.5, (same, varied)
+def test_an_easy_win_pays_less_than_an_even_match():
+    """이길 게 뻔한 상대를 잡는 것은 비등한 상대를 잡는 것보다 값이 적다.
+
+    우려먹기를 막는 것은 따로 얹은 인자가 아니라 이 확률 하나다."""
+    ladder = []
+    for i in range(30):                      # 3번을 확실히 약하게 만들어 둔다
+        ladder.append((2, 3, "team1", i))
+        ladder.append((4, 3, "team1", i))
+    easy = _last(ladder + [(1, 3, "team1", 30)], focal=1)
+    even = _last([(1, 5, "team1", 0)], focal=1)   # 서로 처음 보는 사이 = 반반
+    assert easy < even * 0.7, (easy, even)
 
 
 def test_information_travels_between_people():
@@ -154,3 +161,15 @@ def test_losing_a_match_you_were_expected_to_win_costs_more_than_winning_it_pays
     if_lost = _last(lead + [(2, 1, "team1", 2)], focal=1)
     assert if_won > 0 > if_lost
     assert abs(if_lost) > if_won * 1.4, (if_won, if_lost)
+
+
+def test_a_narrowed_gap_makes_the_next_win_worth_more():
+    """이변으로 강약 관계가 좁혀지면, 그다음 승리는 값이 올라간다(지적: "3번째 판에 약자가
+    이겼으니 강약 관계가 달라져서 4번째 판에서는 강자가 점수를 더 받아야 돼").
+
+    점수를 확률만으로 매기니 저절로 그렇게 된다 — 곱셈으로 얹은 감쇠 인자가 있으면 관계가
+    바뀌어도 그 인자는 안 따라와서, 되레 값이 떨어졌다."""
+    lead = [(1, 2, "team1", 0), (1, 2, "team1", 1)]
+    steady = _last(lead + [(1, 2, "team1", 2), (1, 2, "team1", 3)], focal=1)
+    after_upset = _last(lead + [(2, 1, "team1", 2), (1, 2, "team1", 3)], focal=1)
+    assert after_upset > steady, (steady, after_upset)
