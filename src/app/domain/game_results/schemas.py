@@ -446,6 +446,9 @@ class RaceStatsEntry(BaseModel):
     losses: int
     draws: int
     win_rate: float = Field(alias="winRate")
+    # 이 조건에서 MVP로 뽑힌 횟수(요청: 통계 주요 지표에 MVP 횟수) — 리플레이로 등록된
+    # 팀전에만 붙는 값이라, 수기 등록·개인전·옛 경기만 있는 회원은 0이다.
+    mvps: int = 0
     avg_apm: int | None = Field(default=None, alias="avgApm")
     avg_eapm: int | None = Field(default=None, alias="avgEapm")
     avg_cmd: int | None = Field(default=None, alias="avgCmd")

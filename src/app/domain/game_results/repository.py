@@ -309,6 +309,8 @@ class GameResultRepository:
         """member_pk, race 단위로 묶은 전적(판수/승/무) 집계 행. 종족별로 나눠서 받아오고,
         "전체" 기준이 필요한 쪽(overall)은 호출부에서 이 행들을 합산해서 만든다.
         member_pk는 컬럼이 아니라 player_name → replay_aliases(kind='member') 조인으로 구한다.
+        MVP 횟수도 여기서 함께 센다 — 같은 (기간/유형/종족) 조건으로 걸러야 하는 값이라
+        따로 도는 것보다 이 묶음에 얹는 편이 조건이 어긋날 여지가 없다.
 
         지표 평균(APM·유효APM·커맨드·유효커맨드·생산)은 여기서 내지 않는다 — 이상치를 뺀
         평균이라 경기 단위 원본이 있어야 해서 raw_metric_rows가 따로 담당한다. 예전엔 여기서도
@@ -321,6 +323,22 @@ class GameResultRepository:
                 func.count().label("plays"),
                 func.sum(case((GameOutcome.result == "draw", 1), else_=0)).label("draws"),
                 func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
+                # 그 경기의 MVP였나 — 요약(summary_data)의 mvp가 이 참가자의 리플레이 원본
+                # 게임 아이디와 같은지로 본다. 뽑는 규칙은 프론트(replaySummary의 mvpOf)에만
+                # 있고 서버는 그 결과를 세기만 한다: 근거가 리플레이 커맨드 스트림이라
+                # 판정을 이쪽으로 옮기면 파싱 한 벌을 통째로 더 들고 있어야 하고, 두 벌이
+                # 어긋나는 순간 화면이 말한 MVP와 통계의 MVP가 달라진다.
+                # 요약이 없는 경기(수기 등록·옛 경기)는 추출이 NULL이라 0으로 떨어진다.
+                func.sum(
+                    case(
+                        (
+                            GameOutcome.summary_data["mvp"].as_string()
+                            == GameResultParticipant.player_name,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("mvps"),
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
