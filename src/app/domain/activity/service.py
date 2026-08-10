@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
-from app.domain.activity.models import ActivityComment, ActivityCommentMention, RankingShift
+from app.domain.activity.models import (
+    ActivityComment, ActivityCommentMention, ActivityNotice, MemberEpithet, RankingShift,
+)
 from app.domain.activity.repository import ActivityCommentRepository
 from app.domain.activity.schemas import (
     ActivityCommentAuthor,
@@ -488,6 +490,7 @@ class ActivityListService:
         shifts = await self._shift_rows()
         leagues = await self._league_match_rows()
         schedules = await self._schedule_rows()
+        notices = await self._notice_rows()
 
         now_ms = datetime.now(UTC).timestamp() * 1000
         entries: list[tuple[float, str, str, str]] = []  # (정렬키ms, kind, key, 세션날짜)
@@ -501,6 +504,8 @@ class ActivityListService:
             entries.append((sort_ms, "leagueMatch", f"lm-{mid}", ""))
         for sid, sort_ms in schedules:
             entries.append((sort_ms, "schedule", f"sc-{sid}", ""))
+        for nid, sort_ms in notices:
+            entries.append((sort_ms, "notice", f"nt-{nid}", ""))
 
         # 최신이 위. 같은 시각인 것들의 순서는 '넣은 순서'가 정한다 — 파이썬 sort는 안정
         # 정렬이라 동점끼리는 위에서 담은 차례가 그대로 남는다. 프론트도 [도전장, 게임결과,
@@ -575,6 +580,7 @@ class ActivityListService:
         game_by_id = await self._games_by_id(by_kind.get("gameResultPost", []), actor=actor, storage=storage)
         league_by_id = await self._league_matches_by_id(by_kind.get("leagueMatch", []))
         schedule_by_id = await self._schedules_by_id(by_kind.get("schedule", []))
+        notice_by_id = await self._notices_by_id(by_kind.get("notice", []))
 
         # 댓글은 한 번에 받아 대상별로 나눠 담는다 — 줄마다 물어보면 페이지 크기만큼
         # 질의가 나간다. 댓글은 한 줄짜리라 전부 합쳐도 가볍다.
@@ -589,6 +595,7 @@ class ActivityListService:
                 "rankingShift": "rankingShift",
                 "leagueMatch": "leagueMatch",
                 "schedule": "schedule",
+                "notice": "notice",
             }.get(kind, "gameResult")
             return [c for i in ids for c in by_target.get((target, i), [])]
 
@@ -605,6 +612,7 @@ class ActivityListService:
                     if r.kind == "gameResultPost" else [],
                     league_match=league_by_id.get(r.ids[0]) if r.kind == "leagueMatch" else None,
                     schedule=schedule_by_id.get(r.ids[0]) if r.kind == "schedule" else None,
+                    notice=notice_by_id.get(r.ids[0]) if r.kind == "notice" else None,
                     comments=mine(r.kind, r.ids),
                 ))
             except Exception:
@@ -669,6 +677,38 @@ class ActivityListService:
                 postedAt=m.schedule_posted_at, updatedAt=m.updated_at,
             )
         return out
+
+    async def _notice_rows(self) -> list[tuple[int, float]]:
+        """알림 — 남긴 때 그대로 꽂힌다(요청: 활동에 알림 유형). 지난 일이라 자리를 옮길
+        이유가 없다: 앞으로 있을 일만 지금 위에 서고(너 나와·일정), 나머지는 벌어진 때다."""
+        from sqlalchemy import select
+
+        rows = (await self._session.scalars(
+            # 시각이 같으면 나중에 남긴 것이 위다 — created_at의 눈금이 초라(SQLite의
+            # CURRENT_TIMESTAMP) 잇달아 남긴 알림 둘이 같은 시각으로 찍힌다. 그때 id까지
+            # 안 보면 순서가 뒤집혀 '방금 바뀐 칭호'가 옛 알림 아래로 내려간다.
+            select(ActivityNotice).order_by(
+                ActivityNotice.created_at.desc(), ActivityNotice.id.desc(),
+            )
+        )).all()
+        return [(n.id, _kst(n.created_at).timestamp() * 1000) for n in rows]
+
+    async def _notices_by_id(self, ids: list[int]) -> dict[int, "ActivityNoticeOut"]:
+        if not ids:
+            return {}
+        from sqlalchemy import select
+
+        from app.domain.activity.schemas import ActivityNoticeOut
+
+        rows = (await self._session.scalars(
+            select(ActivityNotice).where(ActivityNotice.id.in_(ids))
+        )).all()
+        return {
+            n.id: ActivityNoticeOut(
+                id=n.id, kind=n.kind, payload=n.payload or {}, createdAt=n.created_at,
+            )
+            for n in rows
+        }
 
     async def _shifts_by_id(self, ids: list[int]) -> dict[int, "RankingShiftOut"]:
         if not ids:
@@ -880,3 +920,72 @@ def _challenge_sort_ms(c, now_ms: float) -> float:
         datetime(day.year, day.month, day.day, tzinfo=_KST).timestamp() * 1000
         + _SESSION_DAY_START_HOUR * 3_600_000
     )
+
+
+class EpithetService:
+    """칭호 보관과 그 변경 알림(요청: 칭호 변경을 알림에 표시).
+
+    뽑는 규칙은 화면에만 있고 서버는 '지금 값'을 받아 둔다 — MemberEpithet 주석 참고.
+    여기서 하는 일은 하나다: 받은 값이 저장된 값과 다르면 바꿔 두고, 그 변경들을 활동에
+    뜰 알림 한 줄로 남긴다.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def report(self, rows: list) -> int:
+        """바뀐 칭호 수. 0이면 알림도 안 남는다(같은 값을 다시 올려도 조용하다).
+
+        여러 사람이 같은 화면을 동시에 열어도 값은 같으므로, 먼저 도착한 쪽이 알림을 남기고
+        나중 쪽은 '바뀐 것 없음'이 된다 — 알림이 겹쳐 쌓이지 않는 것은 이 성질 덕이다.
+        """
+        from sqlalchemy import select
+
+        wanted = {r.member_id: r for r in rows if r.label}
+        if not wanted:
+            return 0
+        members = (await self._session.scalars(
+            select(Member).where(Member.id.in_(list(wanted.keys())))
+        )).all()
+        by_id = {m.id: m for m in members}
+        stored = {
+            e.member_pk: e
+            for e in (await self._session.scalars(
+                select(MemberEpithet).where(
+                    MemberEpithet.member_pk.in_([m.pk for m in members])
+                )
+            )).all()
+        }
+
+        changes: list[dict] = []
+        for member_id, row in wanted.items():
+            member = by_id.get(member_id)
+            if member is None:
+                continue
+            before = stored.get(member.pk)
+            if before is not None and before.label == row.label:
+                # 근거 문구만 달라진 것(횟수가 늘었다든지)은 알림거리가 아니다 — 부르는
+                # 말이 그대로면 회원에게는 아무 일도 안 일어난 것이다. 값은 갱신해 둔다.
+                before.why = row.why
+                continue
+            # 옛 칭호는 덮어쓰기 '전에' 챙긴다 — 아래에서 먼저 갈아 끼우고 읽으면
+            # from과 to가 같은 값이 된다(실제로 그랬다).
+            was = before.label if before is not None else None
+            if before is None:
+                self._session.add(MemberEpithet(member_pk=member.pk, label=row.label, why=row.why))
+            else:
+                before.label, before.why = row.label, row.why
+            changes.append({
+                "memberId": member.id,
+                # 처음 받는 회원은 '없다가 생긴 것'이라 from이 없다(랭크 변동의 신규와 같다).
+                "from": was,
+                "to": row.label,
+                "why": row.why,
+            })
+
+        if changes:
+            # 한 번에 여러 명이 바뀌어도 알림은 한 줄이다 — 활동에 같은 카드가 줄줄이 서면
+            # 그날 무슨 일이 있었는지가 오히려 안 보인다(랭크 변동 스냅샷과 같은 생각).
+            self._session.add(ActivityNotice(kind="epithet", payload={"changes": changes}))
+        await self._session.commit()
+        return len(changes)

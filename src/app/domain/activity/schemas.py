@@ -13,7 +13,9 @@ from app.domain.schedules.schemas import ScheduleOut
 COMMENT_MAX_LENGTH = 50
 
 # 댓글을 달 수 있는 활동 요소 종류 — 새 요소가 생기면 여기에만 추가하면 된다.
-ActivityTargetType = Literal["gameResult", "challenge", "rankingShift", "leagueMatch", "schedule"]
+ActivityTargetType = Literal[
+    "gameResult", "challenge", "rankingShift", "leagueMatch", "schedule", "notice",
+]
 # 위 목록을 그대로 집합으로 — 손으로 한 벌 더 적으면 종류를 늘릴 때 한쪽만 고치게 된다.
 KNOWN_TARGET_TYPES = frozenset(get_args(ActivityTargetType))
 
@@ -25,7 +27,8 @@ LEGACY_FEED_TARGET_TYPES = {"match": "gameResult", "rankshift": "rankingShift"}
 # 요청으로 들어오는 값 — 위 이유로 옛 이름까지 허용하고, normalize_target_type으로 새
 # 이름 하나로 모아서 저장/조회한다.
 ActivityTargetTypeInput = Literal[
-    "gameResult", "challenge", "rankingShift", "leagueMatch", "schedule", "match", "rankshift",
+    "gameResult", "challenge", "rankingShift", "leagueMatch", "schedule", "notice",
+    "match", "rankshift",
 ]
 
 
@@ -187,6 +190,22 @@ class LeagueMatchActivityOut(BaseModel):
     updated_at: datetime = Field(alias="updatedAt")
 
 
+class ActivityNoticeOut(BaseModel):
+    """활동에 뜨는 알림 하나(요청) — 종류와 내용만 있는 빈 그릇이다.
+
+    무엇을 어떻게 그릴지는 화면이 kind를 보고 정한다. 서버가 문장을 만들지 않는 이유는
+    리플레이 요약과 같다: 문구를 고치거나 닉네임이 바뀌어도 이미 쌓인 알림이 옛말을
+    계속 보여주면 안 된다. payload에는 사실만 담고 말은 볼 때 만든다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    kind: str
+    payload: dict = Field(default_factory=dict)
+    created_at: datetime = Field(alias="createdAt")
+
+
 class ActivityItemOut(BaseModel):
     """활동 목록의 아이템 하나 — 너 나와·랭크 변동·게임결과를 같은 것으로 취급한다(요청).
 
@@ -201,7 +220,9 @@ class ActivityItemOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     key: str
-    kind: Literal["challenge", "rankingShift", "gameResultPost", "leagueMatch", "schedule"]
+    kind: Literal[
+        "challenge", "rankingShift", "gameResultPost", "leagueMatch", "schedule", "notice",
+    ]
     # 아래에서부터 센 번호(가장 오래된 줄이 1).
     no: int
     challenge: ChallengeOut | None = None
@@ -210,6 +231,8 @@ class ActivityItemOut(BaseModel):
     league_match: LeagueMatchActivityOut | None = Field(default=None, alias="leagueMatch")
     # 모임 일정 — 도메인 스키마를 그대로 쓴다(카드가 폼과 같은 것을 보여주므로 줄일 칸이 없다).
     schedule: ScheduleOut | None = None
+    # 알림(칭호 변경 등) — 앞으로 종류가 늘어도 이 칸 하나로 받는다.
+    notice: ActivityNoticeOut | None = None
     comments: list[ActivityCommentOut] = Field(default_factory=list)
 
 
@@ -232,3 +255,26 @@ class ActivityFeedOut(BaseModel):
     items: list[ActivityItemOut]
     # 다음 페이지를 부를 때 그대로 돌려주는 값 — 이 페이지 마지막 줄의 열쇠다. 없으면 끝.
     next_cursor: str | None = Field(default=None, alias="nextCursor")
+
+
+class EpithetReportRow(BaseModel):
+    """화면이 계산해 올리는 회원 한 명의 지금 칭호(요청: 칭호 변경을 알림에)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    member_id: str = Field(alias="memberId")
+    label: str = Field(max_length=60)
+    why: str = Field(default="", max_length=120)
+
+
+class EpithetReport(BaseModel):
+    """지금 칭호 한 벌 — 서버는 저장된 값과 견줘 달라진 것만 알림으로 남긴다.
+
+    한 벌을 통째로 받는 까닭: 칭호는 서로 겨뤄서 정해지므로(한 칭호는 한 사람) 한 명만
+    떼어 보면 그 사람이 왜 바뀌었는지가 없다. 목록에 없는 회원은 '그대로'로 본다 —
+    지우지 않는다. 검색 등으로 일부만 계산된 화면이 남의 칭호를 지워 버리면 안 된다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    epithets: list[EpithetReportRow] = Field(default_factory=list)

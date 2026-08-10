@@ -8,10 +8,13 @@ from app.domain.activity.schemas import (
     ActivityCommentWrite,
     ActivityFeedOut,
     ActivityTargetTypeInput,
+    EpithetReport,
     RankingRecomputeResult,
     RankingShiftOut,
 )
-from app.domain.activity.service import ActivityCommentService, ActivityListService, RankingShiftService
+from app.domain.activity.service import (
+    ActivityCommentService, ActivityListService, EpithetService, RankingShiftService,
+)
 
 # 접두어(/activities)는 api/router.py가 붙인다.
 router = APIRouter(tags=["activity"])
@@ -38,6 +41,23 @@ async def list_activity_feed(
     return await ActivityListService(db).list_feed(
         actor=current, storage=storage, cursor=cursor, limit=limit,
     )
+
+
+@router.put("/epithets")
+async def report_epithets(
+    payload: EpithetReport, db: DbSession, current: CurrentMember,
+) -> dict:
+    """지금 칭호 한 벌을 올린다 — 달라진 사람이 있으면 활동에 알림 한 줄이 남는다(요청).
+
+    계산은 화면이 한다(statEpithet.ts). 서버가 다시 계산하지 않는 이유는 BEST PLAYER와
+    같다: 근거가 리플레이라 판정을 옮기면 파싱 한 벌을 더 들고 있어야 하고, 두 벌이
+    어긋나는 순간 화면이 부르는 말과 알림이 갈린다.
+
+    누구나 올릴 수 있다(로그인만). 값이 사람마다 다를 수 없는 계산이라(같은 통계에서
+    같은 규칙으로 나온다) 먼저 도착한 쪽이 남기고 나머지는 '바뀐 것 없음'이 된다.
+    """
+    changed = await EpithetService(db).report(payload.epithets)
+    return {"changed": changed}
 
 
 @router.get("/comments", response_model=list[ActivityCommentOut])
