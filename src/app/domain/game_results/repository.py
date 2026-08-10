@@ -436,6 +436,101 @@ class GameResultRepository:
 
         return list((await self._session.execute(stmt)).all())
 
+    async def map_record_rows(
+        self,
+        *,
+        member_pks: list[int],
+        date_from: date | None,
+        date_to: date | None,
+        match_type: str | None,
+    ) -> list[Row]:
+        """(member_pk, race, 맵 이름) 단위 전적 — 통계 화면의 칭호("○○의 지배자")가
+        '이 사람이 유독 잘하는 맵'을 고르는 재료다(요청).
+
+        맵 이름은 리플레이에서만 온다 — 수기 등록 경기는 NULL이라 여기서 아예 빠진다.
+        종족까지 묶는 이유는 화면의 다른 값들과 잣대를 맞추기 위해서다(종족 필터를 걸면
+        칭호도 그 종족 판만 보고 매겨져야 한다)."""
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
+        stmt = (
+            select(
+                member_alias.member_pk,
+                GameResultParticipant.race,
+                GameOutcome.map_name,
+                func.count().label("plays"),
+                func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
+            )
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
+            .join(member_alias, member_condition)
+            .where(
+                member_alias.member_pk.in_(member_pks),
+                GameOutcome.result != "not_held",
+                GameOutcome.map_name.is_not(None),
+            )
+            .group_by(member_alias.member_pk, GameResultParticipant.race, GameOutcome.map_name)
+        )
+        stmt = self._apply_common_match_filters(
+            stmt, date_from=date_from, date_to=date_to, match_type=match_type,
+        )
+        return list((await self._session.execute(stmt)).all())
+
+    async def tactic_rows(
+        self,
+        *,
+        member_pks: list[int],
+        date_from: date | None,
+        date_to: date | None,
+        match_type: str | None,
+    ) -> tuple[list[Row], list[Row]]:
+        """전술 칭호("옆탱의 여왕", "센포의 지배자")를 세기 위한 재료 두 벌(요청).
+
+        하나는 요약이 있는 경기의 (match_id, summary_data)이고, 다른 하나는 그 경기들의
+        참가 행(match_id, 원본 게임 아이디, member_pk, race)이다. 세는 일은 서비스가
+        파이썬에서 한다 — 요약의 beats가 JSON 배열이라 SQL에서 헤집으려면 방언마다 문법이
+        갈리고(SQLite json_each / Postgres jsonb_array_elements), 동아리 규모의 경기 수라
+        한 번 읽어 세는 편이 단순하다.
+
+        두 벌로 나눠 받는 이유는 요약이 크기 때문이다 — 참가자 행마다 같은 요약을 실어
+        보내면 팀전 여덟 명짜리 경기는 같은 JSON을 여덟 번 나른다."""
+        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
+        summaries = (
+            select(GameOutcome.match_id, GameOutcome.summary_data)
+            .select_from(GameOutcome)
+            .join(GameResult, GameResult.id == GameOutcome.match_id)
+            .where(
+                GameOutcome.result != "not_held",
+                GameOutcome.summary_data.is_not(None),
+            )
+        )
+        players = (
+            select(
+                GameResultParticipant.match_id,
+                GameResultParticipant.player_name,
+                GameResultParticipant.race,
+                member_alias.member_pk,
+            )
+            .select_from(GameResultParticipant)
+            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
+            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
+            .join(member_alias, member_condition)
+            .where(
+                member_alias.member_pk.in_(member_pks),
+                GameOutcome.result != "not_held",
+                GameOutcome.summary_data.is_not(None),
+            )
+        )
+        summaries = self._apply_common_match_filters(
+            summaries, date_from=date_from, date_to=date_to, match_type=match_type,
+        )
+        players = self._apply_common_match_filters(
+            players, date_from=date_from, date_to=date_to, match_type=match_type,
+        )
+        return (
+            list((await self._session.execute(summaries)).all()),
+            list((await self._session.execute(players)).all()),
+        )
+
     async def head_to_head_rows(
         self,
         *,

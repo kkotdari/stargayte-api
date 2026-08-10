@@ -851,6 +851,62 @@ class GameResultService:
             team_member_pks=await self._team_member_pks(team_member_ids),
         )
 
+    async def _tactic_counts(
+        self,
+        *,
+        member_pks: list[int],
+        date_from: date | None,
+        date_to: date | None,
+        match_type: str | None,
+    ) -> dict[int, dict[str, dict[str, int]]]:
+        """member_pk → 종족 → 문장 틀 키 → 횟수.
+
+        요약(summary_data.beats)에 적힌 '무슨 일이 있었나'를 사람별로 세기만 한다 — 무엇이
+        옆탱이고 무엇이 센포인지는 리플레이를 파싱하는 프론트(replayTactics)가 이미 판정해
+        저장해 둔 값이다. 판정을 서버로 옮기면 파싱 한 벌을 통째로 더 들고 있어야 하고, 두 벌이
+        어긋나는 순간 화면이 문장으로 말한 사실과 칭호가 갈린다(bests와 같은 이유).
+
+        beats의 who/who2는 회원 pk가 아니라 리플레이 원본 게임 아이디다 — 그 경기의 참가 행에서
+        같은 이름을 찾아 회원과 종족을 붙인다. 한 beat에 같은 사람이 who와 who2로 두 번 실려도
+        한 번만 센다(옆탱처럼 '누구 기지에서 했나'가 함께 적히는 문장이 있다).
+        당한 쪽(whom)은 세지 않는다 — 칭호는 그 사람이 한 일로만 지어야 한다."""
+        summaries, players = await self._repo.tactic_rows(
+            member_pks=member_pks,
+            date_from=date_from,
+            date_to=date_to,
+            match_type=match_type,
+        )
+        # (match_id, 원본 게임 아이디) → (member_pk, race)
+        who_map: dict[tuple[int, str], tuple[int, str]] = {}
+        for row in players:
+            who_map[(row.match_id, row.player_name)] = (row.member_pk, row.race)
+
+        out: dict[int, dict[str, dict[str, int]]] = {}
+        for row in summaries:
+            data = row.summary_data or {}
+            beats = data.get("beats") if isinstance(data, dict) else None
+            if not isinstance(beats, list):
+                continue
+            for beat in beats:
+                if not isinstance(beat, dict):
+                    continue
+                key = beat.get("k")
+                if not isinstance(key, str) or not key:
+                    continue
+                actors: set[str] = set()
+                for field in ("who", "who2"):
+                    names = beat.get(field)
+                    if isinstance(names, list):
+                        actors.update(n for n in names if isinstance(n, str))
+                for name in actors:
+                    found = who_map.get((row.match_id, name))
+                    if found is None:
+                        continue
+                    member_pk, race = found
+                    counts = out.setdefault(member_pk, {}).setdefault(race, {})
+                    counts[key] = counts.get(key, 0) + 1
+        return out
+
     async def get_stats(
         self,
         *,
@@ -896,12 +952,34 @@ class GameResultService:
         for raw in raw_rows:
             raw_by_member_race.setdefault(raw.member_pk, {}).setdefault(raw.race, []).append(raw)
 
+        # 칭호(통계 화면의 닉네임 아래 한 줄)가 쓰는 두 가지 — 전술 횟수와 맵별 전적.
+        # 전적·지표와 같은 (기간/유형/종족) 조건으로 묶어야 화면 안에서 잣대가 어긋나지 않는다.
+        tactics_by_member_race = await self._tactic_counts(
+            member_pks=[m.pk for m in members],
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+            match_type=match_type,
+        )
+        map_rows = await self._repo.map_record_rows(
+            member_pks=[m.pk for m in members],
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+            match_type=match_type,
+        )
+        maps_by_member_race: dict[int, dict[str, dict[str, list[int]]]] = {}
+        for row in map_rows:
+            by_race_maps = maps_by_member_race.setdefault(row.member_pk, {}).setdefault(row.race, {})
+            by_race_maps[row.map_name] = [int(row.plays or 0), int(row.wins or 0)]
+
         entries: list[MemberStatsEntry] = []
         # 사람마다의 주종족 — "main"으로 볼 때 순위·포인트를 이 종족 기준으로 매긴다.
         main_race_by_pk: dict[int, str | None] = {}
         for member in members:
             race_rows = by_member.get(member.pk, {})
             raw_race_rows = raw_by_member_race.get(member.pk, {})
+
+            tactic_rows_for_member = tactics_by_member_race.get(member.pk, {})
+            map_rows_for_member = maps_by_member_race.get(member.pk, {})
 
             by_race: dict[str, RaceStatsEntry] = {}
             for r in BASE_RACES:
@@ -910,7 +988,11 @@ class GameResultService:
                     agg.add_row(race_rows[r])
                 entry = agg.to_entry()
                 raw_for_race = raw_race_rows.get(r, [])
-                by_race[r] = entry.model_copy(update=_trimmed_avgs(raw_for_race))
+                by_race[r] = entry.model_copy(update={
+                    **_trimmed_avgs(raw_for_race),
+                    "tactics": dict(tactic_rows_for_member.get(r, {})),
+                    "maps": dict(map_rows_for_member.get(r, {})),
+                })
 
             overall_agg = _RaceAgg()
             # "main"(주종족)은 집계로는 '전체'다 — 사람마다 다른 종족이라 한 잣대로 걸 수가
@@ -920,10 +1002,24 @@ class GameResultService:
                 if race in race_rows:
                     overall_agg.add_row(race_rows[race])
                 overall_raw = raw_race_rows.get(race, [])
+                overall_tactics = dict(tactic_rows_for_member.get(race, {}))
+                overall_maps = dict(map_rows_for_member.get(race, {}))
             else:
                 for row in race_rows.values():
                     overall_agg.add_row(row)
                 overall_raw = [raw for rows_for_race in raw_race_rows.values() for raw in rows_for_race]
+                # 종족을 안 걸었으면 세 종족 것을 그대로 합친다 — 전술도 맵 전적도 '그 사람이
+                # 한 일'이라 종족을 넘나들며 더해도 뜻이 어긋나지 않는다(도넛 구성비와 다른
+                # 점이다: 저쪽은 종족마다 짓는 것이 달라 겹치면 그림이 무너진다).
+                overall_tactics = {}
+                for counts in tactic_rows_for_member.values():
+                    for key, n in counts.items():
+                        overall_tactics[key] = overall_tactics.get(key, 0) + n
+                overall_maps = {}
+                for by_map in map_rows_for_member.values():
+                    for map_name, (plays, wins) in by_map.items():
+                        before = overall_maps.get(map_name, [0, 0])
+                        overall_maps[map_name] = [before[0] + plays, before[1] + wins]
 
             # 종족 필터와 무관하게 항상 실제 참가 기록 기준 최다 종족 — 동률이면 테란→프로토스→
             # 저그 고정 순서로 결정한다(사전순 등 우연에 맡기지 않기 위해).
@@ -936,7 +1032,11 @@ class GameResultService:
                     most_played_race = r
 
             main_race_by_pk[member.pk] = most_played_race
-            overall_entry = overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw))
+            overall_entry = overall_agg.to_entry().model_copy(update={
+                **_trimmed_avgs(overall_raw),
+                "tactics": overall_tactics,
+                "maps": overall_maps,
+            })
             entries.append(
                 MemberStatsEntry(
                     member_id=member.id,

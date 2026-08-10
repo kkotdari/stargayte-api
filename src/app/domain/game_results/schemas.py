@@ -474,6 +474,16 @@ class RaceStatsEntry(BaseModel):
     # 없다. 그런 판까지 분모에 넣으면 평균이 실제 실력보다 낮게 나온다(지적).
     # 업그레이드 값을 아예 안 실은 옛 기록도 여기서 빠진다 — 0으로 세면 같은 이유로 깎인다.
     up_plays: int | None = Field(default=None, alias="upPlays")
+    # 이 조건에서 이 사람이 '무엇을 몇 번 했나' — 리플레이 요약(summary_data.beats)의 문장 틀
+    # 키별 횟수다(요청: 자막에서 강조되는 것들을 칭호에도). 옆탱(side-tank)·센포(center-photon)·
+    # 포토러시(cannon-rush)처럼 화면이 문장으로 말하던 사실을 그대로 세기만 한 값이라,
+    # 판정 규칙은 프론트(replayTactics)에 한 벌만 있고 서버는 저장된 결과를 센다 — bests와
+    # 같은 원칙이다. 요약이 없는 경기(수기 등록·옛 경기)는 아예 안 들어온다.
+    tactics: dict[str, int] = Field(default_factory=dict)
+    # 맵 이름 → [판수, 승수] — "○○의 지배자" 칭호가 고르는 재료다(요청). 수치 두 개를 리스트로
+    # 담는 이유는 이 값이 화면에 그대로 적히는 값이 아니라 계산 재료라서다: 키를 따로 두면
+    # 맵마다 이름표만 두 배로 늘어난다. 맵 이름은 리플레이에만 있어 수기 등록 경기는 빠진다.
+    maps: dict[str, list[int]] = Field(default_factory=dict)
 
 
 class MemberStatsEntry(BaseModel):

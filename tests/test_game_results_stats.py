@@ -90,18 +90,24 @@ async def test_stats_aggregates_exact_numbers(client):
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
+        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
+        "tactics": {}, "maps": {},
     }
     assert by_id["player01"]["byRace"]["테란"] == {
         "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0, "bests": 0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 50, "avgEcmd": 40, "avgBuild": 30,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
+        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
+        "tactics": {}, "maps": {},
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
         "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "bests": 0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
+        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
+        "tactics": {}, "maps": {},
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -113,6 +119,8 @@ async def test_stats_aggregates_exact_numbers(client):
         "avgApm": 70, "avgEapm": 55, "avgCmd": 32, "avgEcmd": 22, "avgBuild": 16,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
+        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
+        "tactics": {}, "maps": {},
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -434,6 +442,8 @@ async def test_stats_race_filter_scopes_overall(client):
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
+        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
+        "tactics": {}, "maps": {},
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -450,6 +460,8 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
+        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
+        "tactics": {}, "maps": {},
     }
     assert entry["mostPlayedRace"] is None
 
@@ -736,3 +748,71 @@ async def test_stats_build_mix_is_none_without_replay_matches(client):
     overall = res.json()["members"][0]["overall"]
     assert overall["buildMix"] is None
     assert overall["avgWorker5"] is None
+
+
+async def test_stats_counts_tactics_and_map_records(client):
+    """전술 횟수(tactics)와 맵별 전적(maps) — 통계 화면의 칭호가 쓰는 두 재료다(요청:
+    자막에서 강조되는 옆탱·센포 같은 것들과 '○○의 지배자'를 칭호로).
+
+    세는 규칙 셋을 함께 못 박는다.
+      - 한 beat에 같은 사람이 who와 who2로 두 번 실려도 한 번만 센다(옆탱처럼 '누구
+        기지에서 했나'가 같이 적히는 문장이 있다).
+      - 당한 쪽(whom)은 안 센다 — 칭호는 그 사람이 한 일로만 지어야 한다.
+      - 요약이 없는 경기(수기 등록)는 아무 전술도 안 남기지만, 맵 전적에는 맵 이름이 있는
+        한 그대로 들어간다(맵은 요약이 아니라 경기 자체의 사실이다).
+    """
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    async def _post(date: str, map_name: str, result: str, beats: list[dict]) -> None:
+        res = await client.post(
+            "/api/game-results",
+            headers=headers,
+            json={
+                "date": date, "note": "",
+                "team1": [_slot("player01", "테란")],
+                "team2": [_slot("player02", "프로토스")],
+                "result": result,
+                "mapName": map_name,
+                "summaryData": {"v": 2, "beats": beats},
+            },
+        )
+        assert res.status_code == 200, res.text
+
+    await _post("2026-07-01", "로스트템플", "team1", [
+        {"k": "side-tank", "won": True, "who": ["player01"]},
+        {"k": "center-photon", "won": False, "who": ["player02"]},
+    ])
+    # who와 who2에 같은 사람 — 한 번만 세야 한다.
+    await _post("2026-07-02", "로스트템플", "team1", [
+        {"k": "side-tank", "won": True, "who": ["player01"], "who2": ["player01"]},
+    ])
+    # 당한 쪽(whom)은 player01이지만 이 전술을 한 사람은 player02다.
+    await _post("2026-07-03", "헌터스", "team2", [
+        {"k": "cannon-rush", "won": True, "who": ["player02"], "whom": ["player01"]},
+    ])
+
+    res = await client.get(
+        "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
+    )
+    by_id = {m["memberId"]: m for m in res.json()["members"]}
+    assert by_id["player01"]["overall"]["tactics"] == {"side-tank": 2}
+    assert by_id["player02"]["overall"]["tactics"] == {"center-photon": 1, "cannon-rush": 1}
+    # 종족별로도 갈린다 — player01은 테란으로만 뛰었다.
+    assert by_id["player01"]["byRace"]["테란"]["tactics"] == {"side-tank": 2}
+    assert by_id["player01"]["byRace"]["저그"]["tactics"] == {}
+
+    # 맵 전적 — [판수, 승수].
+    assert by_id["player01"]["overall"]["maps"] == {"로스트템플": [2, 2], "헌터스": [1, 0]}
+    assert by_id["player02"]["overall"]["maps"] == {"로스트템플": [2, 0], "헌터스": [1, 1]}
+
+    # 기간을 좁히면 둘 다 그 조건만 본다.
+    res = await client.get(
+        "/api/game-results/stats", headers=headers,
+        params={"memberIds": "player01,player02", "dateFrom": "2026-07-03", "dateTo": "2026-07-03"},
+    )
+    by_id = {m["memberId"]: m for m in res.json()["members"]}
+    assert by_id["player01"]["overall"]["tactics"] == {}
+    assert by_id["player01"]["overall"]["maps"] == {"헌터스": [1, 0]}
+    assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
