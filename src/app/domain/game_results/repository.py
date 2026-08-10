@@ -489,6 +489,29 @@ class GameResultRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
+    async def registration_counts(
+        self,
+        *,
+        member_pks: list[int],
+        date_from: date | None,
+        date_to: date | None,
+        match_type: str | None,
+    ) -> list[Row]:
+        """(member_pk, 등록한 경기 수) — 통계 화면의 칭호("기록 퀸")가 쓰는 값(요청).
+
+        참가 전적과 아예 다른 값이다: 뛴 것이 아니라 올린 것이라, 남의 경기를 대신 올려 준
+        사람에게도 쌓인다. 그게 이 값의 뜻이다 — 클럽의 기록을 누가 남기고 있나."""
+        stmt = (
+            select(GameResult.created_by, func.count().label("registered"))
+            .select_from(GameResult)
+            .where(GameResult.created_by.in_(member_pks))
+            .group_by(GameResult.created_by)
+        )
+        stmt = self._apply_common_match_filters(
+            stmt, date_from=date_from, date_to=date_to, match_type=match_type,
+        )
+        return list((await self._session.execute(stmt)).all())
+
     async def tactic_rows(
         self,
         *,

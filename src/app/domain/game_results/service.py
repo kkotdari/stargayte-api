@@ -960,6 +960,13 @@ class GameResultService:
             date_to=parsed_date_to,
             match_type=match_type,
         )
+        registered_rows = await self._repo.registration_counts(
+            member_pks=[m.pk for m in members],
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+            match_type=match_type,
+        )
+        registered_by_pk = {row[0]: int(row[1] or 0) for row in registered_rows}
         map_rows = await self._repo.map_record_rows(
             member_pks=[m.pk for m in members],
             date_from=parsed_date_from,
@@ -1043,6 +1050,7 @@ class GameResultService:
                     overall=overall_entry,
                     by_race=by_race,
                     most_played_race=most_played_race,
+                    registered=registered_by_pk.get(member.pk, 0),
                 )
             )
 
