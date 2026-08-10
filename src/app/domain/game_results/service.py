@@ -417,7 +417,7 @@ def _to_utc_naive(dt: datetime) -> datetime:
 
 class _RaceAgg:
     """aggregate_stats가 돌려주는 (member_pk, race) 단위 원본 행 하나 또는 여러 개를
-    합산해서 RaceStatsEntry로 만드는 중간 누산기 — 전적(판수/승/무)과 MVP 횟수만 센다.
+    합산해서 RaceStatsEntry로 만드는 중간 누산기 — 전적(판수/승/무)과 BEST PLAYER 횟수만 센다.
 
     지표 평균(APM·유효APM·커맨드·유효커맨드·생산)은 여기서 내지 않는다. 이상치를 뺀
     평균이라 경기 단위 원본이 있어야 하고(_trimmed_avgs), 호출부가 to_entry() 결과에
@@ -425,20 +425,20 @@ class _RaceAgg:
     덮어쓰는 쪽만 화면에 나가는데도 안 쓰이는 계산이 남아 있어 "어느 게 진짜 나가는
     값인지" 읽는 사람이 헷갈렸다 — 한 벌만 남긴다."""
 
-    __slots__ = ("plays", "wins", "draws", "mvps")
+    __slots__ = ("plays", "wins", "draws", "bests")
 
     def __init__(self) -> None:
         self.plays = 0
         self.wins = 0
         self.draws = 0
-        self.mvps = 0
+        self.bests = 0
 
     def add_row(self, row) -> None:
         self.plays += row.plays
         self.wins += row.wins
         self.draws += row.draws
         # 옛 응답 형태로 만들어진 행(테스트 더미 등)에는 없을 수 있어 기본값을 둔다.
-        self.mvps += getattr(row, "mvps", 0) or 0
+        self.bests += getattr(row, "bests", 0) or 0
 
     def to_entry(self) -> RaceStatsEntry:
         losses = self.plays - self.wins - self.draws
@@ -450,7 +450,7 @@ class _RaceAgg:
             losses=losses,
             draws=self.draws,
             win_rate=win_rate,
-            mvps=self.mvps,
+            bests=self.bests,
         )
 
 

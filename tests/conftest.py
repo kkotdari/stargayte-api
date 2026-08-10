@@ -35,6 +35,9 @@ from app.domain.activity import models as _feed_models  # noqa: F401
 from app.domain.leagues import models as _leagues_models  # noqa: F401
 from app.domain.game_results import models as _game_results_models  # noqa: F401
 from app.domain.members import models as _members_models  # noqa: F401
+# 일정(모임)이 뒤에 들어왔는데 여기 등록이 안 돼, 스키마를 만들 때 schedule_attendees가
+# 빠져 스위트 전체가 setup에서 죽고 있었다 — 모델 하나를 더 부른다.
+from app.domain.schedules import models as _schedules_models  # noqa: F401
 
 
 # 스키마는 세션당 한 번만 만든다. 예전엔 테스트마다 drop_all + create_all로 통째로 다시

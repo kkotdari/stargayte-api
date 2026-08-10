@@ -85,20 +85,20 @@ async def test_stats_aggregates_exact_numbers(client):
     # (400+420)/2경기=410, 테란만이면 400, 프로토스만이면 420.
     p1_overall = by_id["player01"]["overall"]
     assert p1_overall == {
-        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3, "mvps": 0,
+        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3, "bests": 0,
         "avgApm": 110, "avgEapm": 85, "avgCmd": 52, "avgEcmd": 41, "avgBuild": 32,
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
     }
     assert by_id["player01"]["byRace"]["테란"] == {
-        "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0, "mvps": 0,
+        "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0, "bests": 0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 50, "avgEcmd": 40, "avgBuild": 30,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
-        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "mvps": 0,
+        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "bests": 0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
@@ -109,7 +109,7 @@ async def test_stats_aggregates_exact_numbers(client):
     # player02: (200+240)/2경기=220
     p2_overall = by_id["player02"]["overall"]
     assert p2_overall == {
-        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3, "mvps": 0,
+        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3, "bests": 0,
         "avgApm": 70, "avgEapm": 55, "avgCmd": 32, "avgEcmd": 22, "avgBuild": 16,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
@@ -341,17 +341,17 @@ async def test_stats_excludes_extreme_outlier_game_from_cmd_and_build_average(cl
     assert by_race["avgBuild"] == 30
 
 
-async def test_stats_counts_mvp_from_summary_data(client):
-    """MVP 횟수는 요약(summary_data)의 mvp가 그 참가자의 원본 게임 아이디와 같은 경기를
-    센 값이다(요청: 통계 주요 지표에 MVP 횟수). 판정 자체는 프론트가 등록할 때 해 두고
+async def test_stats_counts_best_player_from_summary_data(client):
+    """BEST PLAYER 횟수는 요약(summary_data)의 best가 그 참가자의 원본 게임 아이디와 같은
+    경기를 센 값이다(요청: 통계 주요 지표에). 판정 자체는 프론트가 등록할 때 해 두고
     서버는 세기만 한다 — 여기서는 그 세는 일이 기간/유형/종족 필터를 그대로 타는지까지
     함께 본다."""
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
-    # 두 판 다 player01(테란) 승. 첫 판만 player01이 MVP, 둘째 판은 상대편 사람이 MVP다.
-    for date, mvp in (("2026-07-01", "player01"), ("2026-07-02", "player02")):
+    # 두 판 다 player01(테란) 승. 첫 판만 player01이, 둘째 판은 상대편 사람이 뽑혔다.
+    for date, best in (("2026-07-01", "player01"), ("2026-07-02", "player02")):
         res = await client.post(
             "/api/game-results",
             headers=headers,
@@ -360,7 +360,7 @@ async def test_stats_counts_mvp_from_summary_data(client):
                 "team1": [_slot("player01", "테란")],
                 "team2": [_slot("player02", "저그")],
                 "result": "team1",
-                "summaryData": {"v": 2, "mvp": mvp, "beats": []},
+                "summaryData": {"v": 2, "best": best, "beats": []},
             },
         )
         assert res.status_code == 200, res.text
@@ -374,20 +374,49 @@ async def test_stats_counts_mvp_from_summary_data(client):
         "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
     )
     by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["mvps"] == 1
-    assert by_id["player02"]["overall"]["mvps"] == 1
+    assert by_id["player01"]["overall"]["bests"] == 1
+    assert by_id["player02"]["overall"]["bests"] == 1
     # 종족별로도 갈린다 — player01은 테란으로만 뛰었다.
-    assert by_id["player01"]["byRace"]["테란"]["mvps"] == 1
-    assert by_id["player01"]["byRace"]["저그"]["mvps"] == 0
+    assert by_id["player01"]["byRace"]["테란"]["bests"] == 1
+    assert by_id["player01"]["byRace"]["저그"]["bests"] == 0
 
-    # 기간을 첫 판만으로 좁히면 player02의 MVP는 빠진다.
+    # 기간을 첫 판만으로 좁히면 player02의 것은 빠진다.
     res = await client.get(
         "/api/game-results/stats", headers=headers,
         params={"memberIds": "player01,player02", "dateFrom": "2026-07-01", "dateTo": "2026-07-01"},
     )
     by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["mvps"] == 1
-    assert by_id["player02"]["overall"]["mvps"] == 0
+    assert by_id["player01"]["overall"]["bests"] == 1
+    assert by_id["player02"]["overall"]["bests"] == 0
+
+
+async def test_stats_counts_legacy_mvp_key(client):
+    """이름을 바꾸기 전에 저장된 요약은 같은 값을 mvp 키로 들고 있다(요청: MVP → BEST
+    PLAYER). 이미 쌓인 경기를 다시 분석하지 않고도 그대로 세져야 한다 — 세는 쪽이 두 키를
+    하나로 본다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    res = await client.post(
+        "/api/game-results",
+        headers=headers,
+        json={
+            "date": "2026-07-01", "note": "",
+            "team1": [_slot("player01", "테란")],
+            "team2": [_slot("player02", "저그")],
+            "result": "team1",
+            "summaryData": {"v": 2, "mvp": "player02", "beats": []},
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    res = await client.get(
+        "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
+    )
+    by_id = {m["memberId"]: m for m in res.json()["members"]}
+    assert by_id["player02"]["overall"]["bests"] == 1
+    assert by_id["player01"]["overall"]["bests"] == 0
 
 
 async def test_stats_race_filter_scopes_overall(client):
@@ -401,7 +430,7 @@ async def test_stats_race_filter_scopes_overall(client):
     )
     overall = res.json()["members"][0]["overall"]
     assert overall == {
-        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "mvps": 0,
+        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "bests": 0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
@@ -417,7 +446,7 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
     entry = res.json()["members"][0]
     assert entry["overall"] == {
-        "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0, "mvps": 0,
+        "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0, "bests": 0,
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
