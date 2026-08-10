@@ -201,6 +201,7 @@ class ActivityNoticeOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
+    # "epithet"(칭호 변경) · "rankingShift"(랭크 변동) 등.
     kind: str
     payload: dict = Field(default_factory=dict)
     created_at: datetime = Field(alias="createdAt")
@@ -220,13 +221,15 @@ class ActivityItemOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     key: str
+    # 랭크 변동은 제 칸을 안 갖는다(요청: rankingShift를 없애고 알림 유형으로 통합) —
+    # 서버가 남기는 한 줄이라는 점에서 칭호 변경과 같은 것이고, 화면에서도 같은 자리에
+    # 서야 한다. 저장은 그대로 ranking_shifts에 있고 겉모습만 알림으로 감싼다.
     kind: Literal[
-        "challenge", "rankingShift", "gameResultPost", "leagueMatch", "schedule", "notice",
+        "challenge", "gameResultPost", "leagueMatch", "schedule", "notice",
     ]
     # 아래에서부터 센 번호(가장 오래된 줄이 1).
     no: int
     challenge: ChallengeOut | None = None
-    ranking_shift: RankingShiftOut | None = Field(default=None, alias="rankingShift")
     game_results: list[GameResultOut] = Field(default_factory=list, alias="gameResults")
     league_match: LeagueMatchActivityOut | None = Field(default=None, alias="leagueMatch")
     # 모임 일정 — 도메인 스키마를 그대로 쓴다(카드가 폼과 같은 것을 보여주므로 줄일 칸이 없다).

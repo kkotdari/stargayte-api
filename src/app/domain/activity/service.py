@@ -604,15 +604,23 @@ class ActivityListService:
             # 아래에서부터 센 번호(가장 오래된 줄이 1) — 위에서 세면 새 활동 하나에 전부 밀린다.
             no = total - (start + offset)
             try:
+                shift = shift_by_id.get(r.ids[0]) if r.kind == "rankingShift" else None
                 items.append(ActivityItemOut(
-                    key=r.key, kind=r.kind, no=no,
+                    key=r.key, kind="notice" if r.kind == "rankingShift" else r.kind, no=no,
                     challenge=challenge_by_id.get(r.ids[0]) if r.kind == "challenge" else None,
                     ranking_shift=shift_by_id.get(r.ids[0]) if r.kind == "rankingShift" else None,
                     game_results=[game_by_id[i] for i in r.ids if i in game_by_id]
                     if r.kind == "gameResultPost" else [],
                     league_match=league_by_id.get(r.ids[0]) if r.kind == "leagueMatch" else None,
                     schedule=schedule_by_id.get(r.ids[0]) if r.kind == "schedule" else None,
-                    notice=notice_by_id.get(r.ids[0]) if r.kind == "notice" else None,
+                    # 랭크 변동은 저장은 그대로 두고 겉모습만 알림으로 감싼다(요청) —
+                    # 화면에서 '서버가 남긴 한 줄'이라는 점이 칭호 변경과 같아서다.
+                    # 댓글 대상(targetType)은 예전 그대로 rankingShift라, 이미 달린
+                    # 댓글이 그대로 붙는다.
+                    notice=(
+                        _shift_as_notice(shift) if shift is not None
+                        else notice_by_id.get(r.ids[0]) if r.kind == "notice" else None
+                    ),
                     comments=mine(r.kind, r.ids),
                 ))
             except Exception:
@@ -857,6 +865,28 @@ class ActivityListService:
             for sid, created, sections in result.all()
             if snapshot_has_shifts(sections)
         ]
+
+
+def _shift_as_notice(shift: "RankingShiftOut") -> "ActivityNoticeOut":
+    """랭크 변동 스냅샷을 알림 한 줄로 감싼다(요청: 표시만 통합).
+
+    저장은 그대로 ranking_shifts에 있다 — 옮기지 않는 이유는 그 표가 '오늘의 순위표'라는
+    제 뜻을 갖고 있어서다(다음 날 비교의 기준선이 그 행이다). 활동에서 어떻게 보이느냐는
+    그것과 다른 이야기라, 겉모습만 알림으로 맞춘다.
+
+    payload에는 카드가 그리던 값을 그대로 담는다 — 화면이 이 값으로 예전과 같은 카드를
+    만든다(칭호 변경과 종류만 다를 뿐 자리는 같다)."""
+    from app.domain.activity.schemas import ActivityNoticeOut
+
+    return ActivityNoticeOut(
+        id=shift.id, kind="rankingShift",
+        payload={
+            "reason": shift.reason,
+            "matchIds": shift.match_ids,
+            "sections": [s.model_dump(by_alias=True) for s in shift.sections],
+        },
+        createdAt=shift.created_at,
+    )
 
 
 def _round_name(round_no: int, draw_size: int | None) -> str:

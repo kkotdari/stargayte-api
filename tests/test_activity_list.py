@@ -181,7 +181,8 @@ async def test_survives_odd_shapes(client, db_session):
     body = res.json()
     kinds = sorted(r["kind"] for r in body["items"])
     # 도전장 1 + 게임결과 1 + 변동 있는 스냅샷 1 = 3줄(기준선만 있는 스냅샷은 빠진다).
-    assert kinds == ["challenge", "gameResultPost", "rankingShift"], body
+    # 랭크 변동은 알림 유형으로 나간다(요청: 표시만 통합) — 저장은 그대로 ranking_shifts다.
+    assert kinds == ["challenge", "gameResultPost", "notice"], body
     assert sorted(r["no"] for r in body["items"]) == [1, 2, 3]
 
 

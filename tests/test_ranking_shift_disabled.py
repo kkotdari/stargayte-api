@@ -65,7 +65,7 @@ async def test_disabled_hides_cards_but_keeps_rows(client, ranking_shift_off):
 
     # 활동 목록에도 랭크 변동 줄이 섞이지 않는다.
     feed = (await client.get("/api/activities", headers=_h(a))).json()
-    assert all(item.get("rankingShift") is None for item in feed["items"])
+    assert all(item["kind"] != "notice" for item in feed["items"])
 
 
 async def test_disabled_blocks_admin_buttons(client, ranking_shift_off):
