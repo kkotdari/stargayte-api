@@ -447,15 +447,23 @@ class GameResultRepository:
         """(member_pk, race, 맵 이름) 단위 전적 — 통계 화면의 칭호("○○의 지배자")가
         '이 사람이 유독 잘하는 맵'을 고르는 재료다(요청).
 
-        맵 이름은 리플레이에서만 온다 — 수기 등록 경기는 NULL이라 여기서 아예 빠진다.
-        종족까지 묶는 이유는 화면의 다른 값들과 잣대를 맞추기 위해서다(종족 필터를 걸면
-        칭호도 그 종족 판만 보고 매겨져야 한다)."""
+        이름은 미니맵 관리에서 묶은 이름을 먼저 쓴다(지적: 이름만 다른 같은 맵이 따로따로
+        나온다) — 빠른무한 계열처럼 판본·파일이름만 다른 맵이 여러 벌이라, 리플레이에 적힌
+        이름으로 세면 같은 맵이 대여섯 갈래로 쪼개져 어느 것도 문턱을 못 넘는다.
+        묶는 자리는 이미 있다: 격자(replay_maps)가 사람이 올린 미니맵 그림(minimap_images)을
+        가리키고, 그 그림 이름이 곧 운영자가 부르는 맵 이름이다. 그림이 아직 없는 맵만
+        리플레이에 적힌 이름으로 받는다.
+
+        수기 등록 경기는 맵 이름도 격자도 없어 여기서 아예 빠진다. 종족까지 묶는 이유는
+        화면의 다른 값들과 잣대를 맞추기 위해서다(종족 필터를 걸면 칭호도 그 종족 판만
+        보고 매겨져야 한다)."""
         member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
+        map_label = func.coalesce(MinimapImage.name, GameOutcome.map_name).label("map_name")
         stmt = (
             select(
                 member_alias.member_pk,
                 GameResultParticipant.race,
-                GameOutcome.map_name,
+                map_label,
                 func.count().label("plays"),
                 func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
             )
@@ -463,12 +471,18 @@ class GameResultRepository:
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
             .join(GameOutcome, GameOutcome.match_id == GameResult.id)
             .join(member_alias, member_condition)
+            # 격자와 그림은 없을 수 있다(옛 경기·아직 안 올린 맵) — 그때는 리플레이 이름으로.
+            .outerjoin(ReplayMap, ReplayMap.map_hash == GameOutcome.map_hash)
+            .outerjoin(MinimapImage, MinimapImage.id == ReplayMap.image_id)
             .where(
                 member_alias.member_pk.in_(member_pks),
                 GameOutcome.result != "not_held",
-                GameOutcome.map_name.is_not(None),
+                func.coalesce(MinimapImage.name, GameOutcome.map_name).is_not(None),
             )
-            .group_by(member_alias.member_pk, GameResultParticipant.race, GameOutcome.map_name)
+            .group_by(
+                member_alias.member_pk, GameResultParticipant.race,
+                func.coalesce(MinimapImage.name, GameOutcome.map_name),
+            )
         )
         stmt = self._apply_common_match_filters(
             stmt, date_from=date_from, date_to=date_to, match_type=match_type,

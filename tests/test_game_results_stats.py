@@ -816,3 +816,45 @@ async def test_stats_counts_tactics_and_map_records(client):
     assert by_id["player01"]["overall"]["tactics"] == {}
     assert by_id["player01"]["overall"]["maps"] == {"헌터스": [1, 0]}
     assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
+
+
+async def test_map_records_group_by_minimap_image_name(client):
+    """맵 전적은 미니맵 관리에서 묶은 이름으로 센다(지적: 이름만 다른 같은 맵이 따로 나온다).
+
+    빠른무한 계열처럼 판본·파일이름만 다른 맵이 여러 벌이라, 리플레이에 적힌 이름으로 세면
+    같은 맵이 여러 갈래로 쪼개져 어느 것도 문턱을 못 넘는다. 격자(replay_maps)가 가리키는
+    미니맵 그림 이름이 곧 운영자가 부르는 맵 이름이고, 그림이 없는 맵만 리플레이 이름으로
+    받는다.
+    """
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    # 이름이 다른 두 맵을 각각 제 격자와 함께 올린다 — 격자가 다르면 해시도 다르다.
+    grids = {
+        "빠른무한": {"hash": "aa11aa11", "name": "빠른무한", "width": 2, "height": 2,
+                  "palette": [0, 1], "tiles": "AAEBAA==", "resources": []},
+        "Super빠른무한": {"hash": "bb22bb22", "name": "Super빠른무한", "width": 2, "height": 2,
+                       "palette": [0, 1], "tiles": "AQABAQ==", "resources": []},
+    }
+    for i, (map_name, grid) in enumerate(grids.items()):
+        res = await client.post("/api/game-results", headers=headers, json={
+            "date": f"2026-07-0{i + 1}", "note": "",
+            "team1": [_slot("player01", "테란")], "team2": [_slot("player02", "저그")],
+            "result": "team1", "mapName": map_name, "mapData": grid,
+        })
+        assert res.status_code == 200, res.text
+
+    # 아직 묶기 전 — 리플레이에 적힌 이름 그대로 둘로 나뉜다.
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    assert res.json()["members"][0]["overall"]["maps"] == {"빠른무한": [1, 1], "Super빠른무한": [1, 1]}
+
+    # 미니맵 그림 한 장에 두 격자를 함께 묶는다(운영자가 미니맵 메뉴에서 하는 일).
+    res = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빨무", "image": "data:image/png;base64,AAAA",
+        "hashes": ["aa11aa11", "bb22bb22"],
+    })
+    assert res.status_code in (200, 201), res.text
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    assert res.json()["members"][0]["overall"]["maps"] == {"빨무": [2, 2]}
