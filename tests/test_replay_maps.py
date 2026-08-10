@@ -182,6 +182,43 @@ async def test_minimap_image_shared_by_similar_maps(client):
     assert left[0]["image"] is None
 
 
+async def test_minimap_image_update_keeps_mapping(client):
+    """등록된 미니맵의 그림만 갈아 끼운다(요청: 미니맵 메뉴에서 그림 변경) — 지웠다 다시
+    올리면 붙어 있던 맵 매핑이 통째로 풀리므로, 더 나은 그림으로 바꾸는 일이 매핑을 처음부터
+    다시 하는 일이 돼서는 안 된다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    await _create(client, headers, date="2026-07-01", gsa="2026-07-01T03:00:00+00:00", map_data=_MAP)
+
+    made = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": _PNG, "hashes": [_MAP["hash"]],
+    })
+    image_id = made.json()["id"]
+
+    other = "data:image/png;base64,iVBORw0KGgo="
+    res = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
+        json={"name": "빠른무한 2.0", "image": other},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json() == {"id": image_id, "name": "빠른무한 2.0", "image": other}
+
+    # 매핑은 그대로다 — 그 맵은 바뀐 그림을 그대로 받는다.
+    got = (await client.get(
+        "/api/game-results/replay-maps", headers=headers, params={"hash": _MAP["hash"]},
+    )).json()["maps"]
+    assert got[0]["image"] == other
+
+    # 그림을 빼고 부르면 이름만 바뀐다 — 수백 KB를 이름 때문에 다시 올릴 이유가 없다.
+    only = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
+        json={"name": "빠른무한 3.0"},
+    )
+    assert only.status_code == 200, only.text
+    assert only.json()["image"] == other
+
+
 async def test_minimap_image_needs_admin(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     p2 = await _signup(client, "player02", "Mist#1002")

@@ -1421,6 +1421,26 @@ class GameResultService:
         await self._session.commit()
         return MinimapImageOut(id=row.id, name=row.name, image=row.image)
 
+    async def update_minimap_image(self, image_id: int, payload: MinimapImageWrite) -> MinimapImageOut:
+        """등록된 미니맵의 이름·그림을 고친다(요청: 미니맵 메뉴에서 그림 변경).
+
+        지우고 다시 올리는 길밖에 없던 자리다 — 그런데 지우면 그 그림에 붙어 있던 맵 매핑이
+        통째로 풀려서, 그림 한 장을 더 나은 것으로 바꾸려다 매핑을 처음부터 다시 해야 했다.
+        여기서 고치면 id가 그대로라 매핑도 그대로다.
+
+        그림을 안 보내면(None) 이름만 고친다 — 수백 KB짜리를 이름 때문에 다시 올릴 이유가
+        없다. hashes를 함께 주면 그 맵들이 이 그림을 가리키게 된다(create와 같은 규칙)."""
+        row = await self._repo.get_minimap_image(image_id)
+        if row is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
+        row.name = payload.name
+        if payload.image:
+            row.image = payload.image
+        if payload.hashes:
+            await self._repo.assign_minimap_image(payload.hashes, row.id)
+        await self._session.commit()
+        return MinimapImageOut(id=row.id, name=row.name, image=row.image)
+
     async def delete_minimap_image(self, image_id: int) -> None:
         row = await self._repo.get_minimap_image(image_id)
         if row is None:

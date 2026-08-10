@@ -197,6 +197,15 @@ async def create_minimap_image(
     return await GameResultService(db, storage).create_minimap_image(payload)
 
 
+@router.put("/replay-maps/images/{image_id}", response_model=MinimapImageOut)
+async def update_minimap_image(
+    image_id: int, payload: MinimapImageWrite, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
+) -> MinimapImageOut:
+    """등록된 미니맵의 이름·그림을 고친다(요청: 미니맵 메뉴에서 그림 변경) — 지웠다 다시
+    올리면 붙어 있던 맵 매핑이 통째로 풀린다. image를 빼면 이름만 바뀐다."""
+    return await GameResultService(db, storage).update_minimap_image(image_id, payload)
+
+
 @router.delete("/replay-maps/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_minimap_image(
     image_id: int, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
