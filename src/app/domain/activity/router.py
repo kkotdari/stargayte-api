@@ -7,6 +7,7 @@ from app.domain.activity.schemas import (
     ActivityCommentOut,
     ActivityCommentWrite,
     ActivityFeedOut,
+    ActivityNoticeOut,
     ActivityTargetTypeInput,
     EpithetReport,
     RankingRecomputeResult,
@@ -91,6 +92,19 @@ async def update_activity_comment(
 @router.delete("/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_activity_comment(comment_id: int, db: DbSession, current: CurrentMember) -> None:
     await ActivityCommentService(db).delete(comment_id, actor=current)
+
+
+# 알림 한 건 — 카카오 공유 링크(?sv=notice&sid=…)가 여는 화면이 부른다(요청: 알림도 공유).
+# 목록(GET /activities)에서 골라내지 않는 이유는 알림이 시간이 갈수록 아래로 밀려나기
+# 때문이다: 공유한 링크는 한참 뒤에 열려도 그 한 건을 찾아야 한다.
+@router.get("/notices/{notice_id}", response_model=ActivityNoticeOut)
+async def get_activity_notice(
+    notice_id: int, db: DbSession, current: CurrentMember,
+) -> ActivityNoticeOut:
+    notice = await ActivityListService(db).get_notice(notice_id)
+    if notice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="알림을 찾을 수 없어요.")
+    return notice
 
 
 # 랭크 변동 이벤트 — 서버가 경기 등록/삭제 때마다 계산·저장한 스냅샷 중 실제 변동이

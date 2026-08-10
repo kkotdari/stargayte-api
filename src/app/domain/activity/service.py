@@ -701,6 +701,14 @@ class ActivityListService:
         )).all()
         return [(n.id, _kst(n.created_at).timestamp() * 1000) for n in rows]
 
+    async def get_notice(self, notice_id: int) -> "ActivityNoticeOut | None":
+        """알림 한 건 — 카카오 공유 링크(?sv=notice&sid=…)가 여는 화면이 쓴다(요청).
+
+        목록에서 골라내지 않고 단건으로 받는 이유는 알림이 목록의 아래쪽으로 계속
+        밀려나기 때문이다: 공유한 링크는 한 달 뒤에 열려도 그 한 건을 찾아야 한다.
+        """
+        return (await self._notices_by_id([notice_id])).get(notice_id)
+
     async def _notices_by_id(self, ids: list[int]) -> dict[int, "ActivityNoticeOut"]:
         if not ids:
             return {}
