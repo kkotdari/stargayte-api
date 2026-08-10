@@ -1608,10 +1608,10 @@ class GameResultService:
                 p.build_count = s.build_count
             if s.build_mix is not None:
                 p.build_mix = _mix_json(s.build_mix)
-        /* 짝이 하나도 안 맞으면 남겨 둔다 — 요약(경기 행)은 새것이 되는데 수치(참가자 행)만
-           옛것으로 남는, 겉보기에는 "재분석했는데 통계가 그대로"인 상태가 된다. 짝은 리플레이
-           원본 게임 아이디(player_name)로 맞추므로, 그 이름이 바뀐 경기에서 이런 일이 난다.
-           조용히 넘기면 다음에도 원인을 못 찾는다. */
+        # 짝이 하나도 안 맞으면 로그로 남긴다 — 요약(경기 행)은 새것이 되는데 수치(참가자
+        # 행)만 옛것으로 남는, 겉보기에는 "재분석했는데 통계가 그대로"인 상태가 된다. 짝은
+        # 리플레이 원본 게임 아이디(player_name)로 맞추므로 그 이름이 바뀐 경기에서 이런
+        # 일이 난다. 조용히 넘기면 다음에도 원인을 못 찾는다.
         if payload.slots and matched == 0:
             logger.warning(
                 "재분석: 참가자 짝이 하나도 안 맞았습니다 — match_id=%s 보낸이름=%s 저장된이름=%s",
