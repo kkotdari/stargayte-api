@@ -493,10 +493,6 @@ class MemberStatsEntry(BaseModel):
     overall: RaceStatsEntry
     by_race: dict[str, RaceStatsEntry] = Field(alias="byRace")
     most_played_race: str | None = Field(default=None, alias="mostPlayedRace")
-    # 이 사람이 등록한 경기 수(요청: 게임결과 등록 많은 사람 → "기록 퀸") — 뛴 것이 아니라
-    # 올린 것이라 참가 전적과는 아예 다른 값이고, 종족으로 나눌 수도 없다(등록에는 종족이
-    # 없다). 그래서 종족별 칸이 아니라 회원 한 사람의 값으로 둔다. 기간·유형 필터는 따른다.
-    registered: int = 0
     # 랭킹 순서 — 승률만으로는 못 가르는 동률을 승자승(맞대결)/공통상대/전체 승수로 마저
     # 가른 최종 정렬 결과다. 맞대결·공통상대 성적은 "누구와 누구를 비교하느냐"에 따라
     # 달라지는 쌍(pair) 단위 값이라 회원 하나의 숫자로 내려보낼 수가 없어서, 서버가 정렬을
