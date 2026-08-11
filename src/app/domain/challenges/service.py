@@ -427,7 +427,10 @@ class ChallengeService:
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("너 나와!를 찾을 수 없어요.")
-        is_admin = "admin" in {r.role for r in actor.roles}
+        # 운영자 판정은 역할 코드로 한다(0202=운영자) — 한때 "admin"이라는 이름으로 봤는데
+        # 이 시스템의 역할 값은 코드라, 그 비교는 늘 거짓이었다(지적: 운영자인데 권한 없음이
+        # 뜬다). deps.get_current_admin과 같은 잣대다.
+        is_admin = actor.has_any_role("0202")
         if challenge.created_by != actor.pk and not is_admin:
             raise ForbiddenError("자신이 보낸 너 나와!만 취소할 수 있습니다.")
         if _status_of(challenge) not in ("pending", "confirmed"):
@@ -485,7 +488,10 @@ class ChallengeService:
         사실이 기록이지, 그때 응답을 제때 눌렀는지가 기록은 아니다."""
         if status not in ("confirmed", "discarded"):
             raise ValidationError("확정됐거나 폐기된 대결만 결과를 입력할 수 있습니다.")
-        is_admin = "admin" in {r.role for r in actor.roles}
+        # 운영자 판정은 역할 코드로 한다(0202=운영자) — 한때 "admin"이라는 이름으로 봤는데
+        # 이 시스템의 역할 값은 코드라, 그 비교는 늘 거짓이었다(지적: 운영자인데 권한 없음이
+        # 뜬다). deps.get_current_admin과 같은 잣대다.
+        is_admin = actor.has_any_role("0202")
         if not any(p.member_pk == actor.pk for p in challenge.participants) and not is_admin:
             raise ForbiddenError("이 대결의 참가자나 운영자만 결과를 입력할 수 있습니다.")
         # 실제 승부 결과가 이미 있으면 그대로 둔다(먼저 입력한 쪽 인정) — 다만 '미실시'는

@@ -982,3 +982,34 @@ async def test_not_held_result_can_be_corrected(client):
         json={"winnerSide": "creator", "scheduledDate": "2026-07-01"},
     )
     assert res.status_code == 400, res.text
+
+
+async def test_admin_can_enter_result_for_others(client):
+    """운영자는 남의 대결에도 결과를 넣을 수 있다(요청) — 만료된 건을 되살리는 일은 대개
+    참가자가 아니라 운영자가 한다. 판정은 역할 코드(0202)로 한다: 한때 "admin"이라는
+    이름으로 봐서 운영자인데도 권한 없음이 떴다(지적)."""
+    admin = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    c = await _signup(client, "carol", "Carol#1003")
+    ha = {"Authorization": f"Bearer {admin['accessToken']}"}
+    hb = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, admin["accessToken"], "bob")
+    await _approve(client, admin["accessToken"], "carol")
+
+    made = (await client.post(
+        "/api/challenges", headers=hb,
+        json={"targetMemberIds": ["carol"], "scheduledDate": "2026-07-01"},
+    )).json()
+    # carol이 거절해 폐기된 뒤 — 실제로는 붙었더라는 경우다.
+    hc = {"Authorization": f"Bearer {c['accessToken']}"}
+    await client.post(
+        f"/api/challenges/{made['id']}/respond", headers=hc,
+        json={"response": "rejected", "reason": "패스"},
+    )
+    # 첫 회원(alice)이 운영자다 — 이 대결의 참가자는 bob·carol뿐이다.
+    res = await client.post(
+        f"/api/challenges/{made['id']}/result", headers=ha,
+        json={"winnerSide": "creator", "scheduledDate": "2026-07-01"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "done"
