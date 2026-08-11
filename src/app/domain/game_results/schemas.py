@@ -454,6 +454,8 @@ class RaceStatsEntry(BaseModel):
     # 팀전에만 붙는 값이라, 수기 등록·개인전·옛 경기만 있는 회원은 0이다.
     # 예전 이름은 mvps였다(요청: MVP → BEST PLAYER) — 화면도 같은 날 함께 바뀐다.
     bests: int = 0
+    # 그중 진 판에서 뽑힌 수(요청: 졌잘싸 퀸) — 판을 가장 많이 만들고도 진 자리다.
+    lost_bests: int = Field(default=0, alias="lostBests")
     avg_apm: int | None = Field(default=None, alias="avgApm")
     avg_eapm: int | None = Field(default=None, alias="avgEapm")
     avg_cmd: int | None = Field(default=None, alias="avgCmd")

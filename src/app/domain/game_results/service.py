@@ -439,13 +439,15 @@ class _RaceAgg:
     덮어쓰는 쪽만 화면에 나가는데도 안 쓰이는 계산이 남아 있어 "어느 게 진짜 나가는
     값인지" 읽는 사람이 헷갈렸다 — 한 벌만 남긴다."""
 
-    __slots__ = ("plays", "wins", "draws", "bests")
+    __slots__ = ("plays", "wins", "draws", "bests", "lost_bests")
 
     def __init__(self) -> None:
         self.plays = 0
         self.wins = 0
         self.draws = 0
         self.bests = 0
+        # 진 판에서 뽑힌 BEST(요청: 졌잘싸 퀸) — 위 bests의 부분집합이다.
+        self.lost_bests = 0
 
     def add_row(self, row) -> None:
         self.plays += row.plays
@@ -453,6 +455,7 @@ class _RaceAgg:
         self.draws += row.draws
         # 옛 응답 형태로 만들어진 행(테스트 더미 등)에는 없을 수 있어 기본값을 둔다.
         self.bests += getattr(row, "bests", 0) or 0
+        self.lost_bests += getattr(row, "lost_bests", 0) or 0
 
     def to_entry(self) -> RaceStatsEntry:
         losses = self.plays - self.wins - self.draws
@@ -465,6 +468,7 @@ class _RaceAgg:
             draws=self.draws,
             win_rate=win_rate,
             bests=self.bests,
+            lost_bests=self.lost_bests,
         )
 
 

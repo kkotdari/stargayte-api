@@ -344,6 +344,25 @@ class GameResultRepository:
                         else_=0,
                     )
                 ).label("bests"),
+                # 그중 '진 판에서 뽑힌 BEST'(요청: 졌잘싸 퀸) — 판을 가장 많이 만들고도
+                # 진 자리다. 위 bests와 같은 식에 승패 조건 하나를 더 걸었다.
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                func.coalesce(
+                                    GameOutcome.summary_data["best"].as_string(),
+                                    GameOutcome.summary_data["mvp"].as_string(),
+                                )
+                                == GameResultParticipant.player_name,
+                                GameOutcome.result != GameResultParticipant.team,
+                                GameOutcome.result.in_(("team1", "team2")),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("lost_bests"),
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
