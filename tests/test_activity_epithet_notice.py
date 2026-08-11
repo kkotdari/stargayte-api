@@ -33,6 +33,30 @@ async def _notices(client, headers) -> list[dict]:
     return [it for it in res.json()["items"] if it["kind"] == "notice"]
 
 
+async def test_epithets_are_read_back(client):
+    """저장된 칭호를 그대로 읽어 준다(GET) — 통계 화면은 이걸 읽기만 한다(요청: 화면
+    진입 때 재계산 금지). 빈 칭호는 애초에 저장되지 않으므로 목록에도 안 나온다."""
+    a = await _signup(client, "player11", "Sky#1011")
+    await _signup(client, "player12", "Sea#1012")
+    headers = {"Authorization": f"Bearer {a['accessToken']}"}
+
+    res = await client.get("/api/activities/epithets", headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["epithets"] == []
+
+    await _report(client, headers, [
+        {"memberId": "player11", "label": "공포의 핵", "why": "핵 3번"},
+        {"memberId": "player12", "label": "", "why": ""},
+    ])
+    rows = (await client.get("/api/activities/epithets", headers=headers)).json()["epithets"]
+    assert rows == [{"memberId": "player11", "label": "공포의 핵", "why": "핵 3번"}]
+
+    # 바뀐 칭호는 읽는 쪽에도 바로 반영된다 — 보관된 값이 하나뿐이라 옛말이 남을 자리가 없다.
+    await _report(client, headers, [{"memberId": "player11", "label": "방구 퀸", "why": "방사능 5번"}])
+    rows = (await client.get("/api/activities/epithets", headers=headers)).json()["epithets"]
+    assert [r["label"] for r in rows] == ["방구 퀸"]
+
+
 async def test_epithet_change_becomes_one_notice(client):
     a = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")

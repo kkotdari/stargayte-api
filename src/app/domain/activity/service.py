@@ -971,6 +971,22 @@ class EpithetService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def current(self):
+        """저장된 칭호 한 벌(요청: 통계 화면은 계산하지 않고 이걸 읽는다).
+
+        탈퇴·정지한 회원까지 그대로 돌려준다 — 걸러 내는 일은 보는 쪽이 이미 회원 목록으로
+        하고 있고, 여기서 한 번 더 거르면 두 곳의 기준이 갈릴 자리만 는다.
+        """
+        from sqlalchemy import select
+
+        from app.domain.activity.schemas import EpithetListOut, EpithetReportRow
+
+        rows = (await self._session.scalars(select(MemberEpithet))).all()
+        return EpithetListOut(epithets=[
+            EpithetReportRow(member_id=e.member.id, label=e.label, why=e.why)
+            for e in rows if e.member is not None and e.label
+        ])
+
     async def report(self, rows: list) -> int:
         """바뀐 칭호 수. 0이면 알림도 안 남는다(같은 값을 다시 올려도 조용하다).
 

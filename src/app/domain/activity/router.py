@@ -9,6 +9,7 @@ from app.domain.activity.schemas import (
     ActivityFeedOut,
     ActivityNoticeOut,
     ActivityTargetTypeInput,
+    EpithetListOut,
     EpithetReport,
     RankingRecomputeResult,
     RankingShiftOut,
@@ -42,6 +43,17 @@ async def list_activity_feed(
     return await ActivityListService(db).list_feed(
         actor=current, storage=storage, cursor=cursor, limit=limit,
     )
+
+
+@router.get("/epithets", response_model=EpithetListOut)
+async def list_epithets(db: DbSession, current: CurrentMember) -> EpithetListOut:
+    """지금 저장된 칭호 한 벌 — 통계 화면은 이걸 읽기만 한다(요청).
+
+    한때 화면이 열릴 때마다 전체 통계를 받아 제 손으로 계산했다. 그러면 같은 표를 여는
+    사람마다 같은 계산을 되풀이하는 데다, 화면을 여는 일이 곧 알림을 남기는 일이 됐다
+    (요청: 계산은 경기 등록 때만).
+    """
+    return await EpithetService(db).current()
 
 
 @router.put("/epithets")

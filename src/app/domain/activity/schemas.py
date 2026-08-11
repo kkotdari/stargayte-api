@@ -270,6 +270,19 @@ class EpithetReportRow(BaseModel):
     why: str = Field(default="", max_length=120)
 
 
+class EpithetListOut(BaseModel):
+    """저장된 칭호 한 벌 — 통계 화면이 이걸 그대로 읽어 쓴다(요청: 화면에 들어갈 때마다
+    다시 계산하지 않는다).
+
+    계산은 경기가 등록될 때 한 번 돌고 그 결과가 여기 남는다. 보는 쪽이 다시 세지 않으므로
+    누가 언제 열어도 같은 말이 보이고, 활동에 남은 알림과도 어긋날 수가 없다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    epithets: list[EpithetReportRow] = Field(default_factory=list)
+
+
 class EpithetReport(BaseModel):
     """지금 칭호 한 벌 — 서버는 저장된 값과 견줘 달라진 것만 알림으로 남긴다.
 
