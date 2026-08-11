@@ -760,6 +760,8 @@ async def test_stats_counts_tactics_and_map_records(client):
       - 당한 쪽(whom)은 안 센다 — 칭호는 그 사람이 한 일로만 지어야 한다.
       - 요약이 없는 경기(수기 등록)는 아무 전술도 안 남기지만, 맵 전적에는 맵 이름이 있는
         한 그대로 들어간다(맵은 요약이 아니라 경기 자체의 사실이다).
+      - 진 판의 수는 안 센다(요청: 전략·전술 칭호는 그 판을 이겼어야 인정) — 같은 센포라도
+        won=False면 통계에 안 남는다.
     """
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
@@ -798,7 +800,8 @@ async def test_stats_counts_tactics_and_map_records(client):
     )
     by_id = {m["memberId"]: m for m in res.json()["members"]}
     assert by_id["player01"]["overall"]["tactics"] == {"side-tank": 2}
-    assert by_id["player02"]["overall"]["tactics"] == {"center-photon": 1, "cannon-rush": 1}
+    # 센포는 진 판(won=False)이라 안 세고, 포토러시만 남는다.
+    assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
     # 종족별로도 갈린다 — player01은 테란으로만 뛰었다.
     assert by_id["player01"]["byRace"]["테란"]["tactics"] == {"side-tank": 2}
     assert by_id["player01"]["byRace"]["저그"]["tactics"] == {}

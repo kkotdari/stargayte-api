@@ -869,7 +869,12 @@ class GameResultService:
         beats의 who/who2는 회원 pk가 아니라 리플레이 원본 게임 아이디다 — 그 경기의 참가 행에서
         같은 이름을 찾아 회원과 종족을 붙인다. 한 beat에 같은 사람이 who와 who2로 두 번 실려도
         한 번만 센다(옆탱처럼 '누구 기지에서 했나'가 함께 적히는 문장이 있다).
-        당한 쪽(whom)은 세지 않는다 — 칭호는 그 사람이 한 일로만 지어야 한다."""
+        당한 쪽(whom)은 세지 않는다 — 칭호는 그 사람이 한 일로만 지어야 한다.
+
+        이긴 판만 센다(요청: 전략·전술의 신은 무조건 그 판을 이겼어야 카운트로 인정) — 진
+        판에서 시도한 수는 '했다'는 사실일 뿐 통했다는 말이 아니다. 요약의 beat는 그 일을
+        한 쪽이 이겼는지를 함께 들고 있어(won) 여기서 그대로 쓴다. 옛 요약에도 늘 있는
+        값이라 재분석 없이도 그날부터 이 잣대가 걸린다."""
         summaries, players = await self._repo.tactic_rows(
             member_pks=member_pks,
             date_from=date_from,
@@ -892,6 +897,9 @@ class GameResultService:
                     continue
                 key = beat.get("k")
                 if not isinstance(key, str) or not key:
+                    continue
+                # 진 판의 수는 안 센다(위 주석) — won이 없는 옛 요약도 마찬가지로 뺀다.
+                if beat.get("won") is not True:
                     continue
                 actors: set[str] = set()
                 for field in ("who", "who2"):
