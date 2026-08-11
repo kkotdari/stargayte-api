@@ -915,3 +915,70 @@ async def test_respond_touches_challenge_updated_at(client, db_session):
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["updatedAt"] > body["createdAt"]
+
+
+async def test_enter_result_revives_discarded_challenge(client):
+    """폐기된 건에도 결과를 넣을 수 있다(요청: 만료됐는데 실제로는 경기를 한 경우).
+
+    강제로 성사시킨다 — 휴지통에서 꺼내고, 거절·무응답으로 남아 있던 응답을 수락으로 돌린다.
+    응답이 거절인 채로 "OO 승"이 되면 한 도전장이 두 얼굴을 갖기 때문이다.
+    """
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    ha = {"Authorization": f"Bearer {a['accessToken']}"}
+    hb = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    made = (await client.post(
+        "/api/challenges", headers=ha,
+        json={"targetMemberIds": ["bob"], "scheduledDate": "2026-07-01"},
+    )).json()
+    # 지목된 사람이 거절 → 폐기(휴지통)
+    res = await client.post(
+        f"/api/challenges/{made['id']}/respond", headers=hb, json={"response": "rejected", "reason": "패스"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "discarded"
+
+    # 그래도 실제로 붙었다면 결과를 넣을 수 있다.
+    res = await client.post(
+        f"/api/challenges/{made['id']}/result", headers=ha,
+        json={"winnerSide": "creator", "scheduledDate": "2026-07-01"},
+    )
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["status"] == "done"
+    assert out["resultWinnerSide"] == "creator"
+    assert [t["response"] for t in out["targets"]] == ["accepted"]
+
+
+async def test_not_held_result_can_be_corrected(client):
+    """미실시로 적힌 건은 덮어쓸 수 있다(요청) — '안 했다'는 표시라 실제로 치렀다면 그 위에
+    실제 결과가 와야 한다. 반대로 실제 승부가 이미 들어온 건은 그대로 막는다."""
+    a = await _signup(client, "alice", "Alice#1001")
+    b = await _signup(client, "bob", "Bob#1002")
+    ha = {"Authorization": f"Bearer {a['accessToken']}"}
+    hb = {"Authorization": f"Bearer {b['accessToken']}"}
+    await _approve(client, a["accessToken"], "bob")
+
+    made = (await client.post(
+        "/api/challenges", headers=ha, json={"targetMemberIds": ["bob"], "scheduledDate": "2026-07-01"},
+    )).json()
+    await client.post(f"/api/challenges/{made['id']}/respond", headers=hb, json={"response": "accepted", "reason": "OK"})
+    await client.post(
+        f"/api/challenges/{made['id']}/result", headers=ha,
+        json={"winnerSide": "not_held", "scheduledDate": "2026-07-01"},
+    )
+    res = await client.post(
+        f"/api/challenges/{made['id']}/result", headers=hb,
+        json={"winnerSide": "target", "scheduledDate": "2026-07-01"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["resultWinnerSide"] == "target"
+
+    # 이미 실제 결과가 들어온 뒤에는 못 바꾼다(먼저 입력한 쪽 인정).
+    res = await client.post(
+        f"/api/challenges/{made['id']}/result", headers=ha,
+        json={"winnerSide": "creator", "scheduledDate": "2026-07-01"},
+    )
+    assert res.status_code == 400, res.text

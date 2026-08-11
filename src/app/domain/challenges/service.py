@@ -479,11 +479,18 @@ class ChallengeService:
         challenge = await self._repo.get(challenge_id)
         if challenge is None:
             raise NotFoundError("도전장을 찾을 수 없습니다.")
-        if _status_of(challenge) != "confirmed":
-            raise ValidationError("확정된 대결만 결과를 입력할 수 있습니다.")
-        if not any(p.member_pk == actor.pk for p in challenge.participants):
-            raise ForbiddenError("이 대결의 참가자만 결과를 입력할 수 있습니다.")
-        if challenge.result_winner_side is not None:
+        status = _status_of(challenge)
+        """폐기된 건도 결과를 넣을 수 있다(요청: 만료됐는데 실제로는 경기를 한 경우) —
+        마감이 지나 무응답으로 접힌 건이나 미실시로 적힌 건이 그렇다. 실제로 붙었다면 그
+        사실이 기록이지, 그때 응답을 제때 눌렀는지가 기록은 아니다."""
+        if status not in ("confirmed", "discarded"):
+            raise ValidationError("확정됐거나 폐기된 대결만 결과를 입력할 수 있습니다.")
+        is_admin = "admin" in {r.role for r in actor.roles}
+        if not any(p.member_pk == actor.pk for p in challenge.participants) and not is_admin:
+            raise ForbiddenError("이 대결의 참가자나 운영자만 결과를 입력할 수 있습니다.")
+        # 실제 승부 결과가 이미 있으면 그대로 둔다(먼저 입력한 쪽 인정) — 다만 '미실시'는
+        # 결과라기보다 "안 했다"는 표시라, 실제로 치렀다면 그 위에 덮어쓸 수 있어야 한다.
+        if challenge.result_winner_side is not None and challenge.result_winner_side != "not_held":
             raise ValidationError("이미 결과가 입력됐습니다.")
 
         # 결과와 함께 넘어온 실제 대결 날짜로 확정한다(필수).
@@ -496,6 +503,20 @@ class ChallengeService:
         # 경우도 휴지통으로"). 실제 승부 결과(creator/target/draw)만 완료로 남는다.
         if winner_side == "not_held":
             _discard(challenge, datetime.now(UTC))
+        else:
+            """실제 승부가 들어오면 강제로 성사시킨다(요청: 강제 결과 입력 — 취소·만료·거절된
+            건이라도 상태가 수락으로 바뀌고 결과가 들어가게).
+              · 휴지통에서 꺼내고(discarded_at을 지운다 — _status_of가 이 값을 먼저 본다)
+              · 아직 답 안 한 사람, 거절한 사람의 응답을 수락으로 돌린다.
+            뒤엣것까지 해야 카드가 앞뒤가 맞는다 — 응답이 '거절'로 남아 있으면 아바타 배지는
+            거절인데 맨 아랫줄은 "OO 승"이 되어, 한 도전장이 두 얼굴을 갖는다.
+            근거는 사실 쪽이다: 실제로 붙었다면 그 자리는 성사된 것이고, 그때 응답 버튼을
+            제때 눌렀는지는 그 판이 있었다는 사실을 바꾸지 못한다."""
+            challenge.discarded_at = None
+            for p in challenge.participants:
+                if p.side == "target" and p.response != "accepted":
+                    p.response = "accepted"
+                    p.responded_at = datetime.now(UTC)
         await self._session.commit()
         await self._session.refresh(challenge, attribute_names=["participants"])
         return to_challenge_out(challenge)
