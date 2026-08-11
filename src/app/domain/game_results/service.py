@@ -425,7 +425,8 @@ def _to_utc_naive(dt: datetime) -> datetime:
 #   lodging·relocate : 집을 잃고 아군 기지에 얹혀 살거나 자리를 옮긴 것
 #   no-elim          : 다 털리기 직전에 "노엘"을 외친 것
 # 나머지 전술은 이긴 판만 센다(_tactic_counts 주석) — 통했다는 사실이 곧 그 수의 값어치다.
-_COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim"}
+#   gg               : 졌다고 손을 내민 한마디(매너 퀸) — 이긴 판에서 나올 리가 없다
+_COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim", "gg"}
 
 
 class _RaceAgg:
