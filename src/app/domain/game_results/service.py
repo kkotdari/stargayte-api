@@ -1058,10 +1058,19 @@ class GameResultService:
                 "tactics": overall_tactics,
                 "maps": overall_maps,
             })
+            # 이긴 판만 놓고 낸 같은 값 한 벌(요청: 비중 칭호도 이긴 판만) — 칭호가 "무엇으로
+            # 판을 풀었나"를 물을 때 쓴다. 화면의 도넛·Top5는 위 overall(승패 무관)을 그대로
+            # 쓴다: 그쪽은 성과가 아니라 그 사람이 즐겨 쓰는 것을 보여주는 자리다.
+            # 전적·순위 같은 값은 여기서 뜻이 없다(이긴 판만 모았으니 승률은 늘 100%다) —
+            # 칭호가 보는 것은 이 한 벌의 구성비·분당 값뿐이다.
+            won_entry = overall_agg.to_entry().model_copy(update={
+                **_trimmed_avgs([raw for raw in overall_raw if getattr(raw, "won", False)]),
+            })
             entries.append(
                 MemberStatsEntry(
                     member_id=member.id,
                     overall=overall_entry,
+                    won=won_entry,
                     by_race=by_race,
                     most_played_race=most_played_race,
                 )

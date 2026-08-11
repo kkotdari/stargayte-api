@@ -495,6 +495,10 @@ class MemberStatsEntry(BaseModel):
 
     member_id: str = Field(alias="memberId")
     overall: RaceStatsEntry
+    # 이긴 판만 놓고 낸 같은 값 — 칭호가 '무엇으로 판을 풀었나'를 물을 때 쓴다(요청).
+    # 전적(판수·승률)은 이 안에서 뜻이 없다: 이긴 판만 모았으니 늘 100%다. 구성비·분당
+    # 값·원장만 읽어야 한다.
+    won: RaceStatsEntry
     by_race: dict[str, RaceStatsEntry] = Field(alias="byRace")
     most_played_race: str | None = Field(default=None, alias="mostPlayedRace")
     # 랭킹 순서 — 승률만으로는 못 가르는 동률을 승자승(맞대결)/공통상대/전체 승수로 마저

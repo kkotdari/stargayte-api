@@ -869,3 +869,39 @@ async def test_map_records_group_by_minimap_image_name(client):
 
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
     assert res.json()["members"][0]["overall"]["maps"] == {"빨무": [2, 2]}
+
+
+async def test_stats_serves_won_only_block(client):
+    """이긴 판만 놓고 낸 값 한 벌(won) — 칭호가 '무엇으로 판을 풀었나'를 물을 때 쓴다(요청).
+
+    같은 사람이 이긴 판과 진 판에서 다른 구성을 뽑았으면, overall은 둘을 다 담고 won은
+    이긴 판 것만 담아야 한다.
+    """
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+
+    win = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    win["buildMix"] = {"uGround": 40, "uAir": 0, "skills": {"Yamato Gun": 2}}
+    lose = _slot("player01", "테란", 100, 80, 500, 400, build=300)
+    lose["buildMix"] = {"uGround": 0, "uAir": 60, "skills": {"Yamato Gun": 5}}
+
+    await _create_match(
+        client, headers, "2026-07-01",
+        team1=[win], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
+    )
+    await _create_match(
+        client, headers, "2026-07-02",
+        team1=[lose], team2=[_slot("player02", "저그")], result="team2", duration_seconds=1500,
+    )
+
+    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
+    entry = res.json()["members"][0]
+    # 전체는 둘을 다 담는다 — 화면의 도넛·Top5가 쓰는 값이다.
+    assert entry["overall"]["buildMix"]["uGround"] == 40
+    assert entry["overall"]["buildMix"]["uAir"] == 60
+    # 이긴 판만 놓으면 그 판의 구성만 남는다.
+    assert entry["won"]["buildMix"]["uGround"] == 40
+    assert entry["won"]["buildMix"]["uAir"] == 0
+    # 마법 원장도 마찬가지다(이긴 판의 두 번만).
+    assert entry["won"]["buildMix"]["skills"] == {"Yamato Gun": 2}
