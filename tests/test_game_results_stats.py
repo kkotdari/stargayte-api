@@ -583,7 +583,7 @@ def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
     building_secs=None, unit_secs=None, skill_secs=None, core_seconds=None, core_cmd=0,
-    core_build=0, core_unit=0, ups=None, up_counts=None,
+    core_build=0, core_unit=0, ups=None, up_counts=None, skills_won=None,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
@@ -594,6 +594,8 @@ def _mix(
         # 경기가 없으면 빈 사전이다.
         "ups": ups or {}, "upCounts": up_counts or {},
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
+        # 이긴 판에서만 센 마법 원장 — 칭호가 보는 값이다(요청). 집계에서만 채워진다.
+        "skillsWon": skills_won or {},
         "buildingSecs": building_secs or {}, "unitSecs": unit_secs or {},
         "skillSecs": skill_secs or {},
         # 주요시간대(초)와 그 구간 안의 커맨드 수 — 도넛 옆 "분당 몇 채/몇 기"의 분모와
@@ -659,6 +661,9 @@ async def test_stats_sums_build_mix_across_matches(client):
         building_secs={"Barracks": 3000, "Bunker": 1500, "Starport": 1500},
         unit_secs={"Marine": 3000, "Siege Tank (Tank Mode)": 1500, "Wraith": 1500},
         skill_secs={"Stim Packs": 3000, "Yamato Gun": 1500},
+        # 셋 다 이긴 판이라(result=team1) 칭호용 원장도 위 skills와 같은 수다 — 진 판이
+        # 섞이면 그만큼 적어진다(요청: 기술도 이긴 판만 센다).
+        skills_won={"Stim Packs": 17, "Yamato Gun": 3},
     )
     # 두 분모도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸고, 그 두 판의 주요시간대는
     # 600초씩이다(경기 길이 900초와 다르다 — 분당 지표의 분모는 주요시간대 쪽이다).

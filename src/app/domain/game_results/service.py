@@ -259,6 +259,8 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
     total: dict[str, object] = {f: 0 for f in (*_BUILD_MIX_FIELDS, *_UPGRADE_FIELDS)}
     tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
     tallies.update({k: {} for k in _BUILD_MIX_TALLIES.values()})
+    # 이긴 판에서만 센 마법 원장(요청) — 칭호가 이것을 본다(schemas.BuildMix.skills_won).
+    skills_won: dict[str, int] = {}
     seconds = 0
     up_plays = 0
     # 업그레이드 줄별 합과 '그 줄이 실린 경기 수' — 줄이 종족마다 다르므로 분모도 줄마다
@@ -309,7 +311,11 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
                     tallies[t][name] = tallies[t].get(name, 0) + int(v)
                     # 이 경기에 그 이름이 나왔다 — 그 판의 길이를 이 이름의 분모에 얹는다.
                     tallies[secs_key][name] = tallies[secs_key].get(name, 0) + full
+                    # 이긴 판이면 칭호용 원장에도 얹는다(요청: 기술도 이긴 판만 센다).
+                    if t == "skills" and getattr(r, "won", False):
+                        skills_won[name] = skills_won.get(name, 0) + int(v)
     total.update(tallies)
+    total["skills_won"] = skills_won
     total["ups"] = up_lines
     total["up_counts"] = up_line_plays
     return {

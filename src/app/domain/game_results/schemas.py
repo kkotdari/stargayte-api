@@ -80,6 +80,10 @@ class BuildMix(BaseModel):
     buildings: dict[str, int] = Field(default_factory=dict)
     units: dict[str, int] = Field(default_factory=dict)
     skills: dict[str, int] = Field(default_factory=dict)
+    # 이긴 판에서만 센 마법 원장(요청: 핵·스테이시스 같은 기술도 이긴 판만 센다) — 위 skills는
+    # 화면의 Top5가 쓰는 값이라 승패를 안 가리고 그대로 두고, 칭호는 이쪽을 본다.
+    # 집계에서만 채워진다(경기 하나짜리 값에는 없다) — 그 판의 승패는 경기 자체가 이미 안다.
+    skills_won: dict[str, int] = Field(default_factory=dict, alias="skillsWon")
     # 위 세 원장의 '이름별 총 경기시간(초)' — 그 이름이 한 번이라도 나온 경기들의 길이 합.
     # 화면이 총합을 10분당 값으로 되돌릴 분모다(요청). 집계에서만 채워진다: 경기 하나짜리
     # 값에서는 그 판의 길이 하나뿐이라 실을 이유가 없고, 합칠 때 세는 편이 payload도 가볍다.
@@ -104,7 +108,7 @@ class BuildMix(BaseModel):
     core_unit: int = Field(default=0, ge=0, le=1000000, alias="coreUnit")
 
     @field_validator(
-        "buildings", "units", "skills", "building_secs", "unit_secs", "skill_secs",
+        "buildings", "units", "skills", "skills_won", "building_secs", "unit_secs", "skill_secs",
         "ups", "up_counts",
     )
     @classmethod

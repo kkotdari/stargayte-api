@@ -420,6 +420,8 @@ class GameResultRepository:
                 GameResultParticipant.build_count,
                 GameResultParticipant.build_mix,
                 GameOutcome.duration_seconds,
+                # 이 판을 이겼나 — 칭호가 쓰는 '이긴 판만 센 원장'의 잣대다(요청).
+                (GameOutcome.result == GameResultParticipant.team).label("won"),
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)

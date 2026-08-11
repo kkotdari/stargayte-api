@@ -310,6 +310,8 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
         # 그 자리가 비어 있어도 되는지(옛 기록과 같은 모양) 함께 확인한다.
         "ups": {}, "upCounts": {},
         "buildings": {"Barracks": 4}, "units": {"Marine": 40}, "skills": {"Stim Packs": 12},
+        # 이긴 판만 센 마법 원장도 기간 합계에서만 채워진다 — 경기 하나에는 빈 사전이다.
+        "skillsWon": {},
         # 이름별 시간은 기간 합계를 낼 때만 세는 값이라, 경기 하나짜리에는 빈 사전으로 남는다.
         "buildingSecs": {}, "unitSecs": {}, "skillSecs": {},
         # 주요시간대(초)와 그 구간의 생산 커맨드 — 경기 하나마다 파서가 재서 실어 보낸다.
