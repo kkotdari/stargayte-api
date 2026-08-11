@@ -793,17 +793,20 @@ async def test_stats_counts_tactics_and_map_records(client):
     # 당한 쪽(whom)은 player01이지만 이 전술을 한 사람은 player02다.
     await _post("2026-07-03", "헌터스", "team2", [
         {"k": "cannon-rush", "won": True, "who": ["player02"], "whom": ["player01"]},
+        # 진 판이어도 세는 수(요청) — 셋방살이·노엘은 밀린 뒤에야 나오는 이야기라 이긴 판만
+        # 보면 영영 안 잡힌다.
+        {"k": "lodging", "won": False, "who": ["player01"]},
     ])
 
     res = await client.get(
         "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
     )
     by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["tactics"] == {"side-tank": 2}
+    assert by_id["player01"]["overall"]["tactics"] == {"side-tank": 2, "lodging": 1}
     # 센포는 진 판(won=False)이라 안 세고, 포토러시만 남는다.
     assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
     # 종족별로도 갈린다 — player01은 테란으로만 뛰었다.
-    assert by_id["player01"]["byRace"]["테란"]["tactics"] == {"side-tank": 2}
+    assert by_id["player01"]["byRace"]["테란"]["tactics"] == {"side-tank": 2, "lodging": 1}
     assert by_id["player01"]["byRace"]["저그"]["tactics"] == {}
 
     # 맵 전적 — [판수, 승수].
@@ -816,7 +819,7 @@ async def test_stats_counts_tactics_and_map_records(client):
         params={"memberIds": "player01,player02", "dateFrom": "2026-07-03", "dateTo": "2026-07-03"},
     )
     by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["tactics"] == {}
+    assert by_id["player01"]["overall"]["tactics"] == {"lodging": 1}
     assert by_id["player01"]["overall"]["maps"] == {"헌터스": [1, 0]}
     assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
 

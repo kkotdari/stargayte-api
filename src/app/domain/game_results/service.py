@@ -415,6 +415,13 @@ def _to_utc_naive(dt: datetime) -> datetime:
     return dt
 
 
+# 져도 세는 수(요청) — 이야기 자체가 '밀린 뒤에 벌어진 일'이라, 이긴 판만 보면 영영 안 잡힌다.
+#   lodging·relocate : 집을 잃고 아군 기지에 얹혀 살거나 자리를 옮긴 것
+#   no-elim          : 다 털리기 직전에 "노엘"을 외친 것
+# 나머지 전술은 이긴 판만 센다(_tactic_counts 주석) — 통했다는 사실이 곧 그 수의 값어치다.
+_COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim"}
+
+
 class _RaceAgg:
     """aggregate_stats가 돌려주는 (member_pk, race) 단위 원본 행 하나 또는 여러 개를
     합산해서 RaceStatsEntry로 만드는 중간 누산기 — 전적(판수/승/무)과 BEST PLAYER 횟수만 센다.
@@ -899,7 +906,7 @@ class GameResultService:
                 if not isinstance(key, str) or not key:
                     continue
                 # 진 판의 수는 안 센다(위 주석) — won이 없는 옛 요약도 마찬가지로 뺀다.
-                if beat.get("won") is not True:
+                if beat.get("won") is not True and key not in _COUNT_EVEN_IF_LOST:
                     continue
                 actors: set[str] = set()
                 for field in ("who", "who2"):
