@@ -1579,14 +1579,16 @@ class GameResultService:
         rows = await self._repo.list_replay_maps(uniq)
         # 사람이 올려 둔 실제 미니맵 그림 — 여러 맵이 한 장을 함께 가리킬 수 있으므로(요청:
         # 이름·판본만 다른 맵 묶기) 한 번만 읽어 나눠 쓴다.
-        images = {img.id: img.image for img in await self._repo.list_minimap_images()} \
+        images = {img.id: img for img in await self._repo.list_minimap_images()} \
             if any(r.image_id for r in rows) else {}
         return [
             ReplayMapOut(
                 hash=r.map_hash, name=r.name, width=r.width, height=r.height,
                 palette=list(r.palette or []), tiles=r.tiles,
                 resources=list(r.resources or []),
-                image=images.get(r.image_id) if r.image_id else None,
+                image=images[r.image_id].image if r.image_id in images else None,
+                # 검수된 지형(요청) - 재생 화면이 어림 대신 쓴다.
+                walk=images[r.image_id].walk if r.image_id in images else None,
             )
             for r in rows
         ]
@@ -1603,19 +1605,19 @@ class GameResultService:
                 )
                 for r in rows
             ],
-            images=[MinimapImageOut(id=i.id, name=i.name, image=i.image) for i in images],
+            images=[MinimapImageOut(id=i.id, name=i.name, image=i.image, walk=i.walk) for i in images],
         )
 
     async def create_minimap_image(self, payload: MinimapImageWrite) -> MinimapImageOut:
         if not payload.image:
             raise ValidationError("미니맵 그림을 함께 올려야 합니다.")
-        row = MinimapImage(name=payload.name, image=payload.image)
+        row = MinimapImage(name=payload.name, image=payload.image, walk=payload.walk or None)
         self._repo.add_minimap_image(row)
         await self._repo.flush()
         if payload.hashes:
             await self._repo.assign_minimap_image(payload.hashes, row.id)
         await self._session.commit()
-        return MinimapImageOut(id=row.id, name=row.name, image=row.image)
+        return MinimapImageOut(id=row.id, name=row.name, image=row.image, walk=row.walk)
 
     async def update_minimap_image(self, image_id: int, payload: MinimapImageWrite) -> MinimapImageOut:
         """등록된 미니맵의 이름·그림을 고친다(요청: 미니맵 메뉴에서 그림 변경).
@@ -1632,10 +1634,13 @@ class GameResultService:
         row.name = payload.name
         if payload.image:
             row.image = payload.image
+        # 지형(요청) - 보냈을 때만 갈고, 빈 문자열은 지우기다.
+        if payload.walk is not None:
+            row.walk = payload.walk or None
         if payload.hashes:
             await self._repo.assign_minimap_image(payload.hashes, row.id)
         await self._session.commit()
-        return MinimapImageOut(id=row.id, name=row.name, image=row.image)
+        return MinimapImageOut(id=row.id, name=row.name, image=row.image, walk=row.walk)
 
     async def delete_minimap_image(self, image_id: int) -> None:
         row = await self._repo.get_minimap_image(image_id)

@@ -216,6 +216,8 @@ class ReplayMapOut(BaseModel):
     resources: list[list[float]] = Field(default_factory=list)
     # 사람이 올려 둔 실제 미니맵 그림(data URL) — 있으면 격자 대신 이걸 그린다(요청).
     image: str | None = None
+    # 그 그림의 지형(이동 가능/불가) 격자 - 운영자가 검수/수정한 값(요청). JSON 문자열.
+    walk: str | None = None
 
 
 class ReplayMapList(BaseModel):
@@ -238,6 +240,8 @@ class MinimapImageWrite(BaseModel):
     name: str = Field(min_length=1, max_length=150)
     # 고칠 때 그림을 그대로 두려면 생략한다.
     image: str | None = Field(default=None, max_length=_IMAGE_MAX_CHARS)
+    # 지형 격자(JSON 문자열, 요청) - 보내면 갈아 끼운다. 빈 문자열은 지우기다.
+    walk: str | None = Field(default=None, max_length=40000)
     hashes: list[str] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
@@ -262,6 +266,8 @@ class MinimapImageOut(BaseModel):
     id: int
     name: str
     image: str
+    # 검수된 지형 격자(요청) - 있으면 함께 내려간다.
+    walk: str | None = None
 
 
 class SummaryRewriteSlot(BaseModel):

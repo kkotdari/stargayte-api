@@ -103,6 +103,7 @@ async def _ensure_schema() -> None:
             ("add challenge canceled_by", _add_challenge_canceled_by),
             ("add challenge backdrop", _add_challenge_backdrop),
             ("add participant build_mix", _add_participant_build_mix),
+            ("add minimap image walk", _add_minimap_image_walk),
             ("drop challenge time", _drop_challenge_time),
             ("drop challenge revenge chain", _drop_challenge_revenge_chain),
             ("drop challenge from match request", _drop_challenge_from_match_request),
@@ -428,6 +429,23 @@ async def _add_participant_build_mix(conn: object) -> None:
             return
         except Exception:  # noqa: BLE001 — 다음 문법으로 넘어가거나, 이미 있으면 그대로 둔다.
             logging.getLogger(__name__).debug("build_mix 추가 시도 실패: %s", sql, exc_info=True)
+
+
+async def _add_minimap_image_walk(conn: object) -> None:
+    """minimap_images.walk 컬럼을 더한다(멱등) - 지형(이동 가능/불가) 격자(요청:
+    운영자가 검수/수정한 값 저장). 방언 갈래는 build_mix와 같다."""
+    from sqlalchemy import text
+
+    for sql in (
+        "ALTER TABLE minimap_images ADD COLUMN IF NOT EXISTS walk TEXT",
+        "ALTER TABLE minimap_images ADD COLUMN walk TEXT",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001
+            continue
+
 
 
 async def _drop_challenge_revenge_chain(conn: object) -> None:
