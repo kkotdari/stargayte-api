@@ -589,6 +589,8 @@ def _mix(
         "bProd": b_prod, "bDef": b_def,
         "uBasic": u_basic, "uAdv": u_adv, "uCaster": u_caster,
         "uGround": u_ground, "uAir": u_air, "worker5": worker5,
+        # 전투 원장(요청: 전투 하나하나의 승패) — 이 테스트들의 판에는 원장이 없어 늘 0이다.
+        "btGround": 0, "btGroundWon": 0, "btAir": 0, "btAirWon": 0, "btMagic": 0, "btMagicWon": 0,
         "upGw": up_gw, "upGa": up_ga, "upAw": up_aw, "upAa": up_aa, "upSh": up_sh,
         # 업그레이드 줄별 합·분모(요청: 종족마다 줄이 달라 종족별로 보여준다) — 줄이 실린
         # 경기가 없으면 빈 사전이다.
@@ -937,28 +939,23 @@ async def test_stats_counts_bests_in_lost_games(client):
     assert overall["lostBests"] == 1
 
 
-def test_combat_split_classifies_games_and_counts_wins():
-    """지상전/공중전/마법전 판 판정(요청: 많이 뽑아 활약해 승리로 이끌어야) — 한 판이 여러
-    갈래에 들 수 있고, 바닥(지상 30기·8할, 공중 12기, 마법 5기)에 못 미친 판·구성이 없는
-    수기 등록 판은 어느 갈래에도 안 든다."""
+def test_combat_split_sums_battle_ledgers():
+    """전투 원장 합산(요청: 경기가 아니라 전투 하나하나의 승패) — 판정은 프론트가 끝내
+    build_mix에 실어 오고, 서버는 기간 합계만 낸다. 원장이 없는 옛 기록·수기 등록은 0으로
+    지나간다."""
     from app.domain.game_results.service import _combat_split
 
     class _Row:
-        def __init__(self, mix, won):
+        def __init__(self, mix):
             self.build_mix = mix
-            self.won = won
 
     rows = [
-        # 지상 위주로 이긴 판 — 지상전에만 든다(공중 2기는 바닥 미달).
-        _Row({"u_ground": 50, "u_air": 2, "u_caster": 0}, True),
-        # 공중 함대 + 마법을 함께 굴려 진 판 — 공중전이자 마법전, 지상은 비중(8할) 미달.
-        _Row({"u_ground": 20, "u_air": 15, "u_caster": 6}, False),
-        # 지상 30기를 넘겼지만 공중이 섞여 비중 미달, 공중도 12기 미달 — 어느 갈래도 아니다.
-        _Row({"u_ground": 32, "u_air": 10, "u_caster": 0}, True),
-        # 수기 등록(구성 없음) — 판정 자체가 안 된다.
-        _Row(None, True),
+        _Row({"bt_ground": 3, "bt_ground_won": 2, "bt_magic": 1, "bt_magic_won": 1}),
+        _Row({"bt_ground": 2, "bt_ground_won": 0, "bt_air": 4, "bt_air_won": 3}),
+        _Row({"b_prod": 10}),  # 재분석 전 기록 — 원장 키 자체가 없다
+        _Row(None),            # 수기 등록 — 구성 자체가 없다
     ]
     out = _combat_split(rows)
-    assert out["ground"] == [1, 1]
-    assert out["air"] == [1, 0]
-    assert out["magic"] == [1, 0]
+    assert out["ground"] == [5, 2]
+    assert out["air"] == [4, 3]
+    assert out["magic"] == [1, 1]

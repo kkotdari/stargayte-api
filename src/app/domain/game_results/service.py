@@ -429,41 +429,31 @@ def _to_utc_naive(dt: datetime) -> datetime:
 _COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim", "gg"}
 
 
-# 지상전/공중전/마법전 '판' 판정(요청: 그 병력을 많이 뽑아 활약해 승리로 이끌어야) — 한 판의
-# 생산 구성(build_mix)에서 그 갈래를 이만큼은 뽑았어야 "그 싸움을 한 판"으로 친다. 지상은
-# 기본값이라 양(30기)에 비중(공중 대비 8할)까지 걸고, 공중·마법은 그만큼 뽑은 것 자체가
-# 그 축으로 싸웠다는 말이라 양만 본다. 값은 커맨드 수다(구성비 도넛과 같은 자).
-_COMBAT_GROUND_MIN = 30
-_COMBAT_GROUND_SHARE = 0.8
-_COMBAT_AIR_MIN = 12
-_COMBAT_MAGIC_MIN = 5
+# 전투(교전) 원장의 자리 — 갈래 → (붙은 수 필드, 이긴 수 필드). 판정(전투 뭉치 짓기·
+# "그 자리에 살아남았나")은 프론트 replayBattles.ts가 등록·재분석 때 하고 build_mix에 실어
+# 보낸다 — bests·beats와 같은 원칙으로, 판정 한 벌은 프론트에만 두고 서버는 센다.
+_COMBAT_FIELDS = {
+    "ground": ("bt_ground", "bt_ground_won"),
+    "air": ("bt_air", "bt_air_won"),
+    "magic": ("bt_magic", "bt_magic_won"),
+}
 
 
 def _combat_split(rows: list) -> dict[str, list[int]]:
-    """갈래(ground/air/magic) → [그렇게 싸운 판수, 그중 이긴 판수].
+    """갈래(ground/air/magic) → [붙은 전투 수, 이긴 전투 수]의 기간 합계.
 
-    칭호(지상전·공중전·마법 퀸)가 "그 싸움의 승률"을 내는 재료다(요청: 지상 전투 승률 같은
-    것) — 구성비 합계(_build_mix_agg)로는 판 단위의 승패를 다시 못 가르기 때문에 경기별
-    원본(raw_metric_rows)에서 판마다 가려 센다. 한 판이 여러 갈래에 들 수 있다(지상을 잔뜩
-    뽑고 마법도 쓴 판은 지상전이자 마법전이다)."""
-    out: dict[str, list[int]] = {"ground": [0, 0], "air": [0, 0], "magic": [0, 0]}
+    칭호(지상전·공중전·마법 퀸)가 "그 전투의 승률"을 내는 재료다(요청: 경기가 아니라 전투
+    하나하나에서 이겼냐). 경기별 원본(raw_metric_rows)의 build_mix에 실린 원장을 더한다 —
+    구성 합계(_build_mix_agg)에 안 얹는 것은 저쪽이 도넛(화면 구성비) 재료라 전투 수가
+    섞일 자리가 아니어서다. 옛 기록·수기 등록에는 원장이 없어 0으로 지나간다."""
+    out: dict[str, list[int]] = {key: [0, 0] for key in _COMBAT_FIELDS}
     for r in rows:
         m = getattr(r, "build_mix", None)
         if not isinstance(m, dict):
             continue
-        g = int(m.get("u_ground") or 0)
-        a = int(m.get("u_air") or 0)
-        c = int(m.get("u_caster") or 0)
-        won = 1 if getattr(r, "won", False) else 0
-        if g >= _COMBAT_GROUND_MIN and (g + a > 0 and g / (g + a) >= _COMBAT_GROUND_SHARE):
-            out["ground"][0] += 1
-            out["ground"][1] += won
-        if a >= _COMBAT_AIR_MIN:
-            out["air"][0] += 1
-            out["air"][1] += won
-        if c >= _COMBAT_MAGIC_MIN:
-            out["magic"][0] += 1
-            out["magic"][1] += won
+        for key, (n_field, won_field) in _COMBAT_FIELDS.items():
+            out[key][0] += int(m.get(n_field) or 0)
+            out[key][1] += int(m.get(won_field) or 0)
     return out
 
 
@@ -1116,8 +1106,8 @@ class GameResultService:
                     won=won_entry,
                     by_race=by_race,
                     most_played_race=most_played_race,
-                    # 지상전/공중전/마법전 전적(요청) — 종족 필터와 같은 raw를 쓰므로 화면의
-                    # 다른 수와 잣대가 같다. 종족은 안 가른다(요청: 종족 무관).
+                    # 지상전/공중전/마법전 전투 전적(요청) — 종족 필터와 같은 raw를 쓰므로
+                    # 화면의 다른 수와 잣대가 같다. 종족은 안 가른다(요청: 종족 무관).
                     combat=_combat_split(overall_raw),
                 )
             )

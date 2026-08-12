@@ -333,7 +333,9 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
 
     after = (await client.get(f"/api/game-results/{made['id']}", headers=headers)).json()
     me = next(s for s in after["team1"] if s["playerName"] == "player01")
-    assert me["buildMix"] == mix
+    # 저장은 스키마를 한 번 거친다 — 전투 원장(bt_*)처럼 안 실어 보낸 필드는 기본값 0으로
+    # 채워져 돌아오므로, 보낸 것이 그대로 있는지만 본다.
+    assert {k: me["buildMix"][k] for k in mix} == mix
     assert me["buildCount"] == 300
     assert me["apm"] == 120
     assert after["mapName"] == "로스트템플"
