@@ -19,10 +19,13 @@ async def _signup(client, member_id: str, battletag: str) -> dict:
     return res.json()
 
 
-def _slot(member_id: str, race: str, apm=None, eapm=None, cmd=None, ecmd=None, build=None) -> dict:
+def _slot(
+    member_id: str, race: str, apm=None, eapm=None, cmd=None, ecmd=None, build=None, mix=None,
+) -> dict:
     return {
         "memberId": member_id, "race": race,
         "apm": apm, "eapm": eapm, "cmdCount": cmd, "effectiveCmdCount": ecmd, "buildCount": build,
+        "buildMix": mix,
     }
 
 
@@ -774,14 +777,20 @@ async def test_stats_counts_tactics_and_map_records(client):
     await _signup(client, "player02", "Mist#1002")
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
-    async def _post(date: str, map_name: str, result: str, beats: list[dict]) -> None:
+    # 옆탱(side-tank)은 에픽 전투 칭호의 열쇠라 그 판의 전투도 이겼어야 센다(요청) —
+    # 전투 원장(bt_ground_won)을 실은 구성으로 등록한다.
+    fought = {"btGroundWon": 1}
+
+    async def _post(
+        date: str, map_name: str, result: str, beats: list[dict], mix: dict | None = fought,
+    ) -> None:
         res = await client.post(
             "/api/game-results",
             headers=headers,
             json={
                 "date": date, "note": "",
-                "team1": [_slot("player01", "테란")],
-                "team2": [_slot("player02", "프로토스")],
+                "team1": [_slot("player01", "테란", mix=mix)],
+                "team2": [_slot("player02", "프로토스", mix=mix)],
                 "result": result,
                 "mapName": map_name,
                 "summaryData": {"v": 2, "beats": beats},
@@ -797,6 +806,11 @@ async def test_stats_counts_tactics_and_map_records(client):
     await _post("2026-07-02", "로스트템플", "team1", [
         {"k": "side-tank", "won": True, "who": ["player01"], "who2": ["player01"]},
     ])
+    # 경기는 이겼어도 전투 원장이 없는 판(재분석 전 옛 기록)의 옆탱은 안 센다(요청:
+    # 전투/경기 모두 이긴 경우만). 맵 전적에는 여느 판처럼 들어간다.
+    await _post("2026-06-30", "로스트템플", "team1", [
+        {"k": "side-tank", "won": True, "who": ["player01"]},
+    ], mix=None)
     # 당한 쪽(whom)은 player01이지만 이 전술을 한 사람은 player02다.
     await _post("2026-07-03", "헌터스", "team2", [
         {"k": "cannon-rush", "won": True, "who": ["player02"], "whom": ["player01"]},
@@ -817,8 +831,8 @@ async def test_stats_counts_tactics_and_map_records(client):
     assert by_id["player01"]["byRace"]["저그"]["tactics"] == {}
 
     # 맵 전적 — [판수, 승수].
-    assert by_id["player01"]["overall"]["maps"] == {"로스트템플": [2, 2], "헌터스": [1, 0]}
-    assert by_id["player02"]["overall"]["maps"] == {"로스트템플": [2, 0], "헌터스": [1, 1]}
+    assert by_id["player01"]["overall"]["maps"] == {"로스트템플": [3, 3], "헌터스": [1, 0]}
+    assert by_id["player02"]["overall"]["maps"] == {"로스트템플": [3, 0], "헌터스": [1, 1]}
 
     # 기간을 좁히면 둘 다 그 조건만 본다.
     res = await client.get(

@@ -544,6 +544,9 @@ class GameResultRepository:
                 GameResultParticipant.player_name,
                 GameResultParticipant.race,
                 member_alias.member_pk,
+                # 전투 원장(bt_*)이 실린 구성 — 에픽 전투 칭호가 "그 판에서 전투도
+                # 이겼나"를 대조하는 재료다(요청). 요약과 달리 행마다 제 것이라 무겁지 않다.
+                GameResultParticipant.build_mix,
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
