@@ -935,3 +935,30 @@ async def test_stats_counts_bests_in_lost_games(client):
     overall = res.json()["members"][0]["overall"]
     assert overall["bests"] == 2
     assert overall["lostBests"] == 1
+
+
+def test_combat_split_classifies_games_and_counts_wins():
+    """지상전/공중전/마법전 판 판정(요청: 많이 뽑아 활약해 승리로 이끌어야) — 한 판이 여러
+    갈래에 들 수 있고, 바닥(지상 30기·8할, 공중 12기, 마법 5기)에 못 미친 판·구성이 없는
+    수기 등록 판은 어느 갈래에도 안 든다."""
+    from app.domain.game_results.service import _combat_split
+
+    class _Row:
+        def __init__(self, mix, won):
+            self.build_mix = mix
+            self.won = won
+
+    rows = [
+        # 지상 위주로 이긴 판 — 지상전에만 든다(공중 2기는 바닥 미달).
+        _Row({"u_ground": 50, "u_air": 2, "u_caster": 0}, True),
+        # 공중 함대 + 마법을 함께 굴려 진 판 — 공중전이자 마법전, 지상은 비중(8할) 미달.
+        _Row({"u_ground": 20, "u_air": 15, "u_caster": 6}, False),
+        # 지상 30기를 넘겼지만 공중이 섞여 비중 미달, 공중도 12기 미달 — 어느 갈래도 아니다.
+        _Row({"u_ground": 32, "u_air": 10, "u_caster": 0}, True),
+        # 수기 등록(구성 없음) — 판정 자체가 안 된다.
+        _Row(None, True),
+    ]
+    out = _combat_split(rows)
+    assert out["ground"] == [1, 1]
+    assert out["air"] == [1, 0]
+    assert out["magic"] == [1, 0]

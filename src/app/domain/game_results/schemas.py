@@ -503,6 +503,11 @@ class MemberStatsEntry(BaseModel):
     won: RaceStatsEntry
     by_race: dict[str, RaceStatsEntry] = Field(alias="byRace")
     most_played_race: str | None = Field(default=None, alias="mostPlayedRace")
+    # 갈래(ground/air/magic) → [그렇게 싸운 판수, 그중 이긴 판수] — 지상전·공중전·마법 퀸이
+    # "그 싸움의 승률"을 내는 재료다(요청: 많이 뽑아 활약해 승리로 이끌어야). 판 판정 바닥
+    # (지상 30기·8할, 공중 12기, 마법 5기)은 서비스의 _combat_split에 있다. 종족 무관(요청)
+    # 이라 종족별 엔트리가 아니라 회원 단위에 싣는다.
+    combat: dict[str, list[int]] = Field(default_factory=dict)
     # 랭킹 순서 — 승률만으로는 못 가르는 동률을 승자승(맞대결)/공통상대/전체 승수로 마저
     # 가른 최종 정렬 결과다. 맞대결·공통상대 성적은 "누구와 누구를 비교하느냐"에 따라
     # 달라지는 쌍(pair) 단위 값이라 회원 하나의 숫자로 내려보낼 수가 없어서, 서버가 정렬을
