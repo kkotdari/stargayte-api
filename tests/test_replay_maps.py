@@ -204,7 +204,7 @@ async def test_minimap_image_update_keeps_mapping(client):
         json={"name": "빠른무한 2.0", "image": other},
     )
     assert res.status_code == 200, res.text
-    assert res.json() == {"id": image_id, "name": "빠른무한 2.0", "image": other}
+    assert res.json() == {"id": image_id, "name": "빠른무한 2.0", "image": other, "walk": None}
 
     # 매핑은 그대로다 — 그 맵은 바뀐 그림을 그대로 받는다.
     got = (await client.get(
