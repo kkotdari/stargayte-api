@@ -432,22 +432,26 @@ _COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim", "gg"}
 # 열쇠의 수는 이긴 판이어도 그 판에서 전투(교전)까지 이겼어야 센다. 갈래(지상/공중)는 안
 # 가린다(지적: 캐리어도 상대 지상을 친다) — 전투 원장(bt_*_won)에 이긴 교전이 하나라도
 # 있으면 된다. 원장이 없는 옛 기록은 재분석 전까지 이 열쇠들이 0으로 잡힌다.
+# 열쇠 → 그 판에서 이겼어야 하는 전투 수. 대부분 1이고, 메카닉 갈래만 2다(지적: 메카닉
+# 조이기는 너무 잘 나온다 — 탱크로 한 번 이긴 판이 아니라 전투를 거듭 이긴 판이라야 한다).
+# 프론트 statEpithet의 battle 값과 짝이다.
 _BATTLE_GATED_KEYS = {
-    "bionic", "mech", "center-tank", "side-tank", "vessel", "valkyrie", "bc",
-    "zealot-templar", "carrier", "shuttle-reaver", "templar-drop",
-    "lurker", "moka", "guardian", "devourer", "muta", "queen", "arbiter", "dark-templar",
+    "bionic": 1, "mech": 2, "center-tank": 2, "side-tank": 2, "vessel": 1, "valkyrie": 1,
+    "bc": 1, "zealot-templar": 1, "carrier": 1, "shuttle-reaver": 1, "templar-drop": 1,
+    "lurker": 1, "moka": 1, "guardian": 1, "devourer": 1, "muta": 1, "queen": 1,
+    "arbiter": 1, "dark-templar": 1,
 }
 
 
-def _won_a_battle(mix: object) -> bool:
-    """그 판에서 이긴 전투가 하나라도 있나 — 프론트(replayBattles)가 실어 둔 원장을 본다."""
+def _battle_wins(mix: object) -> int:
+    """그 판에서 이긴 전투 수 — 프론트(replayBattles)가 실어 둔 원장을 본다."""
     if not isinstance(mix, dict):
-        return False
+        return 0
     return (
         int(mix.get("bt_ground_won") or 0)
         + int(mix.get("bt_air_won") or 0)
         + int(mix.get("bt_magic_won") or 0)
-    ) > 0
+    )
 
 
 # 전투(교전) 원장의 자리 — 갈래 → (붙은 수 필드, 이긴 수 필드). 판정(전투 뭉치 짓기·
@@ -979,7 +983,9 @@ class GameResultService:
                         continue
                     member_pk, race, mix = found
                     # 에픽 전투 칭호는 경기만이 아니라 그 판의 전투도 이겼어야 센다(요청).
-                    if key in _BATTLE_GATED_KEYS and not _won_a_battle(mix):
+                    # 열쇠마다 요구 승수가 다르다(메카닉 2).
+                    need = _BATTLE_GATED_KEYS.get(key)
+                    if need is not None and _battle_wins(mix) < need:
                         continue
                     counts = out.setdefault(member_pk, {}).setdefault(race, {})
                     counts[key] = counts.get(key, 0) + 1

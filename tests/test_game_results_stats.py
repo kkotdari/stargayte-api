@@ -778,8 +778,8 @@ async def test_stats_counts_tactics_and_map_records(client):
     headers = {"Authorization": f"Bearer {p1['accessToken']}"}
 
     # 옆탱(side-tank)은 에픽 전투 칭호의 열쇠라 그 판의 전투도 이겼어야 센다(요청) —
-    # 전투 원장(bt_ground_won)을 실은 구성으로 등록한다.
-    fought = {"btGroundWon": 1}
+    # 메카닉 갈래는 두 번은 이겨야 한다(지적: 메카닉이 너무 잘 나온다).
+    fought = {"btGroundWon": 2}
 
     async def _post(
         date: str, map_name: str, result: str, beats: list[dict], mix: dict | None = fought,
