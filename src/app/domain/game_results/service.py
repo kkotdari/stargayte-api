@@ -435,7 +435,7 @@ _COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim", "gg"}
 _BATTLE_GATED_KEYS = {
     "bionic", "mech", "center-tank", "side-tank", "vessel", "valkyrie", "bc",
     "zealot-templar", "carrier", "shuttle-reaver", "templar-drop",
-    "lurker", "moka", "guardian", "devourer", "muta", "queen", "arbiter",
+    "lurker", "moka", "guardian", "devourer", "muta", "queen", "arbiter", "dark-templar",
 }
 
 
