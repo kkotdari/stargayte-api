@@ -218,6 +218,8 @@ class ReplayMapOut(BaseModel):
     image: str | None = None
     # 그 그림의 지형(이동 가능/불가) 격자 - 운영자가 검수/수정한 값(요청). JSON 문자열.
     walk: str | None = None
+    # 그 그림의 번호 — 재생 화면의 지형 수정 버튼이 저장할 곳을 알아야 한다(요청).
+    image_id: int | None = Field(default=None, alias="imageId")
 
 
 class ReplayMapList(BaseModel):
@@ -229,6 +231,12 @@ class ReplayMapList(BaseModel):
 # 미니맵 그림 한 장의 상한 — data URL 문자열 길이다(base64라 실제 바이트의 약 4/3). 실제
 # 미니맵은 512px 한 장이면 충분하고, 프론트가 올릴 때 그 크기로 줄여 보낸다.
 _IMAGE_MAX_CHARS = 900_000
+
+
+class MinimapWalkWrite(BaseModel):
+    """지형 격자만 고치는 요청(요청: 아무나) — 빈 문자열은 지우기다."""
+
+    walk: str = Field(max_length=40000)
 
 
 class MinimapImageWrite(BaseModel):

@@ -1587,6 +1587,7 @@ class GameResultService:
                 palette=list(r.palette or []), tiles=r.tiles,
                 resources=list(r.resources or []),
                 image=images[r.image_id].image if r.image_id in images else None,
+                image_id=r.image_id if r.image_id in images else None,
                 # 검수된 지형(요청) - 재생 화면이 어림 대신 쓴다.
                 walk=images[r.image_id].walk if r.image_id in images else None,
             )
@@ -1639,6 +1640,15 @@ class GameResultService:
             row.walk = payload.walk or None
         if payload.hashes:
             await self._repo.assign_minimap_image(payload.hashes, row.id)
+        await self._session.commit()
+        return MinimapImageOut(id=row.id, name=row.name, image=row.image, walk=row.walk)
+
+    async def update_minimap_walk(self, image_id: int, walk: str) -> MinimapImageOut:
+        """지형 격자만 갈아 끼운다(요청: 회원 누구나) — 빈 문자열이면 지운다."""
+        row = await self._repo.get_minimap_image(image_id)
+        if row is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
+        row.walk = walk or None
         await self._session.commit()
         return MinimapImageOut(id=row.id, name=row.name, image=row.image, walk=row.walk)
 

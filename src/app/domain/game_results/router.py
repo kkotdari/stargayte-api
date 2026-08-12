@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
 from app.core.exceptions import NotFoundError
 from app.domain.game_results.schemas import (
+    MinimapWalkWrite,
     DuplicateCheckRequest,
     DuplicateCheckResponse,
     EarliestDateResponse,
@@ -204,6 +205,18 @@ async def update_minimap_image(
     """등록된 미니맵의 이름·그림을 고친다(요청: 미니맵 메뉴에서 그림 변경) — 지웠다 다시
     올리면 붙어 있던 맵 매핑이 통째로 풀린다. image를 빼면 이름만 바뀐다."""
     return await GameResultService(db, storage).update_minimap_image(image_id, payload)
+
+
+@router.put("/replay-maps/images/{image_id}/walk", response_model=MinimapImageOut)
+async def update_minimap_walk(
+    image_id: int, payload: MinimapWalkWrite, db: DbSession, storage: StorageDep,
+    _current: CurrentMember,
+) -> MinimapImageOut:
+    """지형(이동 가능/불가) 격자만 고친다 — 회원 누구나(요청: 아무나 지형 업데이트).
+
+    그림·이름·매핑은 운영자 몫 그대로고, 지형은 보는 사람이 제일 많이 아는 값이라
+    문을 넓힌다. 빈 문자열이면 지운다(자동 어림으로 복귀)."""
+    return await GameResultService(db, storage).update_minimap_walk(image_id, payload.walk)
 
 
 @router.delete("/replay-maps/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
