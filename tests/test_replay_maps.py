@@ -60,6 +60,8 @@ async def test_same_map_stored_once_and_fetchable(client):
         "palette": [4, 17], "tiles": _TILES, "resources": [[1.0, 1.0, 1.0]],
         # 사람이 올려 둔 실제 미니맵 그림은 아직 없다 — 그때는 격자로 그린다.
         "image": None,
+        # 지형(walk)도 마찬가지다(요청: 운영자 검수값 저장) — 그림이 없으니 당연히 없다.
+        "walk": None,
     }
 
 
