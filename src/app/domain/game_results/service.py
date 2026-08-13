@@ -1590,6 +1590,8 @@ class GameResultService:
                 image_id=r.image_id if r.image_id in images else None,
                 # 검수된 지형(요청) - 재생 화면이 어림 대신 쓴다.
                 walk=images[r.image_id].walk if r.image_id in images else None,
+                # 대표맵 이름(요청: 지형 검수 창 제목) — 그림에 사람이 지어 둔 그 이름.
+                image_name=images[r.image_id].name if r.image_id in images else None,
             )
             for r in rows
         ]

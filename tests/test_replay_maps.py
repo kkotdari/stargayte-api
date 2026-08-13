@@ -64,6 +64,8 @@ async def test_same_map_stored_once_and_fetchable(client):
         "walk": None,
         # 그림 번호도 없다 — 재생 화면의 지형 수정 버튼이 저장할 곳이다(요청: 아무나).
         "imageId": None,
+        # 대표맵 이름(요청: 지형 검수 창 제목)도 그림이 없으니 없다.
+        "imageName": None,
     }
 
 

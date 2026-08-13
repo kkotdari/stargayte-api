@@ -220,6 +220,9 @@ class ReplayMapOut(BaseModel):
     walk: str | None = None
     # 그 그림의 번호 — 재생 화면의 지형 수정 버튼이 저장할 곳을 알아야 한다(요청).
     image_id: int | None = Field(default=None, alias="imageId")
+    # 그 그림의 이름 — 지형 검수 창의 제목이 리플레이 원본 이름(제어문자 섞임) 대신
+    # 사람이 지은 대표맵 이름을 쓰기 위한 것(요청).
+    image_name: str | None = Field(default=None, alias="imageName")
 
 
 class ReplayMapList(BaseModel):
