@@ -191,7 +191,9 @@ class ReplayMapData(BaseModel):
     tiles: str = Field(min_length=1)
     # 자원 지대([타일x, 타일y, 가스여부]) — 앞마당·멀티 자리를 그리는 데 쓴다(요청). 옛
     # 리플레이(이 필드 없이 저장된 맵)와는 호환을 위해 기본 빈 목록.
-    resources: list[list[float]] = Field(default_factory=list, max_length=64)
+    # 64 → 128(지적: 재분석 422) — 간헐천을 낱개로 내보내면서(가스 10개면 10개) 미네랄
+    # 지대 상한 40 + 가스 낱개가 64를 넘는 맵이 생겼다. 프론트도 128에서 자른다.
+    resources: list[list[float]] = Field(default_factory=list, max_length=128)
 
     @model_validator(mode="after")
     def _check_size(self) -> "ReplayMapData":
