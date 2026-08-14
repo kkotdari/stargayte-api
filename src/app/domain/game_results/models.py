@@ -33,6 +33,9 @@ class GameResult(AuditMixin, TimestampMixin, Base):
     # 참고. 한 번 배정되면 이후 수정에서도 절대 바뀌지 않는다.
     match_no: Mapped[str] = mapped_column(String(14), nullable=False, unique=True)
     match_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # 게임 상세(페이지) 조회수(요청) — 페이지가 열릴 때마다 1씩 는다. 기존 DB에는
+    # main.py의 멱등 ALTER가 넣는다.
+    view_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # 경기유형 코드 (0101=1:1, 0102=팀전). team1/team2 인원수와 별개로
     # 어떤 성격의 경기인지 분류하기 위한 값이라 컬럼으로 따로 관리한다.
     match_type: Mapped[str] = mapped_column(String(4), nullable=False, default="0101")

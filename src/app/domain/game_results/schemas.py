@@ -469,6 +469,8 @@ class GameResultOut(BaseModel):
     result: GameOutcome
     match_type: GameType = Field(alias="matchType")
     replay: ReplayOut | None
+    # 게임 상세 페이지 조회수(요청) — 페이지가 열릴 때마다 1씩 는다.
+    view_count: int = Field(default=0, alias="viewCount")
     created_by: GameResultAuthor | None = Field(alias="createdBy")
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")

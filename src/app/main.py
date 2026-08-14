@@ -99,6 +99,7 @@ async def _ensure_schema() -> None:
             ("add replay map resources", _add_replay_map_resources),
             ("add replay map image id", _add_replay_map_image_id),
             ("add replay map linked by", _add_replay_map_linked_by),
+            ("add game result view count", _add_game_result_view_count),
             ("add league match schedule_posted_at", _add_league_match_schedule_posted_at),
             ("add challenge time note", _add_challenge_time_note),
             ("add challenge canceled_by", _add_challenge_canceled_by),
@@ -298,6 +299,24 @@ async def _add_replay_map_image_id(conn: object) -> None:
         except Exception:  # noqa: BLE001
             continue
     logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_game_result_view_count(conn: object) -> None:
+    """game_results.view_count 컬럼을 더한다(멱등) — 게임 상세 페이지 조회수(요청)."""
+    import logging
+
+    from sqlalchemy import text
+
+    for sql in (
+        "ALTER TABLE game_results ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE game_results ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001
+            continue
+    logging.getLogger(__name__).debug("game_results.view_count 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_replay_map_linked_by(conn: object) -> None:

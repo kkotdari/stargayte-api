@@ -847,6 +847,7 @@ def to_game_result_out(
         duration_seconds=result_row.duration_seconds,
         summary_data=result_row.summary_data,
         map_hash=result_row.map_hash,
+        view_count=match.view_count or 0,
     )
 
 
@@ -1685,6 +1686,12 @@ class GameResultService:
             MinimapChoice(id=i.id, name=i.name, image=i.image, matches=counts.get(i.id, 0))
             for i in await self._repo.list_minimap_images()
         ]
+
+    async def mark_viewed(self, match_id: int) -> None:
+        """게임 상세 페이지 조회수 +1(요청: 테이블에 기록) — 없는 경기는 404."""
+        if await self._repo.bump_view_count(match_id) == 0:
+            raise NotFoundError("경기를 찾을 수 없습니다.")
+        await self._session.commit()
 
     async def link_replay_map(self, map_hash: str, payload: ReplayMapLinkWrite, member_id: int) -> ReplayMapOut:
         """게임 상세의 맵연결(요청: 아무나 저장된 맵 중 골라 연결) — 이 경기의 맵 행이

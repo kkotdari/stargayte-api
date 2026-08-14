@@ -260,6 +260,14 @@ async def assign_minimap_image(
     return {"changed": changed}
 
 
+@router.post("/{match_id}/view", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_game_viewed(
+    match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
+) -> None:
+    """게임 상세 페이지 조회수 +1(요청: 테이블에 기록) — 페이지가 열릴 때마다 부른다."""
+    await GameResultService(db, storage).mark_viewed(match_id)
+
+
 @router.post("/duplicate-check", response_model=DuplicateCheckResponse)
 async def check_duplicates(
     payload: DuplicateCheckRequest, db: DbSession, storage: StorageDep, _current: CurrentMember

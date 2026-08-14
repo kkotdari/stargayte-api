@@ -793,6 +793,14 @@ class GameResultRepository:
         )
         return {int(r[0]): int(r[1]) for r in (await self._session.execute(stmt)).all()}
 
+    async def bump_view_count(self, match_id: int) -> int:
+        """게임 상세 페이지 조회수 +1(요청) — 행이 없으면 0을 돌려준다."""
+        res = await self._session.execute(
+            update(GameResult).where(GameResult.id == match_id)
+            .values(view_count=GameResult.view_count + 1)
+        )
+        return res.rowcount or 0
+
     async def link_replay_map(self, map_hash: str, image_id: int | None, member_id: int) -> int:
         """게임 상세의 맵연결(요청: 아무나) — 그림을 갈아 끼우며 누가 언제 연결했는지 남긴다."""
         res = await self._session.execute(
