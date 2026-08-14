@@ -98,6 +98,7 @@ async def _ensure_schema() -> None:
             ("add game_outcomes.map_hash", _add_match_result_map_hash),
             ("add replay map resources", _add_replay_map_resources),
             ("add replay map image id", _add_replay_map_image_id),
+            ("add replay map linked by", _add_replay_map_linked_by),
             ("add league match schedule_posted_at", _add_league_match_schedule_posted_at),
             ("add challenge time note", _add_challenge_time_note),
             ("add challenge canceled_by", _add_challenge_canceled_by),
@@ -297,6 +298,38 @@ async def _add_replay_map_image_id(conn: object) -> None:
         except Exception:  # noqa: BLE001
             continue
     logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_replay_map_linked_by(conn: object) -> None:
+    """replay_maps.linked_by / linked_at 컬럼을 더한다(멱등) — 게임 상세의 맵연결(요청:
+    아무나 미니맵 그림을 골라 연결)에서 누가 언제 마지막으로 연결했는지 남기는 자리다.
+
+    FK는 여기서 걸지 않는다 — _add_replay_map_image_id와 같은 이유(SQLite는 기존 테이블에
+    FK를 못 더한다). 모델의 FK는 새로 만드는 DB에만 붙는다."""
+    import logging
+
+    from sqlalchemy import text
+
+    # IF NOT EXISTS는 PostgreSQL(운영)만 알아듣는다 — SQLite(개발/테스트)에서는 구문 오류가
+    # 나므로 그냥 ADD COLUMN으로 한 번 더 시도하고, 이미 있으면 그때 나는 오류를 삼킨다.
+    for col, sqls in (
+        ("linked_by", (
+            "ALTER TABLE replay_maps ADD COLUMN IF NOT EXISTS linked_by BIGINT",
+            "ALTER TABLE replay_maps ADD COLUMN linked_by BIGINT",
+        )),
+        ("linked_at", (
+            "ALTER TABLE replay_maps ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ",
+            "ALTER TABLE replay_maps ADD COLUMN linked_at TIMESTAMP",
+        )),
+    ):
+        for sql in sqls:
+            try:
+                await conn.execute(text(sql))  # type: ignore[attr-defined]
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        else:
+            logging.getLogger(__name__).debug("replay_maps.%s 컬럼 추가 건너뜀", col, exc_info=True)
 
 
 async def _add_league_match_schedule_posted_at(conn: object) -> None:

@@ -37,8 +37,10 @@ from app.domain.game_results.schemas import (
     MapCatalog,
     MapCatalogEntry,
     MinimapAssignWrite,
+    MinimapChoice,
     MinimapImageOut,
     MinimapImageWrite,
+    ReplayMapLinkWrite,
     ReplayMapOut,
     ReplayOut,
     ReplayUpload,
@@ -1673,6 +1675,25 @@ class GameResultService:
         changed = await self._repo.assign_minimap_image(payload.hashes, payload.image_id)
         await self._session.commit()
         return changed
+
+    async def list_minimap_choices(self) -> list[MinimapChoice]:
+        """맵연결 고르기 목록(요청: 아무나) — 등록된 미니맵 그림의 이름만. 그림(data URL,
+        수백 KB)은 목록에 안 싣는다 — 고른 뒤 맵 격자 재조회가 어차피 그림을 실어 온다."""
+        return [MinimapChoice(id=i.id, name=i.name) for i in await self._repo.list_minimap_images()]
+
+    async def link_replay_map(self, map_hash: str, payload: ReplayMapLinkWrite, member_id: int) -> ReplayMapOut:
+        """게임 상세의 맵연결(요청: 아무나 저장된 맵 중 골라 연결) — 이 경기의 맵 행이
+        고른 미니맵 그림을 가리키게 하고, 마지막 연결자(회원 pk)와 시각을 남긴다."""
+        if payload.image_id is not None and await self._repo.get_minimap_image(payload.image_id) is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
+        changed = await self._repo.link_replay_map(map_hash, payload.image_id, member_id)
+        if changed == 0:
+            raise NotFoundError("맵 격자를 찾을 수 없습니다.")
+        await self._session.commit()
+        maps = await self.list_replay_maps([map_hash])
+        if not maps:
+            raise NotFoundError("맵 격자를 찾을 수 없습니다.")
+        return maps[0]
 
     async def rewrite_summary(self, match_id: int, payload: SummaryRewrite) -> None:
         """등록된 경기의 요약만 다시 써 넣는다(요청: 요약 재분석) — 경기 내용은 안 건드린다.

@@ -193,7 +193,9 @@ class ReplayMapData(BaseModel):
     # 리플레이(이 필드 없이 저장된 맵)와는 호환을 위해 기본 빈 목록.
     # 64 → 128(지적: 재분석 422) — 간헐천을 낱개로 내보내면서(가스 10개면 10개) 미네랄
     # 지대 상한 40 + 가스 낱개가 64를 넘는 맵이 생겼다. 프론트도 128에서 자른다.
-    resources: list[list[float]] = Field(default_factory=list, max_length=128)
+    # 128 → 384(지적: 추가 미네랄 누락) — 프론트가 군집 반경을 줄이고 상한을 120으로
+    # 키우면서(본진 뒤 추가 미네랄이 본진 밭에 삼켜지던 문제) 지대 수가 크게 늘었다.
+    resources: list[list[float]] = Field(default_factory=list, max_length=384)
 
     @model_validator(mode="after")
     def _check_size(self) -> "ReplayMapData":
@@ -271,6 +273,26 @@ class MinimapAssignWrite(BaseModel):
 
     image_id: int | None = Field(default=None, alias="imageId")
     hashes: list[str] = Field(min_length=1, max_length=64)
+
+
+class ReplayMapLinkWrite(BaseModel):
+    """게임 상세의 맵연결(요청: 아무나) — 이 경기의 맵(map_hash)이 가리킬 미니맵 그림 하나.
+    null이면 연결을 푼다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    image_id: int | None = Field(default=None, alias="imageId")
+
+
+class MinimapChoice(BaseModel):
+    """맵연결 고르기 목록의 한 줄 — 그림(수백 KB data URL)은 빼고 이름만 내려보낸다."""
+
+    id: int
+    name: str
+
+
+class MinimapChoiceList(BaseModel):
+    images: list[MinimapChoice]
 
 
 class MinimapImageOut(BaseModel):

@@ -19,8 +19,11 @@ from app.domain.game_results.schemas import (
     GameResultWrite,
     MapCatalog,
     MinimapAssignWrite,
+    MinimapChoiceList,
     MinimapImageOut,
     MinimapImageWrite,
+    ReplayMapLinkWrite,
+    ReplayMapOut,
     RivalryResponse,
     RatingHistoryResponse,
     ReplayMapList,
@@ -224,6 +227,24 @@ async def delete_minimap_image(
     image_id: int, db: DbSession, storage: StorageDep, _admin: CurrentAdmin
 ) -> None:
     await GameResultService(db, storage).delete_minimap_image(image_id)
+
+
+@router.get("/replay-maps/images", response_model=MinimapChoiceList)
+async def list_minimap_choices(
+    db: DbSession, storage: StorageDep, _current: CurrentMember
+) -> MinimapChoiceList:
+    """맵연결 고르기 목록(요청: 아무나) — 등록된 미니맵 그림의 번호·이름만."""
+    return MinimapChoiceList(images=await GameResultService(db, storage).list_minimap_choices())
+
+
+@router.put("/replay-maps/{map_hash}/image", response_model=ReplayMapOut)
+async def link_replay_map(
+    map_hash: str, payload: ReplayMapLinkWrite, db: DbSession, storage: StorageDep,
+    current: CurrentMember,
+) -> ReplayMapOut:
+    """게임 상세의 맵연결(요청: 아무나) — 이 경기 맵이 고른 미니맵 그림을 가리키게 하고,
+    마지막 연결자(회원 pk)·시각을 남긴다. imageId가 null이면 연결을 푼다."""
+    return await GameResultService(db, storage).link_replay_map(map_hash, payload, current.id)
 
 
 @router.post("/replay-maps/assign")

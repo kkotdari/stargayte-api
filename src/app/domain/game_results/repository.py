@@ -782,6 +782,15 @@ class GameResultRepository:
         )
         return res.rowcount or 0
 
+    async def link_replay_map(self, map_hash: str, image_id: int | None, member_id: int) -> int:
+        """게임 상세의 맵연결(요청: 아무나) — 그림을 갈아 끼우며 누가 언제 연결했는지 남긴다."""
+        res = await self._session.execute(
+            update(ReplayMap)
+            .where(ReplayMap.map_hash == map_hash)
+            .values(image_id=image_id, linked_by=member_id, linked_at=func.now())
+        )
+        return res.rowcount or 0
+
     async def list_all_replays(self) -> list[Row]:
         # 리플레이 전체 다운로드(운영자) + 전체 삭제 시 파일 정리용 — 저장 파일명(display_name)과
         # 저장 경로를 등록 순으로.

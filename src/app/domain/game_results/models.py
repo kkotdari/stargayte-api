@@ -155,6 +155,12 @@ class ReplayMap(TimestampMixin, Base):
     image_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("minimap_images.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 맵연결 기록(요청: 게임 상세에서 아무나 미니맵 그림을 골라 연결 — 누가 언제 마지막으로
+    # 연결했는지 회원 pk와 함께 남긴다). 운영자 제어판의 일괄 매핑은 이 기록을 안 건드린다.
+    linked_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("members.id", ondelete="SET NULL"), nullable=True
+    )
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MinimapImage(TimestampMixin, Base):
