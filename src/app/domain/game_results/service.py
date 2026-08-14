@@ -399,20 +399,9 @@ def _fname_safe(s: str) -> str:
 
 
 def build_replay_display_name(match: "GameResult") -> str:
-    def roster(team: str) -> str:
-        players = sorted(
-            (p for p in match.participants if p.team == team), key=lambda p: p.position
-        )
-        names = [_fname_safe(p.player_name) or "?" for p in players]
-        return ",".join(names) or "?"
-
-    map_name = match.result_row.map_name if match.result_row else None
-    map_clean = re.sub(r"\s+", " ", _MAP_SPECIAL.sub("", _FNAME_CONTROL.sub("", map_name or ""))).strip()
-    map_seg = f" ({map_clean})" if map_clean else ""
-    name = f"[{match.match_no}] {roster('team1')} VS {roster('team2')}{map_seg}.rep"
-    if len(name) > REPLAY_NAME_MAX:
-        name = name[: REPLAY_NAME_MAX - 4].rstrip() + ".rep"
-    return name
+    """리플레이 다운로드 파일명 — STAR_GAY_TE_경기번호.rep(지적: 로스터·맵을 넣은 긴
+    한글 이름은 브루드워가 리플레이 목록에서 인식을 못 한다. 전부 ASCII·짧게)."""
+    return f"STAR_GAY_TE_{match.match_no}.rep"
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -1527,6 +1516,12 @@ class GameResultService:
         return {"raw_name": raw_name, "kind": kind, "member": member_out}
 
     async def get_match(self, match_id: int) -> GameResult:
+        # 경기번호(YYMMDDHHMMSS+2자리 = 14자리 숫자)도 받는다(요청: 상세 주소를 경기번호로)
+        # — 10억을 넘는 값은 등록 id일 수 없으니 경기번호로 해석한다. 옛 id 링크는 그대로.
+        if match_id > 999_999_999:
+            by_no = await self._repo.get_by_match_no(str(match_id))
+            if by_no is not None:
+                return by_no
         match = await self._repo.get(match_id)
         if match is None:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
@@ -1729,6 +1724,10 @@ class GameResultService:
         if match is None or match.result_row is None:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
         rr = match.result_row
+        # 재분석 김에 리플레이 파일명도 새 양식으로(지적: 긴 한글 이름은 브루드워가
+        # 인식을 못 한다) — 옛 경기의 저장된 표시 이름을 STAR_GAY_TE_경기번호로 통일.
+        if rr.replay is not None:
+            rr.replay.display_name = build_replay_display_name(match)
         if payload.summary_data is not None:
             rr.summary_data = payload.summary_data
         map_hash = await self._store_replay_map(payload.map_data)
