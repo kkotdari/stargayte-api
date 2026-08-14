@@ -32,6 +32,9 @@ ScreenCode = Literal[
     "minimaps", "control",
     # 자료실 > 모델링 갤러리(지적: 화면 코드가 없어 진입 이력이 422로 막혔다).
     "models",
+    # 활동 전체 보기 갈래(요청: 갈래마다 스크린 코드) — 주소도 ?group=<갈래>로 남는
+    # 페이지라 진입을 화면처럼 센다. 프론트 GROUP_SCREEN_CODE(ActivityScreen)와 짝.
+    "activity_notice", "activity_schedule", "activity_league", "activity_call", "activity_game",
     # 공유 링크(?sv=…&sid=…)로 열린 카드 한 장짜리 화면(요청: "접속로그에 공유페이지
     # 열어본거도 표시(어떤 페이지인지도)") — 어느 카드였는지는 detail이 따로 적는다.
     "share",
