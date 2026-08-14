@@ -1,6 +1,7 @@
 from datetime import date
 
 from sqlalchemy import Integer, Row, Select, and_, case, delete, exists, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -728,8 +729,16 @@ class GameResultRepository:
         stmt = select(ReplayMap.id).where(ReplayMap.map_hash == map_hash)
         return (await self._session.execute(stmt)).scalar_one_or_none() is not None
 
-    def add_replay_map(self, row: ReplayMap) -> None:
-        self._session.add(row)
+    async def add_replay_map_safely(self, row: ReplayMap) -> None:
+        """동시 재분석 둘이 같은 새 맵을 함께 넣으면 둘째가 유니크 제약(map_hash)에 걸려
+        요청째 500이 났다(지적) — 세이브포인트 안에서 넣어, 충돌이면 그 삽입만 물리고
+        넘어간다(같은 맵이니 남의 행을 그대로 쓰면 된다)."""
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            pass
 
     async def list_map_catalog(self) -> list[Row]:
         """제어판용 맵 목록 — 격자(22KB)는 빼고 어떤 맵이 있고 몇 경기를 치렀는지만."""

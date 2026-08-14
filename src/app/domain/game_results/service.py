@@ -1739,16 +1739,15 @@ class GameResultService:
         if data is None:
             return None
         if not await self._repo.replay_map_exists(data.hash):
-            self._repo.add_replay_map(ReplayMap(
+            # 세이브포인트 삽입(지적: 동시 재분석 둘이 같은 새 맵을 넣으면 유니크 제약으로
+            # 요청째 500) — 충돌이면 그 삽입만 물리고 남이 넣은 같은 맵을 그대로 쓴다.
+            # 같은 배치의 뒤이은 exists 조회는 flush된 행을 본다(예전 flush 주석과 동일).
+            await self._repo.add_replay_map_safely(ReplayMap(
                 map_hash=data.hash, name=data.name,
                 width=data.width, height=data.height,
                 palette=data.palette, tiles=data.tiles,
                 resources=data.resources,
             ))
-            # 같은 배치에서 같은 맵이 여러 번 올라오면(무한맵 여러 판) 두 번째부터는 위
-            # exists가 아직 flush 안 된 첫 행을 못 봐 유니크 제약에 걸린다 — 바로 flush해
-            # 이어지는 조회가 그 행을 보게 한다.
-            await self._repo.flush()
         return data.hash
 
     async def create_match(self, payload: GameResultWrite, *, actor: Member) -> GameResult:
