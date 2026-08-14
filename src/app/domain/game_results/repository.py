@@ -782,6 +782,17 @@ class GameResultRepository:
         )
         return res.rowcount or 0
 
+    async def count_matches_by_image(self) -> dict[int, int]:
+        """미니맵 그림별로 연결된 리플레이(경기) 수 — 그림을 가리키는 맵들의 경기 합.
+        맵연결 고르기 목록의 오른쪽 숫자다(요청)."""
+        stmt = (
+            select(ReplayMap.image_id, func.count(GameOutcome.id))
+            .join(GameOutcome, GameOutcome.map_hash == ReplayMap.map_hash)
+            .where(ReplayMap.image_id.is_not(None))
+            .group_by(ReplayMap.image_id)
+        )
+        return {int(r[0]): int(r[1]) for r in (await self._session.execute(stmt)).all()}
+
     async def link_replay_map(self, map_hash: str, image_id: int | None, member_id: int) -> int:
         """게임 상세의 맵연결(요청: 아무나) — 그림을 갈아 끼우며 누가 언제 연결했는지 남긴다."""
         res = await self._session.execute(

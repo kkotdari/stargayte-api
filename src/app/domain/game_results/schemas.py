@@ -285,10 +285,13 @@ class ReplayMapLinkWrite(BaseModel):
 
 
 class MinimapChoice(BaseModel):
-    """맵연결 고르기 목록의 한 줄 — 그림(수백 KB data URL)은 빼고 이름만 내려보낸다."""
+    """맵연결 고르기 목록의 한 줄 — 썸네일 그림과 그 그림에 연결된 리플레이(경기) 수까지
+    (요청: 목록 왼쪽 썸네일, 오른쪽 작은 글씨로 연결된 리플레이 수)."""
 
     id: int
     name: str
+    image: str
+    matches: int = 0
 
 
 class MinimapChoiceList(BaseModel):

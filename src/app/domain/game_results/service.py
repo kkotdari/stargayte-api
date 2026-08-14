@@ -1677,9 +1677,14 @@ class GameResultService:
         return changed
 
     async def list_minimap_choices(self) -> list[MinimapChoice]:
-        """맵연결 고르기 목록(요청: 아무나) — 등록된 미니맵 그림의 이름만. 그림(data URL,
-        수백 KB)은 목록에 안 싣는다 — 고른 뒤 맵 격자 재조회가 어차피 그림을 실어 온다."""
-        return [MinimapChoice(id=i.id, name=i.name) for i in await self._repo.list_minimap_images()]
+        """맵연결 고르기 목록(요청: 아무나) — 그림 썸네일과 그 그림에 연결된 리플레이 수까지
+        (요청: 목록 왼쪽 썸네일, 오른쪽 작은 글씨로 연결된 리플레이 수). 그림은 맵 종류
+        수(몇 장)뿐이라 목록에 실어도 가볍다."""
+        counts = await self._repo.count_matches_by_image()
+        return [
+            MinimapChoice(id=i.id, name=i.name, image=i.image, matches=counts.get(i.id, 0))
+            for i in await self._repo.list_minimap_images()
+        ]
 
     async def link_replay_map(self, map_hash: str, payload: ReplayMapLinkWrite, member_id: int) -> ReplayMapOut:
         """게임 상세의 맵연결(요청: 아무나 저장된 맵 중 골라 연결) — 이 경기의 맵 행이
