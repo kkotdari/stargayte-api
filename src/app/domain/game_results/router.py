@@ -243,8 +243,12 @@ async def link_replay_map(
     current: CurrentMember,
 ) -> ReplayMapOut:
     """게임 상세의 맵연결(요청: 아무나) — 이 경기 맵이 고른 미니맵 그림을 가리키게 하고,
-    마지막 연결자(회원 pk)·시각을 남긴다. imageId가 null이면 연결을 푼다."""
-    return await GameResultService(db, storage).link_replay_map(map_hash, payload, current.id)
+    마지막 연결자(회원 pk)·시각을 남긴다. imageId가 null이면 연결을 푼다.
+
+    pk를 넘겨야 한다(수리: 프로덕션 CORS로 보이던 500) — Member.id는 로그인 문자열이라
+    BIGINT 컬럼(linked_by)에 넣으면 Postgres가 500을 냈고, 500 응답엔 CORS 헤더가 없어
+    브라우저가 CORS 오류로 보였다. SQLite(개발)는 형이 느슨해 그냥 통과했었다."""
+    return await GameResultService(db, storage).link_replay_map(map_hash, payload, current.pk)
 
 
 @router.post("/replay-maps/assign")
