@@ -399,9 +399,9 @@ def _fname_safe(s: str) -> str:
 
 
 def build_replay_display_name(match: "GameResult") -> str:
-    """리플레이 다운로드 파일명 — STAR_GAY_TE_경기번호.rep(지적: 로스터·맵을 넣은 긴
-    한글 이름은 브루드워가 리플레이 목록에서 인식을 못 한다. 전부 ASCII·짧게)."""
-    return f"STAR_GAY_TE_{match.match_no}.rep"
+    """리플레이 다운로드 파일명 — SG_경기번호.rep(재지적: 더 짧게. 긴 한글 이름은
+    브루드워가 리플레이 목록에서 인식을 못 한다. 전부 ASCII·짧게)."""
+    return f"SG_{match.match_no}.rep"
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -1725,7 +1725,7 @@ class GameResultService:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
         rr = match.result_row
         # 재분석 김에 리플레이 파일명도 새 양식으로(지적: 긴 한글 이름은 브루드워가
-        # 인식을 못 한다) — 옛 경기의 저장된 표시 이름을 STAR_GAY_TE_경기번호로 통일.
+        # 인식을 못 한다) — 옛 경기의 저장된 표시 이름을 SG_경기번호로 통일.
         if rr.replay is not None:
             rr.replay.display_name = build_replay_display_name(match)
         if payload.summary_data is not None:
