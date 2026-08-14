@@ -235,3 +235,20 @@ class GameOutcome(Base):
     )
 
     game_result: Mapped[GameResult] = relationship(back_populates="result_row")
+
+class GameResultUnitTracks(TimestampMixin, Base):
+    """개체 트랙(v2) — 유닛 태그 단위 분석 결과를 경기와 별도 테이블에 담는다.
+
+    요청: 기존 부대 어림(summary_data.motion)과 나란히 두고 비교해 보게 별도
+    테이블로. 리플레이 명령의 100%가 선택 태그에 귀속됨을 실측으로 확인한 뒤의
+    새 파이프라인이다 — 프론트가 등록 때 계산해 올리고, 재생 화면의 '개체' 토글이
+    읽는다. 내용은 프론트 소유의 JSON 문자열이라 서버는 열어 보지 않는다."""
+
+    __tablename__ = "game_result_unit_tracks"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    game_result_id: Mapped[int] = mapped_column(
+        ForeignKey("game_results.id", ondelete="CASCADE"), nullable=False, unique=True, index=True,
+    )
+    # v2 트랙 JSON 문자열 — 4:4 한 판 실측 원시 173KB, 접으면 100KB 안쪽.
+    data: Mapped[str] = mapped_column(Text, nullable=False)

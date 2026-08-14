@@ -36,6 +36,8 @@ from app.domain.game_results.schemas import (
     ReplayNameMappingListResponse,
     ReplayNameMappingMember,
     ReplayNameMappingWrite,
+    UnitTracksOut,
+    UnitTracksWrite,
 )
 from app.domain.game_results.service import GameResultService, to_game_result_out
 
@@ -266,6 +268,23 @@ async def mark_game_viewed(
 ) -> None:
     """게임 상세 페이지 조회수 +1(요청: 테이블에 기록) — 페이지가 열릴 때마다 부른다."""
     await GameResultService(db, storage).mark_viewed(match_id)
+
+
+@router.put("/{match_id}/unit-tracks", status_code=status.HTTP_204_NO_CONTENT)
+async def put_unit_tracks(
+    match_id: int, payload: UnitTracksWrite, db: DbSession, storage: StorageDep, _current: CurrentMember
+) -> None:
+    """개체 트랙(v2) 저장(요청: 별도 테이블로 비교) — 등록·재분석 때 프론트가 올린다."""
+    await GameResultService(db, storage).put_unit_tracks(match_id, payload.data)
+
+
+@router.get("/{match_id}/unit-tracks", response_model=UnitTracksOut)
+async def get_unit_tracks(
+    match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
+) -> UnitTracksOut:
+    """개체 트랙(v2) 조회 — 없으면 data가 null(옛 경기: 토글 감춤)."""
+    data = await GameResultService(db, storage).get_unit_tracks(match_id)
+    return UnitTracksOut(data=data)
 
 
 @router.post("/duplicate-check", response_model=DuplicateCheckResponse)

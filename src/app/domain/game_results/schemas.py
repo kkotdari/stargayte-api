@@ -716,3 +716,15 @@ class ReplayNameMappingWrite(BaseModel):
     kind: ReplayNameMappingKind
     # kind가 "member"일 때만 필요 — 대상 회원의 로그인 아이디(members.id).
     member_id: str | None = Field(default=None, alias="memberId")
+
+class UnitTracksWrite(BaseModel):
+    """개체 트랙(v2) 저장 — 프론트 소유 JSON 문자열. 4:4 실측 원시 173KB라 2MB로 죈다."""
+
+    data: str = Field(min_length=2, max_length=2_000_000)
+
+
+class UnitTracksOut(BaseModel):
+    """개체 트랙(v2) 응답 — 없으면 null."""
+
+    data: str | None
+

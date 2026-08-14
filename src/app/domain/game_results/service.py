@@ -1687,6 +1687,17 @@ class GameResultService:
             for i in await self._repo.list_minimap_images()
         ]
 
+    async def put_unit_tracks(self, match_id: int, data: str) -> None:
+        """개체 트랙(v2) 저장(요청: 별도 테이블로 비교) — 경기가 없으면 404."""
+        if await self._repo.get(match_id) is None:
+            raise NotFoundError("경기를 찾을 수 없습니다.")
+        await self._repo.upsert_unit_tracks(match_id, data)
+        await self._session.commit()
+
+    async def get_unit_tracks(self, match_id: int) -> str | None:
+        """개체 트랙(v2) 조회 — 없으면 None(프론트가 토글을 감춘다)."""
+        return await self._repo.get_unit_tracks(match_id)
+
     async def mark_viewed(self, match_id: int) -> None:
         """게임 상세 페이지 조회수 +1(요청: 테이블에 기록) — 없는 경기는 404."""
         if await self._repo.bump_view_count(match_id) == 0:
