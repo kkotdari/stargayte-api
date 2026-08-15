@@ -112,6 +112,7 @@ async def _ensure_schema() -> None:
             ("drop match request tables", _drop_match_request_tables),
             ("drop access screen code check", _drop_access_screen_code_check),
             ("add access history detail", _add_access_history_detail),
+            ("drop member epithets", _drop_member_epithets),
             ("drop legacy match notes", _drop_legacy_match_notes),
             ("drop legacy match summary", _drop_legacy_match_summary),
             ("rebuild ranking shifts", _rebuild_ranking_shifts),
@@ -1038,3 +1039,18 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 
 app = create_app()
+
+
+async def _drop_member_epithets(conn: object) -> None:
+    """칭호 체계 폐지(요청: 칭호 삭제, 요약 개념 자체 폐지) — 저장 테이블과 알림 행을
+    걷어낸다(멱등). 규칙 본체(statEpithet.ts)와 API는 코드에서 이미 사라졌다."""
+    import logging
+
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(text("DROP TABLE IF EXISTS member_epithets"))  # type: ignore[attr-defined]
+        await conn.execute(text("DELETE FROM activity_notices WHERE kind = 'epithet'"))  # type: ignore[attr-defined]
+        logging.getLogger(__name__).info("member_epithets 테이블·칭호 알림 삭제 완료")
+    except Exception:  # noqa: BLE001 — 실패해도 부팅은 막지 않는다.
+        logging.getLogger(__name__).warning("칭호 정리 건너뜀", exc_info=True)

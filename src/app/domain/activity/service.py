@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.domain.activity.models import (
-    ActivityComment, ActivityCommentMention, ActivityNotice, MemberEpithet, RankingShift,
+    ActivityComment, ActivityCommentMention, ActivityNotice, RankingShift,
 )
 from app.domain.activity.repository import ActivityCommentRepository
 from app.domain.activity.schemas import (
@@ -958,88 +958,3 @@ def _challenge_sort_ms(c, now_ms: float) -> float:
         datetime(day.year, day.month, day.day, tzinfo=_KST).timestamp() * 1000
         + _SESSION_DAY_START_HOUR * 3_600_000
     )
-
-
-class EpithetService:
-    """칭호 보관과 그 변경 알림(요청: 칭호 변경을 알림에 표시).
-
-    뽑는 규칙은 화면에만 있고 서버는 '지금 값'을 받아 둔다 — MemberEpithet 주석 참고.
-    여기서 하는 일은 하나다: 받은 값이 저장된 값과 다르면 바꿔 두고, 그 변경들을 활동에
-    뜰 알림 한 줄로 남긴다.
-    """
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    async def current(self):
-        """저장된 칭호 한 벌(요청: 통계 화면은 계산하지 않고 이걸 읽는다).
-
-        탈퇴·정지한 회원까지 그대로 돌려준다 — 걸러 내는 일은 보는 쪽이 이미 회원 목록으로
-        하고 있고, 여기서 한 번 더 거르면 두 곳의 기준이 갈릴 자리만 는다.
-        """
-        from sqlalchemy import select
-
-        from app.domain.activity.schemas import EpithetListOut, EpithetReportRow
-
-        rows = (await self._session.scalars(select(MemberEpithet))).all()
-        return EpithetListOut(epithets=[
-            EpithetReportRow(member_id=e.member.id, label=e.label, why=e.why)
-            for e in rows if e.member is not None and e.label
-        ])
-
-    async def report(self, rows: list) -> int:
-        """바뀐 칭호 수. 0이면 알림도 안 남는다(같은 값을 다시 올려도 조용하다).
-
-        여러 사람이 같은 화면을 동시에 열어도 값은 같으므로, 먼저 도착한 쪽이 알림을 남기고
-        나중 쪽은 '바뀐 것 없음'이 된다 — 알림이 겹쳐 쌓이지 않는 것은 이 성질 덕이다.
-        """
-        from sqlalchemy import select
-
-        wanted = {r.member_id: r for r in rows if r.label}
-        if not wanted:
-            return 0
-        members = (await self._session.scalars(
-            select(Member).where(Member.id.in_(list(wanted.keys())))
-        )).all()
-        by_id = {m.id: m for m in members}
-        stored = {
-            e.member_pk: e
-            for e in (await self._session.scalars(
-                select(MemberEpithet).where(
-                    MemberEpithet.member_pk.in_([m.pk for m in members])
-                )
-            )).all()
-        }
-
-        changes: list[dict] = []
-        for member_id, row in wanted.items():
-            member = by_id.get(member_id)
-            if member is None:
-                continue
-            before = stored.get(member.pk)
-            if before is not None and before.label == row.label:
-                # 근거 문구만 달라진 것(횟수가 늘었다든지)은 알림거리가 아니다 — 부르는
-                # 말이 그대로면 회원에게는 아무 일도 안 일어난 것이다. 값은 갱신해 둔다.
-                before.why = row.why
-                continue
-            # 옛 칭호는 덮어쓰기 '전에' 챙긴다 — 아래에서 먼저 갈아 끼우고 읽으면
-            # from과 to가 같은 값이 된다(실제로 그랬다).
-            was = before.label if before is not None else None
-            if before is None:
-                self._session.add(MemberEpithet(member_pk=member.pk, label=row.label, why=row.why))
-            else:
-                before.label, before.why = row.label, row.why
-            changes.append({
-                "memberId": member.id,
-                # 처음 받는 회원은 '없다가 생긴 것'이라 from이 없다(랭크 변동의 신규와 같다).
-                "from": was,
-                "to": row.label,
-                "why": row.why,
-            })
-
-        if changes:
-            # 한 번에 여러 명이 바뀌어도 알림은 한 줄이다 — 활동에 같은 카드가 줄줄이 서면
-            # 그날 무슨 일이 있었는지가 오히려 안 보인다(랭크 변동 스냅샷과 같은 생각).
-            self._session.add(ActivityNotice(kind="epithet", payload={"changes": changes}))
-        await self._session.commit()
-        return len(changes)

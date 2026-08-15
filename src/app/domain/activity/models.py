@@ -103,24 +103,3 @@ class ActivityNotice(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-
-
-class MemberEpithet(TimestampMixin, Base):
-    """회원 한 명의 지금 칭호 — 바뀌었는지 알려면 어제 것을 들고 있어야 한다.
-
-    칭호를 뽑는 규칙은 화면(statEpithet.ts)에만 있다. 리플레이 요약·BEST PLAYER와 같은
-    원칙이다: 근거가 리플레이 커맨드 스트림이라 판정을 서버로 옮기면 파싱 한 벌을 통째로
-    더 들고 있어야 하고, 두 벌이 어긋나는 순간 화면이 부르는 말과 알림이 갈린다.
-    그래서 서버는 '지금 값'을 받아 두었다가 달라진 것만 알림으로 남긴다.
-    """
-
-    __tablename__ = "member_epithets"
-
-    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
-    member_pk: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("members.pk", ondelete="CASCADE"), nullable=False, unique=True,
-    )
-    label: Mapped[str] = mapped_column(String(60), nullable=False, default="")
-    why: Mapped[str] = mapped_column(String(120), nullable=False, default="")
-
-    member: Mapped[Member] = relationship(foreign_keys=[member_pk], lazy="selectin")

@@ -258,39 +258,3 @@ class ActivityFeedOut(BaseModel):
     items: list[ActivityItemOut]
     # 다음 페이지를 부를 때 그대로 돌려주는 값 — 이 페이지 마지막 줄의 열쇠다. 없으면 끝.
     next_cursor: str | None = Field(default=None, alias="nextCursor")
-
-
-class EpithetReportRow(BaseModel):
-    """화면이 계산해 올리는 회원 한 명의 지금 칭호(요청: 칭호 변경을 알림에)."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    member_id: str = Field(alias="memberId")
-    label: str = Field(max_length=60)
-    why: str = Field(default="", max_length=120)
-
-
-class EpithetListOut(BaseModel):
-    """저장된 칭호 한 벌 — 통계 화면이 이걸 그대로 읽어 쓴다(요청: 화면에 들어갈 때마다
-    다시 계산하지 않는다).
-
-    계산은 경기가 등록될 때 한 번 돌고 그 결과가 여기 남는다. 보는 쪽이 다시 세지 않으므로
-    누가 언제 열어도 같은 말이 보이고, 활동에 남은 알림과도 어긋날 수가 없다.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    epithets: list[EpithetReportRow] = Field(default_factory=list)
-
-
-class EpithetReport(BaseModel):
-    """지금 칭호 한 벌 — 서버는 저장된 값과 견줘 달라진 것만 알림으로 남긴다.
-
-    한 벌을 통째로 받는 까닭: 칭호는 서로 겨뤄서 정해지므로(한 칭호는 한 사람) 한 명만
-    떼어 보면 그 사람이 왜 바뀌었는지가 없다. 목록에 없는 회원은 '그대로'로 본다 —
-    지우지 않는다. 검색 등으로 일부만 계산된 화면이 남의 칭호를 지워 버리면 안 된다.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    epithets: list[EpithetReportRow] = Field(default_factory=list)
