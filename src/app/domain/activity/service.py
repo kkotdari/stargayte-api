@@ -614,7 +614,7 @@ class ActivityListService:
                     league_match=league_by_id.get(r.ids[0]) if r.kind == "leagueMatch" else None,
                     schedule=schedule_by_id.get(r.ids[0]) if r.kind == "schedule" else None,
                     # 랭크 변동은 저장은 그대로 두고 겉모습만 알림으로 감싼다(요청) —
-                    # 화면에서 '서버가 남긴 한 줄'이라는 점이 칭호 변경과 같아서다.
+                    # 화면에서 '서버가 남긴 한 줄'이라는 점이 다른 알림과 같아서다.
                     # 댓글 대상(targetType)은 예전 그대로 rankingShift라, 이미 달린
                     # 댓글이 그대로 붙는다.
                     notice=(
@@ -694,7 +694,7 @@ class ActivityListService:
         rows = (await self._session.scalars(
             # 시각이 같으면 나중에 남긴 것이 위다 — created_at의 눈금이 초라(SQLite의
             # CURRENT_TIMESTAMP) 잇달아 남긴 알림 둘이 같은 시각으로 찍힌다. 그때 id까지
-            # 안 보면 순서가 뒤집혀 '방금 바뀐 칭호'가 옛 알림 아래로 내려간다.
+            # 안 보면 순서가 뒤집혀 방금 남긴 알림이 옛 알림 아래로 내려간다.
             select(ActivityNotice).order_by(
                 ActivityNotice.created_at.desc(), ActivityNotice.id.desc(),
             )
@@ -883,7 +883,7 @@ def _shift_as_notice(shift: "RankingShiftOut") -> "ActivityNoticeOut":
     그것과 다른 이야기라, 겉모습만 알림으로 맞춘다.
 
     payload에는 카드가 그리던 값을 그대로 담는다 — 화면이 이 값으로 예전과 같은 카드를
-    만든다(칭호 변경과 종류만 다를 뿐 자리는 같다)."""
+    만든다."""
     from app.domain.activity.schemas import ActivityNoticeOut
 
     return ActivityNoticeOut(

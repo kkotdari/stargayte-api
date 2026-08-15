@@ -88,29 +88,23 @@ async def test_stats_aggregates_exact_numbers(client):
     # (400+420)/2경기=410, 테란만이면 400, 프로토스만이면 420.
     p1_overall = by_id["player01"]["overall"]
     assert p1_overall == {
-        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3, "bests": 0, "lostBests": 0,
+        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 110, "avgEapm": 85, "avgCmd": 52, "avgEcmd": 41, "avgBuild": 32,
         # 생산 구성은 리플레이로 등록한 경기만 실린다 — 이 픽스처는 수기 등록이라 없다.
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
-        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
-        "tactics": {}, "maps": {},
     }
     assert by_id["player01"]["byRace"]["테란"] == {
-        "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0, "bests": 0, "lostBests": 0,
+        "plays": 2, "wins": 1, "losses": 0, "draws": 1, "winRate": 50.0,
         "avgApm": 100, "avgEapm": 80, "avgCmd": 50, "avgEcmd": 40, "avgBuild": 30,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
-        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
-        "tactics": {}, "maps": {},
     }
     assert by_id["player01"]["byRace"]["프로토스"] == {
-        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "bests": 0, "lostBests": 0,
+        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
-        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
-        "tactics": {}, "maps": {},
     }
     assert by_id["player01"]["byRace"]["저그"]["plays"] == 0
     assert by_id["player01"]["mostPlayedRace"] == "테란"  # 2판 > 1판
@@ -118,12 +112,10 @@ async def test_stats_aggregates_exact_numbers(client):
     # player02: (200+240)/2경기=220
     p2_overall = by_id["player02"]["overall"]
     assert p2_overall == {
-        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3, "bests": 0, "lostBests": 0,
+        "plays": 3, "wins": 1, "losses": 1, "draws": 1, "winRate": 33.3,
         "avgApm": 70, "avgEapm": 55, "avgCmd": 32, "avgEcmd": 22, "avgBuild": 16,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
-        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
-        "tactics": {}, "maps": {},
     }
     assert by_id["player02"]["mostPlayedRace"] == "저그"
 
@@ -352,84 +344,6 @@ async def test_stats_excludes_extreme_outlier_game_from_cmd_and_build_average(cl
     assert by_race["avgBuild"] == 30
 
 
-async def test_stats_counts_best_player_from_summary_data(client):
-    """BEST PLAYER 횟수는 요약(summary_data)의 best가 그 참가자의 원본 게임 아이디와 같은
-    경기를 센 값이다(요청: 통계 주요 지표에). 판정 자체는 프론트가 등록할 때 해 두고
-    서버는 세기만 한다 — 여기서는 그 세는 일이 기간/유형/종족 필터를 그대로 타는지까지
-    함께 본다."""
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    # 두 판 다 player01(테란) 승. 첫 판만 player01이, 둘째 판은 상대편 사람이 뽑혔다.
-    for date, best in (("2026-07-01", "player01"), ("2026-07-02", "player02")):
-        res = await client.post(
-            "/api/game-results",
-            headers=headers,
-            json={
-                "date": date, "note": "",
-                "team1": [_slot("player01", "테란")],
-                "team2": [_slot("player02", "저그")],
-                "result": "team1",
-                "summaryData": {"v": 2, "best": best, "beats": []},
-            },
-        )
-        assert res.status_code == 200, res.text
-    # 요약이 아예 없는 경기(수기 등록)는 아무에게도 안 세진다.
-    await _create_match(
-        client, headers, "2026-07-03",
-        team1=[_slot("player01", "테란")], team2=[_slot("player02", "저그")], result="team1",
-    )
-
-    res = await client.get(
-        "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
-    )
-    by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["bests"] == 1
-    assert by_id["player02"]["overall"]["bests"] == 1
-    # 종족별로도 갈린다 — player01은 테란으로만 뛰었다.
-    assert by_id["player01"]["byRace"]["테란"]["bests"] == 1
-    assert by_id["player01"]["byRace"]["저그"]["bests"] == 0
-
-    # 기간을 첫 판만으로 좁히면 player02의 것은 빠진다.
-    res = await client.get(
-        "/api/game-results/stats", headers=headers,
-        params={"memberIds": "player01,player02", "dateFrom": "2026-07-01", "dateTo": "2026-07-01"},
-    )
-    by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["bests"] == 1
-    assert by_id["player02"]["overall"]["bests"] == 0
-
-
-async def test_stats_counts_legacy_mvp_key(client):
-    """이름을 바꾸기 전에 저장된 요약은 같은 값을 mvp 키로 들고 있다(요청: MVP → BEST
-    PLAYER). 이미 쌓인 경기를 다시 분석하지 않고도 그대로 세져야 한다 — 세는 쪽이 두 키를
-    하나로 본다."""
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    res = await client.post(
-        "/api/game-results",
-        headers=headers,
-        json={
-            "date": "2026-07-01", "note": "",
-            "team1": [_slot("player01", "테란")],
-            "team2": [_slot("player02", "저그")],
-            "result": "team1",
-            "summaryData": {"v": 2, "mvp": "player02", "beats": []},
-        },
-    )
-    assert res.status_code == 200, res.text
-
-    res = await client.get(
-        "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
-    )
-    by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player02"]["overall"]["bests"] == 1
-    assert by_id["player01"]["overall"]["bests"] == 0
-
-
 async def test_stats_race_filter_scopes_overall(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     await _signup(client, "player02", "Mist#1002")
@@ -441,12 +355,10 @@ async def test_stats_race_filter_scopes_overall(client):
     )
     overall = res.json()["members"][0]["overall"]
     assert overall == {
-        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0, "bests": 0, "lostBests": 0,
+        "plays": 1, "wins": 0, "losses": 1, "draws": 0, "winRate": 0.0,
         "avgApm": 120, "avgEapm": 90, "avgCmd": 55, "avgEcmd": 42, "avgBuild": 34,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
-        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
-        "tactics": {}, "maps": {},
     }
     # byRace/mostPlayedRace는 race 파라미터와 무관하게 항상 전체 종족 기준이어야 한다.
     assert res.json()["members"][0]["mostPlayedRace"] == "테란"
@@ -459,12 +371,10 @@ async def test_stats_member_with_zero_matches_returns_zero_defaults(client):
     res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
     entry = res.json()["members"][0]
     assert entry["overall"] == {
-        "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0, "bests": 0, "lostBests": 0,
+        "plays": 0, "wins": 0, "losses": 0, "draws": 0, "winRate": 0.0,
         "avgApm": None, "avgEapm": None, "avgCmd": None, "avgEcmd": None, "avgBuild": None,
         "buildMix": None, "avgWorker5": None, "mixPlays": None, "mixSeconds": None,
         "upPlays": None,
-        # 칭호 재료(요청) — 요약도 맵 이름도 없는 수기 등록 픽스처라 둘 다 빈 사전이다.
-        "tactics": {}, "maps": {},
     }
     assert entry["mostPlayedRace"] is None
 
@@ -586,7 +496,7 @@ def _mix(
     b_prod=0, b_def=0, u_basic=0, u_adv=0, u_caster=0, u_ground=0, u_air=0, worker5=0,
     up_gw=0, up_ga=0, up_aw=0, up_aa=0, up_sh=0, buildings=None, units=None, skills=None,
     building_secs=None, unit_secs=None, skill_secs=None, core_seconds=None, core_cmd=0,
-    core_build=0, core_unit=0, ups=None, up_counts=None, skills_won=None,
+    core_build=0, core_unit=0, ups=None, up_counts=None,
 ) -> dict:
     return {
         "bProd": b_prod, "bDef": b_def,
@@ -599,8 +509,6 @@ def _mix(
         # 경기가 없으면 빈 사전이다.
         "ups": ups or {}, "upCounts": up_counts or {},
         "buildings": buildings or {}, "units": units or {}, "skills": skills or {},
-        # 이긴 판에서만 센 마법 원장 — 칭호가 보는 값이다(요청). 집계에서만 채워진다.
-        "skillsWon": skills_won or {},
         "buildingSecs": building_secs or {}, "unitSecs": unit_secs or {},
         "skillSecs": skill_secs or {},
         # 주요시간대(초)와 그 구간 안의 커맨드 수 — 도넛 옆 "분당 몇 채/몇 기"의 분모와
@@ -666,9 +574,6 @@ async def test_stats_sums_build_mix_across_matches(client):
         building_secs={"Barracks": 3000, "Bunker": 1500, "Starport": 1500},
         unit_secs={"Marine": 3000, "Siege Tank (Tank Mode)": 1500, "Wraith": 1500},
         skill_secs={"Stim Packs": 3000, "Yamato Gun": 1500},
-        # 셋 다 이긴 판이라(result=team1) 칭호용 원장도 위 skills와 같은 수다 — 진 판이
-        # 섞이면 그만큼 적어진다(요청: 기술도 이긴 판만 센다).
-        skills_won={"Stim Packs": 17, "Yamato Gun": 3},
     )
     # 두 분모도 함께 내려간다 — 세 판 중 두 판에만 구성이 실렸고, 그 두 판의 주요시간대는
     # 600초씩이다(경기 길이 900초와 다르다 — 분당 지표의 분모는 주요시간대 쪽이다).
@@ -758,218 +663,3 @@ async def test_stats_build_mix_is_none_without_replay_matches(client):
     overall = res.json()["members"][0]["overall"]
     assert overall["buildMix"] is None
     assert overall["avgWorker5"] is None
-
-
-async def test_stats_counts_tactics_and_map_records(client):
-    """전술 횟수(tactics)와 맵별 전적(maps) — 통계 화면의 칭호가 쓰는 두 재료다(요청:
-    자막에서 강조되는 옆탱·센포 같은 것들과 '○○의 지배자'를 칭호로).
-
-    세는 규칙 셋을 함께 못 박는다.
-      - 한 beat에 같은 사람이 who와 who2로 두 번 실려도 한 번만 센다(옆탱처럼 '누구
-        기지에서 했나'가 같이 적히는 문장이 있다).
-      - 당한 쪽(whom)은 안 센다 — 칭호는 그 사람이 한 일로만 지어야 한다.
-      - 요약이 없는 경기(수기 등록)는 아무 전술도 안 남기지만, 맵 전적에는 맵 이름이 있는
-        한 그대로 들어간다(맵은 요약이 아니라 경기 자체의 사실이다).
-      - 진 판의 수는 안 센다(요청: 전략·전술 칭호는 그 판을 이겼어야 인정) — 같은 센포라도
-        won=False면 통계에 안 남는다.
-    """
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    # 옆탱(side-tank)은 에픽 전투 칭호의 열쇠라 그 판의 전투도 이겼어야 센다(요청) —
-    # 메카닉 갈래는 두 번은 이겨야 한다(지적: 메카닉이 너무 잘 나온다).
-    fought = {"btGroundWon": 2}
-
-    async def _post(
-        date: str, map_name: str, result: str, beats: list[dict], mix: dict | None = fought,
-    ) -> None:
-        res = await client.post(
-            "/api/game-results",
-            headers=headers,
-            json={
-                "date": date, "note": "",
-                "team1": [_slot("player01", "테란", mix=mix)],
-                "team2": [_slot("player02", "프로토스", mix=mix)],
-                "result": result,
-                "mapName": map_name,
-                "summaryData": {"v": 2, "beats": beats},
-            },
-        )
-        assert res.status_code == 200, res.text
-
-    await _post("2026-07-01", "로스트템플", "team1", [
-        {"k": "side-tank", "won": True, "who": ["player01"]},
-        {"k": "center-photon", "won": False, "who": ["player02"]},
-    ])
-    # who와 who2에 같은 사람 — 한 번만 세야 한다.
-    await _post("2026-07-02", "로스트템플", "team1", [
-        {"k": "side-tank", "won": True, "who": ["player01"], "who2": ["player01"]},
-    ])
-    # 경기는 이겼어도 전투 원장이 없는 판(재분석 전 옛 기록)의 옆탱은 안 센다(요청:
-    # 전투/경기 모두 이긴 경우만). 맵 전적에는 여느 판처럼 들어간다.
-    await _post("2026-06-30", "로스트템플", "team1", [
-        {"k": "side-tank", "won": True, "who": ["player01"]},
-    ], mix=None)
-    # 당한 쪽(whom)은 player01이지만 이 전술을 한 사람은 player02다.
-    await _post("2026-07-03", "헌터스", "team2", [
-        {"k": "cannon-rush", "won": True, "who": ["player02"], "whom": ["player01"]},
-        # 진 판이어도 세는 수(요청) — 셋방살이·노엘은 밀린 뒤에야 나오는 이야기라 이긴 판만
-        # 보면 영영 안 잡힌다.
-        {"k": "lodging", "won": False, "who": ["player01"]},
-    ])
-
-    res = await client.get(
-        "/api/game-results/stats", headers=headers, params={"memberIds": "player01,player02"}
-    )
-    by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["tactics"] == {"side-tank": 2, "lodging": 1}
-    # 센포는 진 판(won=False)이라 안 세고, 포토러시만 남는다.
-    assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
-    # 종족별로도 갈린다 — player01은 테란으로만 뛰었다.
-    assert by_id["player01"]["byRace"]["테란"]["tactics"] == {"side-tank": 2, "lodging": 1}
-    assert by_id["player01"]["byRace"]["저그"]["tactics"] == {}
-
-    # 맵 전적 — [판수, 승수].
-    assert by_id["player01"]["overall"]["maps"] == {"로스트템플": [3, 3], "헌터스": [1, 0]}
-    assert by_id["player02"]["overall"]["maps"] == {"로스트템플": [3, 0], "헌터스": [1, 1]}
-
-    # 기간을 좁히면 둘 다 그 조건만 본다.
-    res = await client.get(
-        "/api/game-results/stats", headers=headers,
-        params={"memberIds": "player01,player02", "dateFrom": "2026-07-03", "dateTo": "2026-07-03"},
-    )
-    by_id = {m["memberId"]: m for m in res.json()["members"]}
-    assert by_id["player01"]["overall"]["tactics"] == {"lodging": 1}
-    assert by_id["player01"]["overall"]["maps"] == {"헌터스": [1, 0]}
-    assert by_id["player02"]["overall"]["tactics"] == {"cannon-rush": 1}
-
-
-async def test_map_records_group_by_minimap_image_name(client):
-    """맵 전적은 미니맵 관리에서 묶은 이름으로 센다(지적: 이름만 다른 같은 맵이 따로 나온다).
-
-    빠른무한 계열처럼 판본·파일이름만 다른 맵이 여러 벌이라, 리플레이에 적힌 이름으로 세면
-    같은 맵이 여러 갈래로 쪼개져 어느 것도 문턱을 못 넘는다. 격자(replay_maps)가 가리키는
-    미니맵 그림 이름이 곧 운영자가 부르는 맵 이름이고, 그림이 없는 맵만 리플레이 이름으로
-    받는다.
-    """
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    # 이름이 다른 두 맵을 각각 제 격자와 함께 올린다 — 격자가 다르면 해시도 다르다.
-    grids = {
-        "빠른무한": {"hash": "aa11aa11", "name": "빠른무한", "width": 2, "height": 2,
-                  "palette": [0, 1], "tiles": "AAEBAA==", "resources": []},
-        "Super빠른무한": {"hash": "bb22bb22", "name": "Super빠른무한", "width": 2, "height": 2,
-                       "palette": [0, 1], "tiles": "AQABAQ==", "resources": []},
-    }
-    for i, (map_name, grid) in enumerate(grids.items()):
-        res = await client.post("/api/game-results", headers=headers, json={
-            "date": f"2026-07-0{i + 1}", "note": "",
-            "team1": [_slot("player01", "테란")], "team2": [_slot("player02", "저그")],
-            "result": "team1", "mapName": map_name, "mapData": grid,
-        })
-        assert res.status_code == 200, res.text
-
-    # 아직 묶기 전 — 리플레이에 적힌 이름 그대로 둘로 나뉜다.
-    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
-    assert res.json()["members"][0]["overall"]["maps"] == {"빠른무한": [1, 1], "Super빠른무한": [1, 1]}
-
-    # 미니맵 그림 한 장에 두 격자를 함께 묶는다(운영자가 미니맵 메뉴에서 하는 일).
-    res = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
-        "name": "빨무", "image": "data:image/png;base64,AAAA",
-        "hashes": ["aa11aa11", "bb22bb22"],
-    })
-    assert res.status_code in (200, 201), res.text
-
-    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
-    assert res.json()["members"][0]["overall"]["maps"] == {"빨무": [2, 2]}
-
-
-async def test_stats_serves_won_only_block(client):
-    """이긴 판만 놓고 낸 값 한 벌(won) — 칭호가 '무엇으로 판을 풀었나'를 물을 때 쓴다(요청).
-
-    같은 사람이 이긴 판과 진 판에서 다른 구성을 뽑았으면, overall은 둘을 다 담고 won은
-    이긴 판 것만 담아야 한다.
-    """
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    win = _slot("player01", "테란", 100, 80, 500, 400, build=300)
-    win["buildMix"] = {"uGround": 40, "uAir": 0, "skills": {"Yamato Gun": 2}}
-    lose = _slot("player01", "테란", 100, 80, 500, 400, build=300)
-    lose["buildMix"] = {"uGround": 0, "uAir": 60, "skills": {"Yamato Gun": 5}}
-
-    await _create_match(
-        client, headers, "2026-07-01",
-        team1=[win], team2=[_slot("player02", "저그")], result="team1", duration_seconds=1500,
-    )
-    await _create_match(
-        client, headers, "2026-07-02",
-        team1=[lose], team2=[_slot("player02", "저그")], result="team2", duration_seconds=1500,
-    )
-
-    res = await client.get("/api/game-results/stats", headers=headers, params={"memberIds": "player01"})
-    entry = res.json()["members"][0]
-    # 전체는 둘을 다 담는다 — 화면의 도넛·Top5가 쓰는 값이다.
-    assert entry["overall"]["buildMix"]["uGround"] == 40
-    assert entry["overall"]["buildMix"]["uAir"] == 60
-    # 이긴 판만 놓으면 그 판의 구성만 남는다.
-    assert entry["won"]["buildMix"]["uGround"] == 40
-    assert entry["won"]["buildMix"]["uAir"] == 0
-    # 마법 원장도 마찬가지다(이긴 판의 두 번만).
-    assert entry["won"]["buildMix"]["skills"] == {"Yamato Gun": 2}
-
-
-async def test_stats_counts_bests_in_lost_games(client):
-    """진 판에서 뽑힌 BEST(요청: 졌잘싸 퀸) — 판을 가장 많이 만들고도 진 자리다.
-
-    같은 사람이 이긴 판과 진 판에서 각각 BEST였으면 bests는 둘, lostBests는 하나다.
-    """
-    p1 = await _signup(client, "player01", "Shadow#1001")
-    await _signup(client, "player02", "Mist#1002")
-    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
-
-    for date, result in (("2026-07-01", "team1"), ("2026-07-02", "team2")):
-        res = await client.post(
-            "/api/game-results", headers=headers,
-            json={
-                "date": date, "note": "",
-                "team1": [_slot("player01", "테란")],
-                "team2": [_slot("player02", "프로토스")],
-                "result": result,
-                "summaryData": {"v": 2, "beats": [], "best": "player01"},
-            },
-        )
-        assert res.status_code == 200, res.text
-
-    res = await client.get(
-        "/api/game-results/stats", headers=headers, params={"memberIds": "player01"}
-    )
-    overall = res.json()["members"][0]["overall"]
-    assert overall["bests"] == 2
-    assert overall["lostBests"] == 1
-
-
-def test_combat_split_sums_battle_ledgers():
-    """전투 원장 합산(요청: 경기가 아니라 전투 하나하나의 승패) — 판정은 프론트가 끝내
-    build_mix에 실어 오고, 서버는 기간 합계만 낸다. 원장이 없는 옛 기록·수기 등록은 0으로
-    지나간다."""
-    from app.domain.game_results.service import _combat_split
-
-    class _Row:
-        def __init__(self, mix):
-            self.build_mix = mix
-
-    rows = [
-        _Row({"bt_ground": 3, "bt_ground_won": 2, "bt_magic": 1, "bt_magic_won": 1}),
-        _Row({"bt_ground": 2, "bt_ground_won": 0, "bt_air": 4, "bt_air_won": 3}),
-        _Row({"b_prod": 10}),  # 재분석 전 기록 — 원장 키 자체가 없다
-        _Row(None),            # 수기 등록 — 구성 자체가 없다
-    ]
-    out = _combat_split(rows)
-    assert out["ground"] == [5, 2]
-    assert out["air"] == [4, 3]
-    assert out["magic"] == [1, 1]

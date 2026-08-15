@@ -253,11 +253,11 @@ async def test_minimap_image_rejects_non_image(client):
     assert res.status_code == 422, res.text
 
 
-async def test_rewrite_summary_replaces_only_summary(client):
-    """요약 재분석 — 규칙이 좋아지면 옛 경기도 다시 계산해 덮어쓸 수 있어야 한다(요청).
+async def test_rewrite_summary_replaces_only_derived_data(client):
+    """재분석 — 규칙이 좋아지면 옛 경기도 다시 계산해 덮어쓸 수 있어야 한다(요청).
 
-    경기 내용(팀·승패)은 그대로 두고 요약만 갈아 끼우는지, 격자가 없던 옛 경기에 미니맵이
-    함께 채워지는지, 운영자만 할 수 있는지를 본다.
+    경기 내용(팀·승패)은 그대로 두고, 격자가 없던 옛 경기에 미니맵이 채워지는지,
+    운영자만 할 수 있는지를 본다.
     """
     p1 = await _signup(client, "player01", "Shadow#1001")
     p2 = await _signup(client, "player02", "Mist#1002")
@@ -265,19 +265,16 @@ async def test_rewrite_summary_replaces_only_summary(client):
     # 격자 없이 등록된 옛 경기.
     made = await _create(client, headers, date="2026-07-01", gsa="2026-07-01T03:00:00+00:00", map_data=None)
     assert made["mapHash"] is None
-    assert made["summaryData"] is None
 
-    summary = {"v": 1, "beats": [{"k": "clash", "who": ["player01"], "won": True, "at": 100}]}
     res = await client.post(
         f"/api/game-results/{made['id']}/summary",
-        headers=headers, json={"summaryData": summary, "mapData": _MAP},
+        headers=headers, json={"mapData": _MAP},
     )
     assert res.status_code == 204, res.text
 
     got = await client.get(f"/api/game-results/{made['id']}", headers=headers)
     assert got.status_code == 200, got.text
     after = got.json()
-    assert after["summaryData"] == summary
     assert after["mapHash"] == _MAP["hash"]
     # 경기 내용은 손대지 않는다.
     assert after["result"] == made["result"]
@@ -290,16 +287,16 @@ async def test_rewrite_summary_replaces_only_summary(client):
     assert approve.status_code == 200, approve.text
     other = {"Authorization": f"Bearer {p2['accessToken']}"}
     denied = await client.post(
-        f"/api/game-results/{made['id']}/summary", headers=other, json={"summaryData": summary},
+        f"/api/game-results/{made['id']}/summary", headers=other, json={"mapData": _MAP},
     )
     assert denied.status_code == 403, denied.text
 
 
 async def test_rewrite_summary_backfills_replay_metrics(client):
-    """재분석은 요약 말고도 리플레이에서 다시 나오는 값을 전부 채운다(요청).
+    """재분석은 리플레이에서 다시 나오는 값을 전부 채운다(요청).
 
     파서가 새 값을 내기 시작하면 옛 경기는 재분석으로 따라오는 게 이 기능의 존재 이유다 —
-    한때 서버가 summaryData/mapData만 받고 나머지는 조용히 버려, 재분석을 눌러도 새 컬럼이
+    한때 서버가 일부만 받고 나머지는 조용히 버려, 재분석을 눌러도 새 컬럼이
     빈 채로 남았다(지적). 짝은 회원 pk가 아니라 리플레이 원본 게임 아이디(rawName)로 맞춘다.
     """
     p1 = await _signup(client, "player01", "Shadow#1001")
@@ -316,8 +313,6 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
         # 그 자리가 비어 있어도 되는지(옛 기록과 같은 모양) 함께 확인한다.
         "ups": {}, "upCounts": {},
         "buildings": {"Barracks": 4}, "units": {"Marine": 40}, "skills": {"Stim Packs": 12},
-        # 이긴 판만 센 마법 원장도 기간 합계에서만 채워진다 — 경기 하나에는 빈 사전이다.
-        "skillsWon": {},
         # 이름별 시간은 기간 합계를 낼 때만 세는 값이라, 경기 하나짜리에는 빈 사전으로 남는다.
         "buildingSecs": {}, "unitSecs": {}, "skillSecs": {},
         # 주요시간대(초)와 그 구간의 생산 커맨드 — 경기 하나마다 파서가 재서 실어 보낸다.
@@ -326,7 +321,6 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
     res = await client.post(
         f"/api/game-results/{made['id']}/summary", headers=headers,
         json={
-            "summaryData": {"v": 1, "beats": []},
             "mapName": "로스트템플", "durationSeconds": 900,
             "slots": [
                 {"rawName": "player01", "race": "테란", "apm": 120, "buildCount": 300, "buildMix": mix},

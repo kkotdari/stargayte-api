@@ -311,8 +311,6 @@ class GameResultRepository:
         """member_pk, race 단위로 묶은 전적(판수/승/무) 집계 행. 종족별로 나눠서 받아오고,
         "전체" 기준이 필요한 쪽(overall)은 호출부에서 이 행들을 합산해서 만든다.
         member_pk는 컬럼이 아니라 player_name → replay_aliases(kind='member') 조인으로 구한다.
-        BEST PLAYER 횟수도 여기서 함께 센다 — 같은 (기간/유형/종족) 조건으로 걸러야 하는
-        값이라 따로 도는 것보다 이 묶음에 얹는 편이 조건이 어긋날 여지가 없다.
 
         지표 평균(APM·유효APM·커맨드·유효커맨드·생산)은 여기서 내지 않는다 — 이상치를 뺀
         평균이라 경기 단위 원본이 있어야 해서 raw_metric_rows가 따로 담당한다. 예전엔 여기서도
@@ -325,46 +323,6 @@ class GameResultRepository:
                 func.count().label("plays"),
                 func.sum(case((GameOutcome.result == "draw", 1), else_=0)).label("draws"),
                 func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
-                # 그 경기의 BEST PLAYER였나 — 요약(summary_data)의 best가 이 참가자의
-                # 리플레이 원본 게임 아이디와 같은지로 본다. 뽑는 규칙은 프론트
-                # (replaySummary의 bestOf)에만 있고 서버는 그 결과를 세기만 한다: 근거가
-                # 리플레이 커맨드 스트림이라 판정을 이쪽으로 옮기면 파싱 한 벌을 통째로 더
-                # 들고 있어야 하고, 두 벌이 어긋나는 순간 화면이 말한 사람과 통계가 갈린다.
-                # 옛 키(mvp)도 함께 본다 — 이름만 바뀐 같은 값이라(요청: MVP → BEST PLAYER),
-                # 이미 저장된 요약은 그 키로 들고 있다. 다시 분석하면 best로 바뀐다.
-                # 요약이 없는 경기(수기 등록·옛 경기)는 추출이 NULL이라 0으로 떨어진다.
-                func.sum(
-                    case(
-                        (
-                            func.coalesce(
-                                GameOutcome.summary_data["best"].as_string(),
-                                GameOutcome.summary_data["mvp"].as_string(),
-                            )
-                            == GameResultParticipant.player_name,
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("bests"),
-                # 그중 '진 판에서 뽑힌 BEST'(요청: 졌잘싸 퀸) — 판을 가장 많이 만들고도
-                # 진 자리다. 위 bests와 같은 식에 승패 조건 하나를 더 걸었다.
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                func.coalesce(
-                                    GameOutcome.summary_data["best"].as_string(),
-                                    GameOutcome.summary_data["mvp"].as_string(),
-                                )
-                                == GameResultParticipant.player_name,
-                                GameOutcome.result != GameResultParticipant.team,
-                                GameOutcome.result.in_(("team1", "team2")),
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("lost_bests"),
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
@@ -441,8 +399,6 @@ class GameResultRepository:
                 GameResultParticipant.build_count,
                 GameResultParticipant.build_mix,
                 GameOutcome.duration_seconds,
-                # 이 판을 이겼나 — 칭호가 쓰는 '이긴 판만 센 원장'의 잣대다(요청).
-                (GameOutcome.result == GameResultParticipant.team).label("won"),
             )
             .select_from(GameResultParticipant)
             .join(GameResult, GameResult.id == GameResultParticipant.match_id)
@@ -458,118 +414,6 @@ class GameResultRepository:
         )
 
         return list((await self._session.execute(stmt)).all())
-
-    async def map_record_rows(
-        self,
-        *,
-        member_pks: list[int],
-        date_from: date | None,
-        date_to: date | None,
-        match_type: str | None,
-    ) -> list[Row]:
-        """(member_pk, race, 맵 이름) 단위 전적 — 통계 화면의 칭호("○○의 지배자")가
-        '이 사람이 유독 잘하는 맵'을 고르는 재료다(요청).
-
-        이름은 미니맵 관리에서 묶은 이름을 먼저 쓴다(지적: 이름만 다른 같은 맵이 따로따로
-        나온다) — 빠른무한 계열처럼 판본·파일이름만 다른 맵이 여러 벌이라, 리플레이에 적힌
-        이름으로 세면 같은 맵이 대여섯 갈래로 쪼개져 어느 것도 문턱을 못 넘는다.
-        묶는 자리는 이미 있다: 격자(replay_maps)가 사람이 올린 미니맵 그림(minimap_images)을
-        가리키고, 그 그림 이름이 곧 운영자가 부르는 맵 이름이다. 그림이 아직 없는 맵만
-        리플레이에 적힌 이름으로 받는다.
-
-        수기 등록 경기는 맵 이름도 격자도 없어 여기서 아예 빠진다. 종족까지 묶는 이유는
-        화면의 다른 값들과 잣대를 맞추기 위해서다(종족 필터를 걸면 칭호도 그 종족 판만
-        보고 매겨져야 한다)."""
-        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
-        map_label = func.coalesce(MinimapImage.name, GameOutcome.map_name).label("map_name")
-        stmt = (
-            select(
-                member_alias.member_pk,
-                GameResultParticipant.race,
-                map_label,
-                func.count().label("plays"),
-                func.sum(case((GameOutcome.result == GameResultParticipant.team, 1), else_=0)).label("wins"),
-            )
-            .select_from(GameResultParticipant)
-            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
-            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
-            .join(member_alias, member_condition)
-            # 격자와 그림은 없을 수 있다(옛 경기·아직 안 올린 맵) — 그때는 리플레이 이름으로.
-            .outerjoin(ReplayMap, ReplayMap.map_hash == GameOutcome.map_hash)
-            .outerjoin(MinimapImage, MinimapImage.id == ReplayMap.image_id)
-            .where(
-                member_alias.member_pk.in_(member_pks),
-                GameOutcome.result != "not_held",
-                func.coalesce(MinimapImage.name, GameOutcome.map_name).is_not(None),
-            )
-            .group_by(
-                member_alias.member_pk, GameResultParticipant.race,
-                func.coalesce(MinimapImage.name, GameOutcome.map_name),
-            )
-        )
-        stmt = self._apply_common_match_filters(
-            stmt, date_from=date_from, date_to=date_to, match_type=match_type,
-        )
-        return list((await self._session.execute(stmt)).all())
-
-    async def tactic_rows(
-        self,
-        *,
-        member_pks: list[int],
-        date_from: date | None,
-        date_to: date | None,
-        match_type: str | None,
-    ) -> tuple[list[Row], list[Row]]:
-        """전술 칭호("옆탱의 여왕", "센포의 지배자")를 세기 위한 재료 두 벌(요청).
-
-        하나는 요약이 있는 경기의 (match_id, summary_data)이고, 다른 하나는 그 경기들의
-        참가 행(match_id, 원본 게임 아이디, member_pk, race)이다. 세는 일은 서비스가
-        파이썬에서 한다 — 요약의 beats가 JSON 배열이라 SQL에서 헤집으려면 방언마다 문법이
-        갈리고(SQLite json_each / Postgres jsonb_array_elements), 동아리 규모의 경기 수라
-        한 번 읽어 세는 편이 단순하다.
-
-        두 벌로 나눠 받는 이유는 요약이 크기 때문이다 — 참가자 행마다 같은 요약을 실어
-        보내면 팀전 여덟 명짜리 경기는 같은 JSON을 여덟 번 나른다."""
-        member_alias, member_condition = self._member_alias_join(GameResultParticipant.player_name)
-        summaries = (
-            select(GameOutcome.match_id, GameOutcome.summary_data)
-            .select_from(GameOutcome)
-            .join(GameResult, GameResult.id == GameOutcome.match_id)
-            .where(
-                GameOutcome.result != "not_held",
-                GameOutcome.summary_data.is_not(None),
-            )
-        )
-        players = (
-            select(
-                GameResultParticipant.match_id,
-                GameResultParticipant.player_name,
-                GameResultParticipant.race,
-                member_alias.member_pk,
-                # 전투 원장(bt_*)이 실린 구성 — 에픽 전투 칭호가 "그 판에서 전투도
-                # 이겼나"를 대조하는 재료다(요청). 요약과 달리 행마다 제 것이라 무겁지 않다.
-                GameResultParticipant.build_mix,
-            )
-            .select_from(GameResultParticipant)
-            .join(GameResult, GameResult.id == GameResultParticipant.match_id)
-            .join(GameOutcome, GameOutcome.match_id == GameResult.id)
-            .join(member_alias, member_condition)
-            .where(
-                member_alias.member_pk.in_(member_pks),
-                GameOutcome.result != "not_held",
-                GameOutcome.summary_data.is_not(None),
-            )
-        )
-        summaries = self._apply_common_match_filters(
-            summaries, date_from=date_from, date_to=date_to, match_type=match_type,
-        )
-        players = self._apply_common_match_filters(
-            players, date_from=date_from, date_to=date_to, match_type=match_type,
-        )
-        return (
-            list((await self._session.execute(summaries)).all()),
-            list((await self._session.execute(players)).all()),
-        )
 
     async def head_to_head_rows(
         self,

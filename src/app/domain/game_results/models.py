@@ -209,13 +209,6 @@ class GameOutcome(Base):
     map_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     game_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # 리플레이에서 규칙으로 뽑아낸 경기 요약. 완성된 문장이 아니라 "무슨 일이 있었나"의
-    # 목록이다(프론트 replaySummaryData.ts) — 문장 틀 키와 리플레이 원본 게임 아이디, 유닛
-    # 영문 키만 들어 있고 한국어 문구는 없다. 이래야 나중에 닉네임이 바뀌거나 표현을 고쳐도
-    # 이미 등록된 경기가 옛말을 계속 보여주지 않는다(요청). 문장은 볼 때 프론트가 만든다.
-    # 사람이 쓴 글이 아니라 파생 데이터라, 리플레이를 다시 올리면 그대로 덮어쓴다.
-    # 재료가 모자라면 아예 만들지 않으므로 NULL이 정상이다(수동 등록 경기도 NULL).
-    summary_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # 이 경기가 치러진 맵의 지형 격자(replay_maps.map_hash) — 미니맵을 그리는 데 쓴다.
     # 외래키를 걸지 않는 이유는 격자가 순전히 파생 데이터라서다: 맵 행이 없어도 경기는
     # 온전하고(미니맵만 안 나온다), 반대로 어떤 경기도 안 가리키는 맵 행이 남아도 무해하다.
@@ -239,7 +232,7 @@ class GameOutcome(Base):
 class GameResultUnitTracks(TimestampMixin, Base):
     """개체 트랙(v2) — 유닛 태그 단위 분석 결과를 경기와 별도 테이블에 담는다.
 
-    요청: 기존 부대 어림(summary_data.motion)과 나란히 두고 비교해 보게 별도
+    요청: 기존 부대 어림(옛 요약 데이터의 motion)과 나란히 두고 비교해 보게 별도
     테이블로. 리플레이 명령의 100%가 선택 태그에 귀속됨을 실측으로 확인한 뒤의
     새 파이프라인이다 — 프론트가 등록 때 계산해 올리고, 재생 화면의 '개체' 토글이
     읽는다. 내용은 프론트 소유의 JSON 문자열이라 서버는 열어 보지 않는다."""

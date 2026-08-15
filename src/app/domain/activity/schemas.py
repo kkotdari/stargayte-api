@@ -193,15 +193,15 @@ class LeagueMatchActivityOut(BaseModel):
 class ActivityNoticeOut(BaseModel):
     """활동에 뜨는 알림 하나(요청) — 종류와 내용만 있는 빈 그릇이다.
 
-    무엇을 어떻게 그릴지는 화면이 kind를 보고 정한다. 서버가 문장을 만들지 않는 이유는
-    리플레이 요약과 같다: 문구를 고치거나 닉네임이 바뀌어도 이미 쌓인 알림이 옛말을
-    계속 보여주면 안 된다. payload에는 사실만 담고 말은 볼 때 만든다.
+    무엇을 어떻게 그릴지는 화면이 kind를 보고 정한다. 서버가 문장을 만들지 않는 이유:
+    문구를 고치거나 닉네임이 바뀌어도 이미 쌓인 알림이 옛말을 계속 보여주면 안 된다.
+    payload에는 사실만 담고 말은 볼 때 만든다.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     id: int
-    # "epithet"(칭호 변경) · "rankingShift"(랭크 변동) 등.
+    # "rankingShift"(랭크 변동) 등 — 알림 종류.
     kind: str
     payload: dict = Field(default_factory=dict)
     created_at: datetime = Field(alias="createdAt")
@@ -222,7 +222,7 @@ class ActivityItemOut(BaseModel):
 
     key: str
     # 랭크 변동은 제 칸을 안 갖는다(요청: rankingShift를 없애고 알림 유형으로 통합) —
-    # 서버가 남기는 한 줄이라는 점에서 칭호 변경과 같은 것이고, 화면에서도 같은 자리에
+    # 서버가 남기는 한 줄이라는 점에서 다른 알림과 같은 것이고, 화면에서도 같은 자리에
     # 서야 한다. 저장은 그대로 ranking_shifts에 있고 겉모습만 알림으로 감싼다.
     kind: Literal[
         "challenge", "gameResultPost", "leagueMatch", "schedule", "notice",
@@ -234,7 +234,7 @@ class ActivityItemOut(BaseModel):
     league_match: LeagueMatchActivityOut | None = Field(default=None, alias="leagueMatch")
     # 모임 일정 — 도메인 스키마를 그대로 쓴다(카드가 폼과 같은 것을 보여주므로 줄일 칸이 없다).
     schedule: ScheduleOut | None = None
-    # 알림(칭호 변경 등) — 앞으로 종류가 늘어도 이 칸 하나로 받는다.
+    # 알림(랭크 변동 등) — 앞으로 종류가 늘어도 이 칸 하나로 받는다.
     notice: ActivityNoticeOut | None = None
     comments: list[ActivityCommentOut] = Field(default_factory=list)
 

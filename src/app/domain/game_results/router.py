@@ -390,8 +390,8 @@ async def rewrite_summary(
     storage: StorageDep,
     _: CurrentAdmin,
 ) -> None:
-    """등록된 경기의 요약만 다시 써 넣는다(요청: 요약 재분석) — 경기 내용은 안 건드린다.
-    요약을 만드는 파서가 브라우저 쪽에만 있어서, 화면이 리플레이를 다시 분석해 보내온다."""
+    """등록된 경기의 리플레이 파생 데이터를 다시 써 넣는다(재분석) — 경기 내용은 안 건드린다.
+    파서가 브라우저 쪽에만 있어서, 화면이 리플레이를 다시 분석해 보내온다."""
     await GameResultService(db, storage).rewrite_summary(match_id, payload)
 
 

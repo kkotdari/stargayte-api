@@ -57,7 +57,7 @@ class BuildMix(BaseModel):
     u_air: int = Field(default=0, ge=0, le=100000, alias="uAir")
     worker5: int = Field(default=0, ge=0, le=100000)
     # 전투(교전) 원장 — 갈래별 [붙은 수/이긴 수](요청: 그 전투 하나하나에서 이겼냐).
-    # 판정(뭉치·살아남음)은 프론트 replayBattles.ts가 한다 — bests·beats와 같은 원칙으로
+    # 판정(뭉치·살아남음)은 프론트 replayBattles.ts가 한다 — 판정 한 벌은 프론트에만 두는 원칙으로
     # 서버는 저장된 결과를 셀 뿐이다. 옛 기록에는 없어 0이다(재분석이 채운다).
     bt_ground: int = Field(default=0, ge=0, le=100000, alias="btGround")
     bt_ground_won: int = Field(default=0, ge=0, le=100000, alias="btGroundWon")
@@ -89,10 +89,6 @@ class BuildMix(BaseModel):
     buildings: dict[str, int] = Field(default_factory=dict)
     units: dict[str, int] = Field(default_factory=dict)
     skills: dict[str, int] = Field(default_factory=dict)
-    # 이긴 판에서만 센 마법 원장(요청: 핵·스테이시스 같은 기술도 이긴 판만 센다) — 위 skills는
-    # 화면의 Top5가 쓰는 값이라 승패를 안 가리고 그대로 두고, 칭호는 이쪽을 본다.
-    # 집계에서만 채워진다(경기 하나짜리 값에는 없다) — 그 판의 승패는 경기 자체가 이미 안다.
-    skills_won: dict[str, int] = Field(default_factory=dict, alias="skillsWon")
     # 위 세 원장의 '이름별 총 경기시간(초)' — 그 이름이 한 번이라도 나온 경기들의 길이 합.
     # 화면이 총합을 10분당 값으로 되돌릴 분모다(요청). 집계에서만 채워진다: 경기 하나짜리
     # 값에서는 그 판의 길이 하나뿐이라 실을 이유가 없고, 합칠 때 세는 편이 payload도 가볍다.
@@ -117,7 +113,7 @@ class BuildMix(BaseModel):
     core_unit: int = Field(default=0, ge=0, le=1000000, alias="coreUnit")
 
     @field_validator(
-        "buildings", "units", "skills", "skills_won", "building_secs", "unit_secs", "skill_secs",
+        "buildings", "units", "skills", "building_secs", "unit_secs", "skill_secs",
         "ups", "up_counts",
     )
     @classmethod
@@ -327,20 +323,20 @@ class SummaryRewriteSlot(BaseModel):
 
 
 class SummaryRewrite(BaseModel):
-    """이미 등록된 경기의 요약만 다시 계산해 덮어쓴다(요청: 요약 재분석).
+    """이미 등록된 경기의 리플레이 파생 데이터를 다시 계산해 덮어쓴다(재분석).
 
-    요약은 리플레이에서 규칙으로 뽑아내는 파생 데이터라, 규칙이 좋아지면 옛 경기도 함께
-    좋아져야 한다. 그런데 요약을 만드는 파서는 브라우저 쪽에만 있어서(screp-js), 서버가
+    리플레이에서 규칙으로 뽑아내는 파생 데이터라, 규칙이 좋아지면 옛 경기도 함께
+    좋아져야 한다. 그런데 그 파서는 브라우저 쪽에만 있어서(screp-js), 서버가
     스스로 다시 만들 수는 없다 — 화면이 리플레이를 내려받아 다시 분석하고 그 결과만 여기로
     올린다. 경기 내용(팀·승패·참가자)은 건드리지 않는다.
+    (요약(summary_data)·칭호 개념은 폐지됐다 — 이 payload는 지표·맵·시각·구성만 나른다.)
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    summary_data: dict | None = Field(default=None, alias="summaryData")
     # 옛 경기에 미니맵 격자가 없을 수 있어 함께 받는다 — 같은 맵이면 서버가 하나만 남긴다.
     map_data: ReplayMapData | None = Field(default=None, alias="mapData")
-    # 요약 말고도 리플레이에서 다시 나오는 값들(요청: 요약뿐 아니라 다른 모든 데이터를 재분석).
+    # 리플레이에서 다시 나오는 값들(요청: 다른 모든 데이터를 재분석).
     # 화면은 처음부터 이걸 다 보내고 있었는데 여기 자리가 없어 조용히 버려지고 있었다(지적:
     # 경기 재분석을 눌러도 새 컬럼이 안 채워진다) — 파서가 새 값을 내기 시작하면 옛 경기는
     # 재분석으로 따라오는 게 이 기능의 존재 이유다.
@@ -383,8 +379,6 @@ class GameResultReplayMerge(BaseModel):
     result: GameOutcome | None = None  # None = 기존 승패 유지(리플레이가 못 가림)
     map_name: str | None = Field(default=None, alias="mapName")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
-    # 리플레이를 다시 올리면 요약도 다시 계산된 값으로 덮어쓴다(요청: 배치 업로드에서 갱신).
-    summary_data: dict | None = Field(default=None, alias="summaryData")
     # 맵 격자 — 예전에 등록해 둔 경기에 미니맵을 채워 넣는 유일한 길이다(옛 경기는 이 값이
     # 아예 없다). 같은 리플레이를 다시 올리면 여기로 들어와 맵 한 벌이 저장되고 경기가 그걸
     # 가리키게 된다.
@@ -441,12 +435,9 @@ class GameResultWrite(BaseModel):
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
-    # 리플레이에서 규칙으로 뽑은 경기 요약 — 문장이 아니라 "무슨 일이 있었나"의 목록이다
-    # (models.GameOutcome.summary_data 주석 참고). 사람이 쓴 글이 아니라 파생 데이터다.
-    summary_data: dict | None = Field(default=None, alias="summaryData")
     # 이 경기 맵의 지형 격자 — 이미 같은 맵이 저장돼 있으면 버리고 해시만 이어 붙인다.
     # 수기 등록/수정 폼처럼 리플레이를 다시 읽지 않는 경로에서는 None이고, 그때 기존
-    # 연결을 지우지 않는다(요약과 같은 규칙).
+    # 연결을 지우지 않는다.
     map_data: ReplayMapData | None = Field(default=None, alias="mapData")
 
     @model_validator(mode="after")
@@ -475,7 +466,6 @@ class GameResultOut(BaseModel):
     map_name: str | None = Field(default=None, alias="mapName")
     game_started_at: datetime | None = Field(default=None, alias="gameStartedAt")
     duration_seconds: int | None = Field(default=None, alias="durationSeconds")
-    summary_data: dict | None = Field(default=None, alias="summaryData")
     # 이 경기 맵의 지형 격자를 가리키는 해시 — 격자 자체는 따로(GET replay-maps) 받아 온다.
     # 같은 맵을 쓰는 경기가 수십 건이라 목록 응답마다 22KB짜리 격자를 실어 보낼 수 없다.
     map_hash: str | None = Field(default=None, alias="mapHash")
@@ -505,12 +495,6 @@ class RaceStatsEntry(BaseModel):
     losses: int
     draws: int
     win_rate: float = Field(alias="winRate")
-    # 이 조건에서 BEST PLAYER로 뽑힌 횟수(요청: 통계 주요 지표에) — 리플레이로 등록된
-    # 팀전에만 붙는 값이라, 수기 등록·개인전·옛 경기만 있는 회원은 0이다.
-    # 예전 이름은 mvps였다(요청: MVP → BEST PLAYER) — 화면도 같은 날 함께 바뀐다.
-    bests: int = 0
-    # 그중 진 판에서 뽑힌 수(요청: 졌잘싸 퀸) — 판을 가장 많이 만들고도 진 자리다.
-    lost_bests: int = Field(default=0, alias="lostBests")
     avg_apm: int | None = Field(default=None, alias="avgApm")
     avg_eapm: int | None = Field(default=None, alias="avgEapm")
     avg_cmd: int | None = Field(default=None, alias="avgCmd")
@@ -535,16 +519,6 @@ class RaceStatsEntry(BaseModel):
     # 없다. 그런 판까지 분모에 넣으면 평균이 실제 실력보다 낮게 나온다(지적).
     # 업그레이드 값을 아예 안 실은 옛 기록도 여기서 빠진다 — 0으로 세면 같은 이유로 깎인다.
     up_plays: int | None = Field(default=None, alias="upPlays")
-    # 이 조건에서 이 사람이 '무엇을 몇 번 했나' — 리플레이 요약(summary_data.beats)의 문장 틀
-    # 키별 횟수다(요청: 자막에서 강조되는 것들을 칭호에도). 옆탱(side-tank)·센포(center-photon)·
-    # 포토러시(cannon-rush)처럼 화면이 문장으로 말하던 사실을 그대로 세기만 한 값이라,
-    # 판정 규칙은 프론트(replayTactics)에 한 벌만 있고 서버는 저장된 결과를 센다 — bests와
-    # 같은 원칙이다. 요약이 없는 경기(수기 등록·옛 경기)는 아예 안 들어온다.
-    tactics: dict[str, int] = Field(default_factory=dict)
-    # 맵 이름 → [판수, 승수] — "○○의 지배자" 칭호가 고르는 재료다(요청). 수치 두 개를 리스트로
-    # 담는 이유는 이 값이 화면에 그대로 적히는 값이 아니라 계산 재료라서다: 키를 따로 두면
-    # 맵마다 이름표만 두 배로 늘어난다. 맵 이름은 리플레이에만 있어 수기 등록 경기는 빠진다.
-    maps: dict[str, list[int]] = Field(default_factory=dict)
 
 
 class MemberStatsEntry(BaseModel):
@@ -552,17 +526,8 @@ class MemberStatsEntry(BaseModel):
 
     member_id: str = Field(alias="memberId")
     overall: RaceStatsEntry
-    # 이긴 판만 놓고 낸 같은 값 — 칭호가 '무엇으로 판을 풀었나'를 물을 때 쓴다(요청).
-    # 전적(판수·승률)은 이 안에서 뜻이 없다: 이긴 판만 모았으니 늘 100%다. 구성비·분당
-    # 값·원장만 읽어야 한다.
-    won: RaceStatsEntry
     by_race: dict[str, RaceStatsEntry] = Field(alias="byRace")
     most_played_race: str | None = Field(default=None, alias="mostPlayedRace")
-    # 갈래(ground/air/magic) → [붙은 전투 수, 이긴 전투 수] — 지상전·공중전·마법 퀸이
-    # "그 전투의 승률"을 내는 재료다(요청: 그 전투 하나하나에서 이겼냐 — 판정은 그 자리에
-    # 살아남았나, 프론트 replayBattles.ts). 서버는 경기별 build_mix에 실려 온 원장(bt_*)을
-    # 기간 합계로 더할 뿐이다(_combat_split). 종족 무관(요청)이라 회원 단위에 싣는다.
-    combat: dict[str, list[int]] = Field(default_factory=dict)
     # 랭킹 순서 — 승률만으로는 못 가르는 동률을 승자승(맞대결)/공통상대/전체 승수로 마저
     # 가른 최종 정렬 결과다. 맞대결·공통상대 성적은 "누구와 누구를 비교하느냐"에 따라
     # 달라지는 쌍(pair) 단위 값이라 회원 하나의 숫자로 내려보낼 수가 없어서, 서버가 정렬을

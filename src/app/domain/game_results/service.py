@@ -261,8 +261,6 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
     total: dict[str, object] = {f: 0 for f in (*_BUILD_MIX_FIELDS, *_UPGRADE_FIELDS)}
     tallies: dict[str, dict[str, int]] = {t: {} for t in _BUILD_MIX_TALLIES}
     tallies.update({k: {} for k in _BUILD_MIX_TALLIES.values()})
-    # 이긴 판에서만 센 마법 원장(요청) — 칭호가 이것을 본다(schemas.BuildMix.skills_won).
-    skills_won: dict[str, int] = {}
     seconds = 0
     up_plays = 0
     # 업그레이드 줄별 합과 '그 줄이 실린 경기 수' — 줄이 종족마다 다르므로 분모도 줄마다
@@ -313,11 +311,7 @@ def _build_mix_agg(rows: list) -> dict[str, object]:
                     tallies[t][name] = tallies[t].get(name, 0) + int(v)
                     # 이 경기에 그 이름이 나왔다 — 그 판의 길이를 이 이름의 분모에 얹는다.
                     tallies[secs_key][name] = tallies[secs_key].get(name, 0) + full
-                    # 이긴 판이면 칭호용 원장에도 얹는다(요청: 기술도 이긴 판만 센다).
-                    if t == "skills" and getattr(r, "won", False):
-                        skills_won[name] = skills_won.get(name, 0) + int(v)
     total.update(tallies)
-    total["skills_won"] = skills_won
     total["ups"] = up_lines
     total["up_counts"] = up_line_plays
     return {
@@ -412,70 +406,9 @@ def _to_utc_naive(dt: datetime) -> datetime:
     return dt
 
 
-# 져도 세는 수(요청) — 이야기 자체가 '밀린 뒤에 벌어진 일'이라, 이긴 판만 보면 영영 안 잡힌다.
-#   lodging·relocate : 집을 잃고 아군 기지에 얹혀 살거나 자리를 옮긴 것
-#   no-elim          : 다 털리기 직전에 "노엘"을 외친 것
-# 나머지 전술은 이긴 판만 센다(_tactic_counts 주석) — 통했다는 사실이 곧 그 수의 값어치다.
-#   gg               : 졌다고 손을 내민 한마디(매너 퀸) — 이긴 판에서 나올 리가 없다
-_COUNT_EVEN_IF_LOST = {"lodging", "relocate", "no-elim", "gg"}
-
-# 에픽 전투 칭호의 열쇠(요청: 그 유닛을 사용해 전투/경기에 모두 이긴 경우만 집계) — 이
-# 열쇠의 수는 이긴 판이어도 그 판에서 전투(교전)까지 이겼어야 센다. 갈래(지상/공중)는 안
-# 가린다(지적: 캐리어도 상대 지상을 친다) — 전투 원장(bt_*_won)에 이긴 교전이 하나라도
-# 있으면 된다. 원장이 없는 옛 기록은 재분석 전까지 이 열쇠들이 0으로 잡힌다.
-# 열쇠 → 그 판에서 이겼어야 하는 전투 수. 대부분 1이고, 메카닉 갈래만 2다(지적: 메카닉
-# 조이기는 너무 잘 나온다 — 탱크로 한 번 이긴 판이 아니라 전투를 거듭 이긴 판이라야 한다).
-# 프론트 statEpithet의 battle 값과 짝이다.
-_BATTLE_GATED_KEYS = {
-    "bionic": 1, "mech": 2, "center-tank": 2, "side-tank": 2, "vessel": 1, "valkyrie": 1,
-    "bc": 1, "zealot-templar": 1, "carrier": 1, "shuttle-reaver": 1, "templar-drop": 1,
-    "lurker": 1, "moka": 1, "guardian": 1, "devourer": 1, "muta": 1, "queen": 1,
-    "arbiter": 1, "dark-templar": 1,
-}
-
-
-def _battle_wins(mix: object) -> int:
-    """그 판에서 이긴 전투 수 — 프론트(replayBattles)가 실어 둔 원장을 본다."""
-    if not isinstance(mix, dict):
-        return 0
-    return (
-        int(mix.get("bt_ground_won") or 0)
-        + int(mix.get("bt_air_won") or 0)
-        + int(mix.get("bt_magic_won") or 0)
-    )
-
-
-# 전투(교전) 원장의 자리 — 갈래 → (붙은 수 필드, 이긴 수 필드). 판정(전투 뭉치 짓기·
-# "그 자리에 살아남았나")은 프론트 replayBattles.ts가 등록·재분석 때 하고 build_mix에 실어
-# 보낸다 — bests·beats와 같은 원칙으로, 판정 한 벌은 프론트에만 두고 서버는 센다.
-_COMBAT_FIELDS = {
-    "ground": ("bt_ground", "bt_ground_won"),
-    "air": ("bt_air", "bt_air_won"),
-    "magic": ("bt_magic", "bt_magic_won"),
-}
-
-
-def _combat_split(rows: list) -> dict[str, list[int]]:
-    """갈래(ground/air/magic) → [붙은 전투 수, 이긴 전투 수]의 기간 합계.
-
-    칭호(지상전·공중전·마법 퀸)가 "그 전투의 승률"을 내는 재료다(요청: 경기가 아니라 전투
-    하나하나에서 이겼냐). 경기별 원본(raw_metric_rows)의 build_mix에 실린 원장을 더한다 —
-    구성 합계(_build_mix_agg)에 안 얹는 것은 저쪽이 도넛(화면 구성비) 재료라 전투 수가
-    섞일 자리가 아니어서다. 옛 기록·수기 등록에는 원장이 없어 0으로 지나간다."""
-    out: dict[str, list[int]] = {key: [0, 0] for key in _COMBAT_FIELDS}
-    for r in rows:
-        m = getattr(r, "build_mix", None)
-        if not isinstance(m, dict):
-            continue
-        for key, (n_field, won_field) in _COMBAT_FIELDS.items():
-            out[key][0] += int(m.get(n_field) or 0)
-            out[key][1] += int(m.get(won_field) or 0)
-    return out
-
-
 class _RaceAgg:
     """aggregate_stats가 돌려주는 (member_pk, race) 단위 원본 행 하나 또는 여러 개를
-    합산해서 RaceStatsEntry로 만드는 중간 누산기 — 전적(판수/승/무)과 BEST PLAYER 횟수만 센다.
+    합산해서 RaceStatsEntry로 만드는 중간 누산기 — 전적(판수/승/무)만 센다.
 
     지표 평균(APM·유효APM·커맨드·유효커맨드·생산)은 여기서 내지 않는다. 이상치를 뺀
     평균이라 경기 단위 원본이 있어야 하고(_trimmed_avgs), 호출부가 to_entry() 결과에
@@ -483,23 +416,17 @@ class _RaceAgg:
     덮어쓰는 쪽만 화면에 나가는데도 안 쓰이는 계산이 남아 있어 "어느 게 진짜 나가는
     값인지" 읽는 사람이 헷갈렸다 — 한 벌만 남긴다."""
 
-    __slots__ = ("plays", "wins", "draws", "bests", "lost_bests")
+    __slots__ = ("plays", "wins", "draws")
 
     def __init__(self) -> None:
         self.plays = 0
         self.wins = 0
         self.draws = 0
-        self.bests = 0
-        # 진 판에서 뽑힌 BEST(요청: 졌잘싸 퀸) — 위 bests의 부분집합이다.
-        self.lost_bests = 0
 
     def add_row(self, row) -> None:
         self.plays += row.plays
         self.wins += row.wins
         self.draws += row.draws
-        # 옛 응답 형태로 만들어진 행(테스트 더미 등)에는 없을 수 있어 기본값을 둔다.
-        self.bests += getattr(row, "bests", 0) or 0
-        self.lost_bests += getattr(row, "lost_bests", 0) or 0
 
     def to_entry(self) -> RaceStatsEntry:
         losses = self.plays - self.wins - self.draws
@@ -511,8 +438,6 @@ class _RaceAgg:
             losses=losses,
             draws=self.draws,
             win_rate=win_rate,
-            bests=self.bests,
-            lost_bests=self.lost_bests,
         )
 
 
@@ -834,7 +759,6 @@ def to_game_result_out(
         map_name=result_row.map_name,
         game_started_at=result_row.game_started_at,
         duration_seconds=result_row.duration_seconds,
-        summary_data=result_row.summary_data,
         map_hash=result_row.map_hash,
         view_count=match.view_count or 0,
     )
@@ -914,75 +838,6 @@ class GameResultService:
             team_member_pks=await self._team_member_pks(team_member_ids),
         )
 
-    async def _tactic_counts(
-        self,
-        *,
-        member_pks: list[int],
-        date_from: date | None,
-        date_to: date | None,
-        match_type: str | None,
-    ) -> dict[int, dict[str, dict[str, int]]]:
-        """member_pk → 종족 → 문장 틀 키 → 횟수.
-
-        요약(summary_data.beats)에 적힌 '무슨 일이 있었나'를 사람별로 세기만 한다 — 무엇이
-        옆탱이고 무엇이 센포인지는 리플레이를 파싱하는 프론트(replayTactics)가 이미 판정해
-        저장해 둔 값이다. 판정을 서버로 옮기면 파싱 한 벌을 통째로 더 들고 있어야 하고, 두 벌이
-        어긋나는 순간 화면이 문장으로 말한 사실과 칭호가 갈린다(bests와 같은 이유).
-
-        beats의 who/who2는 회원 pk가 아니라 리플레이 원본 게임 아이디다 — 그 경기의 참가 행에서
-        같은 이름을 찾아 회원과 종족을 붙인다. 한 beat에 같은 사람이 who와 who2로 두 번 실려도
-        한 번만 센다(옆탱처럼 '누구 기지에서 했나'가 함께 적히는 문장이 있다).
-        당한 쪽(whom)은 세지 않는다 — 칭호는 그 사람이 한 일로만 지어야 한다.
-
-        이긴 판만 센다(요청: 전략·전술의 신은 무조건 그 판을 이겼어야 카운트로 인정) — 진
-        판에서 시도한 수는 '했다'는 사실일 뿐 통했다는 말이 아니다. 요약의 beat는 그 일을
-        한 쪽이 이겼는지를 함께 들고 있어(won) 여기서 그대로 쓴다. 옛 요약에도 늘 있는
-        값이라 재분석 없이도 그날부터 이 잣대가 걸린다."""
-        summaries, players = await self._repo.tactic_rows(
-            member_pks=member_pks,
-            date_from=date_from,
-            date_to=date_to,
-            match_type=match_type,
-        )
-        # (match_id, 원본 게임 아이디) → (member_pk, race, 그 판의 구성 — 전투 원장 포함)
-        who_map: dict[tuple[int, str], tuple[int, str, object]] = {}
-        for row in players:
-            who_map[(row.match_id, row.player_name)] = (row.member_pk, row.race, row.build_mix)
-
-        out: dict[int, dict[str, dict[str, int]]] = {}
-        for row in summaries:
-            data = row.summary_data or {}
-            beats = data.get("beats") if isinstance(data, dict) else None
-            if not isinstance(beats, list):
-                continue
-            for beat in beats:
-                if not isinstance(beat, dict):
-                    continue
-                key = beat.get("k")
-                if not isinstance(key, str) or not key:
-                    continue
-                # 진 판의 수는 안 센다(위 주석) — won이 없는 옛 요약도 마찬가지로 뺀다.
-                if beat.get("won") is not True and key not in _COUNT_EVEN_IF_LOST:
-                    continue
-                actors: set[str] = set()
-                for field in ("who", "who2"):
-                    names = beat.get(field)
-                    if isinstance(names, list):
-                        actors.update(n for n in names if isinstance(n, str))
-                for name in actors:
-                    found = who_map.get((row.match_id, name))
-                    if found is None:
-                        continue
-                    member_pk, race, mix = found
-                    # 에픽 전투 칭호는 경기만이 아니라 그 판의 전투도 이겼어야 센다(요청).
-                    # 열쇠마다 요구 승수가 다르다(메카닉 2).
-                    need = _BATTLE_GATED_KEYS.get(key)
-                    if need is not None and _battle_wins(mix) < need:
-                        continue
-                    counts = out.setdefault(member_pk, {}).setdefault(race, {})
-                    counts[key] = counts.get(key, 0) + 1
-        return out
-
     async def get_stats(
         self,
         *,
@@ -1028,34 +883,12 @@ class GameResultService:
         for raw in raw_rows:
             raw_by_member_race.setdefault(raw.member_pk, {}).setdefault(raw.race, []).append(raw)
 
-        # 칭호(통계 화면의 닉네임 아래 한 줄)가 쓰는 두 가지 — 전술 횟수와 맵별 전적.
-        # 전적·지표와 같은 (기간/유형/종족) 조건으로 묶어야 화면 안에서 잣대가 어긋나지 않는다.
-        tactics_by_member_race = await self._tactic_counts(
-            member_pks=[m.pk for m in members],
-            date_from=parsed_date_from,
-            date_to=parsed_date_to,
-            match_type=match_type,
-        )
-        map_rows = await self._repo.map_record_rows(
-            member_pks=[m.pk for m in members],
-            date_from=parsed_date_from,
-            date_to=parsed_date_to,
-            match_type=match_type,
-        )
-        maps_by_member_race: dict[int, dict[str, dict[str, list[int]]]] = {}
-        for row in map_rows:
-            by_race_maps = maps_by_member_race.setdefault(row.member_pk, {}).setdefault(row.race, {})
-            by_race_maps[row.map_name] = [int(row.plays or 0), int(row.wins or 0)]
-
         entries: list[MemberStatsEntry] = []
         # 사람마다의 주종족 — "main"으로 볼 때 순위·포인트를 이 종족 기준으로 매긴다.
         main_race_by_pk: dict[int, str | None] = {}
         for member in members:
             race_rows = by_member.get(member.pk, {})
             raw_race_rows = raw_by_member_race.get(member.pk, {})
-
-            tactic_rows_for_member = tactics_by_member_race.get(member.pk, {})
-            map_rows_for_member = maps_by_member_race.get(member.pk, {})
 
             by_race: dict[str, RaceStatsEntry] = {}
             for r in BASE_RACES:
@@ -1064,11 +897,7 @@ class GameResultService:
                     agg.add_row(race_rows[r])
                 entry = agg.to_entry()
                 raw_for_race = raw_race_rows.get(r, [])
-                by_race[r] = entry.model_copy(update={
-                    **_trimmed_avgs(raw_for_race),
-                    "tactics": dict(tactic_rows_for_member.get(r, {})),
-                    "maps": dict(map_rows_for_member.get(r, {})),
-                })
+                by_race[r] = entry.model_copy(update=_trimmed_avgs(raw_for_race))
 
             overall_agg = _RaceAgg()
             # "main"(주종족)은 집계로는 '전체'다 — 사람마다 다른 종족이라 한 잣대로 걸 수가
@@ -1078,24 +907,10 @@ class GameResultService:
                 if race in race_rows:
                     overall_agg.add_row(race_rows[race])
                 overall_raw = raw_race_rows.get(race, [])
-                overall_tactics = dict(tactic_rows_for_member.get(race, {}))
-                overall_maps = dict(map_rows_for_member.get(race, {}))
             else:
                 for row in race_rows.values():
                     overall_agg.add_row(row)
                 overall_raw = [raw for rows_for_race in raw_race_rows.values() for raw in rows_for_race]
-                # 종족을 안 걸었으면 세 종족 것을 그대로 합친다 — 전술도 맵 전적도 '그 사람이
-                # 한 일'이라 종족을 넘나들며 더해도 뜻이 어긋나지 않는다(도넛 구성비와 다른
-                # 점이다: 저쪽은 종족마다 짓는 것이 달라 겹치면 그림이 무너진다).
-                overall_tactics = {}
-                for counts in tactic_rows_for_member.values():
-                    for key, n in counts.items():
-                        overall_tactics[key] = overall_tactics.get(key, 0) + n
-                overall_maps = {}
-                for by_map in map_rows_for_member.values():
-                    for map_name, (plays, wins) in by_map.items():
-                        before = overall_maps.get(map_name, [0, 0])
-                        overall_maps[map_name] = [before[0] + plays, before[1] + wins]
 
             # 종족 필터와 무관하게 항상 실제 참가 기록 기준 최다 종족 — 동률이면 테란→프로토스→
             # 저그 고정 순서로 결정한다(사전순 등 우연에 맡기지 않기 위해).
@@ -1108,29 +923,13 @@ class GameResultService:
                     most_played_race = r
 
             main_race_by_pk[member.pk] = most_played_race
-            overall_entry = overall_agg.to_entry().model_copy(update={
-                **_trimmed_avgs(overall_raw),
-                "tactics": overall_tactics,
-                "maps": overall_maps,
-            })
-            # 이긴 판만 놓고 낸 같은 값 한 벌(요청: 비중 칭호도 이긴 판만) — 칭호가 "무엇으로
-            # 판을 풀었나"를 물을 때 쓴다. 화면의 도넛·Top5는 위 overall(승패 무관)을 그대로
-            # 쓴다: 그쪽은 성과가 아니라 그 사람이 즐겨 쓰는 것을 보여주는 자리다.
-            # 전적·순위 같은 값은 여기서 뜻이 없다(이긴 판만 모았으니 승률은 늘 100%다) —
-            # 칭호가 보는 것은 이 한 벌의 구성비·분당 값뿐이다.
-            won_entry = overall_agg.to_entry().model_copy(update={
-                **_trimmed_avgs([raw for raw in overall_raw if getattr(raw, "won", False)]),
-            })
+            overall_entry = overall_agg.to_entry().model_copy(update=_trimmed_avgs(overall_raw))
             entries.append(
                 MemberStatsEntry(
                     member_id=member.id,
                     overall=overall_entry,
-                    won=won_entry,
                     by_race=by_race,
                     most_played_race=most_played_race,
-                    # 지상전/공중전/마법전 전투 전적(요청) — 종족 필터와 같은 raw를 쓰므로
-                    # 화면의 다른 수와 잣대가 같다. 종족은 안 가른다(요청: 종족 무관).
-                    combat=_combat_split(overall_raw),
                 )
             )
 
@@ -1714,9 +1513,9 @@ class GameResultService:
         return maps[0]
 
     async def rewrite_summary(self, match_id: int, payload: SummaryRewrite) -> None:
-        """등록된 경기의 요약만 다시 써 넣는다(요청: 요약 재분석) — 경기 내용은 안 건드린다.
+        """등록된 경기의 리플레이 파생 데이터를 다시 써 넣는다(재분석) — 경기 내용은 안 건드린다.
 
-        요약은 파생 데이터라 규칙이 좋아지면 옛 경기도 함께 좋아져야 하는데, 지금까지는
+        파생 데이터라 규칙이 좋아지면 옛 경기도 함께 좋아져야 하는데, 지금까지는
         리플레이를 다시 올리는 수밖에 없었다. 화면이 리플레이를 내려받아 다시 분석한 결과를
         여기로 보내면 그 값만 갈아 끼운다.
         """
@@ -1728,15 +1527,13 @@ class GameResultService:
         # 인식을 못 한다) — 옛 경기의 저장된 표시 이름을 SG_경기번호로 통일.
         if rr.replay is not None:
             rr.replay.display_name = build_replay_display_name(match)
-        if payload.summary_data is not None:
-            rr.summary_data = payload.summary_data
         map_hash = await self._store_replay_map(payload.map_data)
         if map_hash is not None:
             rr.map_hash = map_hash
-        # 요약 말고도 리플레이에서 다시 나오는 값들(요청: 요약뿐 아니라 다른 모든 데이터를
-        # 재분석). 사람이 정한 것(등록자·등록시각·경기번호·날짜·분류·승패·회원 연결)은 안
-        # 건드린다. 값이 None인 항목도 안 덮어쓴다 — 어쩌다 한 지표를 못 읽어도 멀쩡한 기존
-        # 값을 날리지 않게(merge_replay와 같은 원칙).
+        # 리플레이에서 다시 나오는 값들(요청: 모든 데이터를 재분석). 사람이 정한 것
+        # (등록자·등록시각·경기번호·날짜·분류·승패·회원 연결)은 안 건드린다. 값이 None인
+        # 항목도 안 덮어쓴다 — 어쩌다 한 지표를 못 읽어도 멀쩡한 기존 값을 날리지 않게
+        # (merge_replay와 같은 원칙).
         if payload.map_name is not None:
             rr.map_name = payload.map_name
         if payload.game_started_at is not None:
@@ -1764,7 +1561,7 @@ class GameResultService:
                 p.build_count = s.build_count
             if s.build_mix is not None:
                 p.build_mix = _mix_json(s.build_mix)
-        # 짝이 하나도 안 맞으면 로그로 남긴다 — 요약(경기 행)은 새것이 되는데 수치(참가자
+        # 짝이 하나도 안 맞으면 로그로 남긴다 — 경기 행은 새것이 되는데 수치(참가자
         # 행)만 옛것으로 남는, 겉보기에는 "재분석했는데 통계가 그대로"인 상태가 된다. 짝은
         # 리플레이 원본 게임 아이디(player_name)로 맞추므로 그 이름이 바뀐 경기에서 이런
         # 일이 난다. 조용히 넘기면 다음에도 원인을 못 찾는다.
@@ -1813,7 +1610,6 @@ class GameResultService:
                 map_name=payload.map_name,
                 game_started_at=payload.game_started_at,
                 duration_seconds=payload.duration_seconds,
-                summary_data=payload.summary_data,
                 map_hash=await self._store_replay_map(payload.map_data),
                 replay=None,
             ),
@@ -1861,10 +1657,6 @@ class GameResultService:
             rr.duration_seconds = payload.duration_seconds
         if payload.result is not None:
             rr.result = payload.result
-        # 요약은 리플레이에서만 나오는 파생 데이터라, 다시 올린 리플레이가 만들어낸 값이 있으면
-        # 그대로 덮어쓴다(요청: 배치 업로드에서 기존 경기도 갱신). 못 만들었으면 기존 값 유지.
-        if payload.summary_data is not None:
-            rr.summary_data = payload.summary_data
         # 옛 경기에 미니맵을 채워 넣는 자리 — 리플레이를 다시 올리면 여기로 들어온다.
         map_hash = await self._store_replay_map(payload.map_data)
         if map_hash is not None:

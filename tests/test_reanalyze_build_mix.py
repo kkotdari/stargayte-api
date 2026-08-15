@@ -1,7 +1,7 @@
 """재분석이 참가자의 생산 구성(build_mix)까지 갱신하는지(POST /api/game-results/{id}/summary).
 
-"자막에는 핵이 나오는데 통계 스킬 칸에는 안 나온다"는 지적을 좇다가 남긴 시험이다. 요약
-(summary_data)은 경기 한 행에 붙지만 생산 구성은 참가자 행마다 붙고, 짝은 리플레이 원본
+"자막에는 핵이 나오는데 통계 스킬 칸에는 안 나온다"는 지적을 좇다가 남긴 시험이다.
+생산 구성은 참가자 행마다 붙고, 짝은 리플레이 원본
 게임 아이디(rawName)로 맞춘다 — 그 짝이 어긋나면 자막만 새것이 되고 수치는 옛것으로 남는다.
 여기서 지키는 것: 재분석 payload의 slots가 통계의 스킬 원장까지 실제로 바꾼다."""
 
@@ -33,7 +33,6 @@ async def test_reanalyze_updates_build_mix_skills(client):
 
     # 재분석 — 프론트가 보내는 모양 그대로(camelCase, rawName으로 짝짓기).
     res = await client.post(f"/api/game-results/{match_id}/summary", headers=h, json={
-        "summaryData": {"v": 2, "beats": []},
         "slots": [{
             "rawName": "player01", "race": "테란",
             "apm": 111, "eapm": 88, "cmdCount": 555, "effectiveCmdCount": 444, "buildCount": 333,

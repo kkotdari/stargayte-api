@@ -94,7 +94,6 @@ async def _ensure_schema() -> None:
         for name, fn in (
             ("migrate match notes", _migrate_match_notes),
             ("migrate activity target types", _migrate_activity_target_types),
-            ("add game_outcomes.summary_data", _add_match_result_summary),
             ("add game_outcomes.map_hash", _add_match_result_map_hash),
             ("add replay map resources", _add_replay_map_resources),
             ("add replay map image id", _add_replay_map_image_id),
@@ -113,6 +112,7 @@ async def _ensure_schema() -> None:
             ("drop access screen code check", _drop_access_screen_code_check),
             ("add access history detail", _add_access_history_detail),
             ("drop member epithets", _drop_member_epithets),
+            ("drop game_outcomes.summary_data", _drop_game_outcome_summary_data),
             ("drop legacy match notes", _drop_legacy_match_notes),
             ("drop legacy match summary", _drop_legacy_match_summary),
             ("rebuild ranking shifts", _rebuild_ranking_shifts),
@@ -223,12 +223,12 @@ async def _rename_owned_sequences(conn) -> None:
             log.exception("시퀀스 이름 변경 실패: %s -> %s", seq, want)
 
 
-async def _add_match_result_summary(conn: object) -> None:
-    """game_outcomes.summary_data 컬럼을 더한다(멱등).
+async def _drop_game_outcome_summary_data(conn: object) -> None:
+    """game_outcomes.summary_data 컬럼을 지운다(멱등).
 
-    스키마를 create_all로만 관리해(마이그레이션 없음) 이미 있는 테이블에는 새 컬럼이
-    반영되지 않는다 — build_count 때와 같은 이유로 여기서 직접 ALTER 한다. IF NOT EXISTS는
-    PostgreSQL/SQLite(3.35+) 모두 지원하고, 안 되는 환경이면 조용히 넘어간다.
+    요약(summary_data) 개념 자체를 폐지했다(요청: 칭호 삭제와 함께 요약도 폐지) — 코드
+    어디서도 더는 읽고 쓰지 않으므로, 남은 값과 함께 컬럼을 통째로 버린다. 파생 데이터라
+    되살릴 값이 아니다(필요하면 리플레이를 다시 분석하면 된다).
     """
     import logging
 
@@ -236,18 +236,18 @@ async def _add_match_result_summary(conn: object) -> None:
 
     try:
         await conn.execute(  # type: ignore[attr-defined]
-            text("ALTER TABLE game_outcomes ADD COLUMN IF NOT EXISTS summary_data JSONB")
+            text("ALTER TABLE game_outcomes DROP COLUMN IF EXISTS summary_data")
         )
-    except Exception:  # noqa: BLE001 — 이미 있거나 미지원 DB면 그냥 넘어간다.
-        logging.getLogger(__name__).debug("game_outcomes.summary_data 컬럼 추가 건너뜀", exc_info=True)
+    except Exception:  # noqa: BLE001 — 이미 없거나 미지원 DB면 그냥 넘어간다.
+        logging.getLogger(__name__).debug("game_outcomes.summary_data 컬럼 삭제 건너뜀", exc_info=True)
 
 
 async def _add_match_result_map_hash(conn: object) -> None:
     """game_outcomes.map_hash 컬럼을 더한다(멱등).
 
-    위 _add_match_result_summary와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
-    넣어주지 않는다. 미니맵 격자(replay_maps)를 가리키는 내용 해시다. 새로 만들어지는
-    replay_maps 테이블 자체는 create_all이 알아서 만든다.
+    스키마를 create_all로만 관리해(마이그레이션 없음) 이미 있는 테이블에는 새 컬럼이
+    반영되지 않는다 — 여기서 직접 ALTER 한다. 미니맵 격자(replay_maps)를 가리키는 내용
+    해시다. 새로 만들어지는 replay_maps 테이블 자체는 create_all이 알아서 만든다.
     """
     import logging
 
@@ -381,7 +381,7 @@ async def _add_league_match_schedule_posted_at(conn: object) -> None:
 async def _add_challenge_time_note(conn: object) -> None:
     """challenges.scheduled_time_note 컬럼을 더한다(멱등).
 
-    위 _add_match_result_summary와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
+    위 _add_match_result_map_hash와 같은 이유 — create_all은 이미 있는 테이블에 새 컬럼을
     넣어주지 않는다. 시간을 사람 말로 적어 두는 자리다(models.py 주석 참고).
     """
     import logging
@@ -912,9 +912,10 @@ async def _rebuild_ranking_shifts(conn) -> None:
 async def _drop_legacy_match_summary(conn) -> None:
     """옛 요약 문장 컬럼(game_outcomes.summary TEXT)을 지운다.
 
-    구조화된 summary_data로 갈아탄 뒤로는 코드 어디서도 읽지 않는다(6b7dc37) — 그때는
+    구조화된 요약 데이터로 갈아탄 뒤로는 코드 어디서도 읽지 않는다(6b7dc37) — 그때는
     "안 읽으면 그만"이라 물리 컬럼을 남겨 뒀지만, 이제 정리한다(요청). 옛 문장은 지금
-    문구 규칙과 맞지 않아 되살릴 값이 아니고, 기존 경기는 리플레이를 다시 올려 채운다.
+    문구 규칙과 맞지 않아 되살릴 값이 아니다(요약 개념 자체도 그 뒤 폐지됐다 —
+    _drop_game_outcome_summary_data).
 
     컬럼이 없으면(새 DB) 아무것도 하지 않는다.
     """
