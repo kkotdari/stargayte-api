@@ -225,6 +225,69 @@ async def test_minimap_image_update_keeps_mapping(client):
     assert only.json()["image"] == other
 
 
+async def test_minimap_change_keeps_terrain(client):
+    """미니맵을 바꿔도 기존 지형 분석값은 유지된다(요청).
+
+    지형 격자(walk)는 그림 크기와 무관한 128칸 격자라 사실 '맵'의 성질인데, 값은 그림
+    행에 매달려 있다. 그래서 ① 그림만 갈아 끼울 때 격자가 딸려 지워지면 안 되고,
+    ② 더 나은 그림으로 갈아 '연결'할 때는 새 그림이 그 격자를 물려받아야 한다 —
+    아니면 사람이 칸 단위로 검수해 둔 것이 통째로 사라진다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    await _create(client, headers, date="2026-07-01", gsa="2026-07-01T03:00:00+00:00", map_data=_MAP)
+
+    made = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": _PNG, "hashes": [_MAP["hash"]],
+    })
+    image_id = made.json()["id"]
+    walk = '{"w":4,"h":4,"hex":"a5"}'
+    saved = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}/walk", headers=headers,
+        json={"walk": walk},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["walk"] == walk
+
+    # ① 그림만 갈아 끼운다 — 격자는 그대로다.
+    other = "data:image/png;base64,iVBORw0KGgo="
+    swapped = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
+        json={"name": "빠른무한", "image": other},
+    )
+    assert swapped.status_code == 200, swapped.text
+    assert swapped.json()["walk"] == walk
+
+    # ② 격자가 없는 새 그림으로 갈아 연결한다 — 새 그림이 그 격자를 물려받는다.
+    fresh = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한 새 그림", "image": _PNG,
+    })
+    fresh_id = fresh.json()["id"]
+    assert fresh.json()["walk"] is None
+    moved = await client.post("/api/game-results/replay-maps/assign", headers=headers, json={
+        "imageId": fresh_id, "hashes": [_MAP["hash"]],
+    })
+    assert moved.status_code == 200, moved.text
+    cat = (await client.get("/api/game-results/replay-maps/catalog", headers=headers)).json()
+    by_id = {i["id"]: i for i in cat["images"]}
+    assert by_id[fresh_id]["walk"] == walk
+    # 옛 그림의 값은 안 건드린다 — 다른 맵이 아직 쓰고 있을 수 있다.
+    assert by_id[image_id]["walk"] == walk
+
+    # ③ 이미 제 격자가 있는 그림에는 안 덮어쓴다.
+    mine = '{"w":4,"h":4,"hex":"5a"}'
+    await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}/walk", headers=headers,
+        json={"walk": mine},
+    )
+    back = await client.post("/api/game-results/replay-maps/assign", headers=headers, json={
+        "imageId": image_id, "hashes": [_MAP["hash"]],
+    })
+    assert back.status_code == 200, back.text
+    cat2 = (await client.get("/api/game-results/replay-maps/catalog", headers=headers)).json()
+    assert {i["id"]: i["walk"] for i in cat2["images"]}[image_id] == mine
+
+
 async def test_minimap_image_needs_admin(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     p2 = await _signup(client, "player02", "Mist#1002")
