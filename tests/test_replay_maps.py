@@ -225,6 +225,42 @@ async def test_minimap_image_update_keeps_mapping(client):
     assert only.json()["image"] == other
 
 
+async def test_minimap_swap_keeps_terrain(client):
+    """미니맵 관리에서 그림만 갈아 끼워도 지형 격자는 남는다(요청: 현행 유지).
+
+    지형 격자(walk)는 사람이 칸 단위로 검수해 둔 값이라, 더 나은 그림으로 바꾸는 일이
+    검수를 처음부터 다시 하는 일이 돼서는 안 된다. 그림 변경은 walk를 안 보내므로 서버가
+    손대지 않는데, 그 사실이 어디에도 안 박혀 있어 여기서 못 박는다."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    await _create(client, headers, date="2026-07-01", gsa="2026-07-01T03:00:00+00:00", map_data=_MAP)
+
+    made = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": _PNG, "hashes": [_MAP["hash"]],
+    })
+    image_id = made.json()["id"]
+    walk = '{"w":4,"h":4,"hex":"a5"}'
+    saved = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}/walk", headers=headers,
+        json={"walk": walk},
+    )
+    assert saved.status_code == 200, saved.text
+
+    other = "data:image/png;base64,iVBORw0KGgo="
+    swapped = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
+        json={"name": "빠른무한", "image": other},
+    )
+    assert swapped.status_code == 200, swapped.text
+    assert swapped.json()["image"] == other
+    assert swapped.json()["walk"] == walk
+
+    # 목록에도 그대로 — 화면이 다시 읽어도 검수값이 살아 있다.
+    cat = (await client.get("/api/game-results/replay-maps/catalog", headers=headers)).json()
+    assert {i["id"]: i["walk"] for i in cat["images"]}[image_id] == walk
+
+
 async def test_minimap_image_needs_admin(client):
     p1 = await _signup(client, "player01", "Shadow#1001")
     p2 = await _signup(client, "player02", "Mist#1002")

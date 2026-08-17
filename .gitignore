@@ -16,3 +16,6 @@ build/
 .DS_Store
 
 .vite/
+
+# 로컬에서 uvicorn을 띄울 때 남는 출력 — 실수로 커밋된 적이 있다.
+log
