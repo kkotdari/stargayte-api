@@ -1408,30 +1408,6 @@ class GameResultService:
             images=[MinimapImageOut(id=i.id, name=i.name, image=i.image, walk=i.walk) for i in images],
         )
 
-    async def _inherit_walk(self, hashes: list[str], target: MinimapImage) -> None:
-        """맵을 다른 그림에 붙일 때 기존 지형 분석값을 물려준다(요청: 미니맵 변경 시 유지).
-
-        지형 격자(walk)는 사실 그림이 아니라 '맵'의 성질이다 — 그림 크기와 무관한 128칸
-        격자라, 같은 맵을 찍은 어느 그림에도 그대로 맞는다. 그런데 값은 그림 행에 매달려
-        있어서, 더 나은 그림으로 갈아 연결하면 사람이 칸 단위로 검수해 둔 격자가 통째로
-        사라졌다(지적). 새 그림에 아직 격자가 없을 때만 물려받는다 — 이미 있는 값은
-        절대 안 덮는다. 옮겨 오는 맵들이 서로 다른 그림에서 왔으면 가장 먼저 찾은
-        격자를 쓴다(같은 맵이라 어느 쪽이든 같은 지형이다).
-
-        이 호출은 반드시 재배치 '전'이라야 한다 — 뒤에 부르면 맵들이 이미 새 그림을
-        가리켜, 물려받을 옛 그림을 못 찾는다.
-        """
-        if target.walk:
-            return
-        rows = await self._repo.list_replay_maps(hashes)
-        prev = {r.image_id for r in rows if r.image_id is not None and r.image_id != target.id}
-        if not prev:
-            return
-        for image in await self._repo.list_minimap_images():
-            if image.id in prev and image.walk:
-                target.walk = image.walk
-                return
-
     async def create_minimap_image(self, payload: MinimapImageWrite) -> MinimapImageOut:
         if not payload.image:
             raise ValidationError("미니맵 그림을 함께 올려야 합니다.")
@@ -1439,7 +1415,6 @@ class GameResultService:
         self._repo.add_minimap_image(row)
         await self._repo.flush()
         if payload.hashes:
-            await self._inherit_walk(payload.hashes, row)
             await self._repo.assign_minimap_image(payload.hashes, row.id)
         await self._session.commit()
         return MinimapImageOut(id=row.id, name=row.name, image=row.image, walk=row.walk)
@@ -1463,7 +1438,6 @@ class GameResultService:
         if payload.walk is not None:
             row.walk = payload.walk or None
         if payload.hashes:
-            await self._inherit_walk(payload.hashes, row)
             await self._repo.assign_minimap_image(payload.hashes, row.id)
         await self._session.commit()
         return MinimapImageOut(id=row.id, name=row.name, image=row.image, walk=row.walk)
@@ -1490,16 +1464,9 @@ class GameResultService:
         await self._session.commit()
 
     async def assign_minimap_image(self, payload: MinimapAssignWrite) -> int:
-        """맵 여러 개를 한 그림에 붙이거나 떼어 낸다(요청: 거의 같은 맵을 한데 묶기).
-
-        붙이는 그림에 지형 격자가 없으면 옮겨 오는 맵이 쓰던 격자를 물려받는다
-        (요청: 미니맵을 바꿔도 기존 지형 분석값은 유지 — 위 _inherit_walk 주석)."""
-        target = None
-        if payload.image_id is not None:
-            target = await self._repo.get_minimap_image(payload.image_id)
-            if target is None:
-                raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
-            await self._inherit_walk(payload.hashes, target)
+        """맵 여러 개를 한 그림에 붙이거나 떼어 낸다(요청: 거의 같은 맵을 한데 묶기)."""
+        if payload.image_id is not None and await self._repo.get_minimap_image(payload.image_id) is None:
+            raise NotFoundError("미니맵 그림을 찾을 수 없습니다.")
         changed = await self._repo.assign_minimap_image(payload.hashes, payload.image_id)
         await self._session.commit()
         return changed
