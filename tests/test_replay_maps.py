@@ -379,3 +379,65 @@ async def test_rewrite_summary_backfills_replay_metrics(client):
     # 사람이 정한 것은 그대로.
     assert after["result"] == made["result"]
     assert [s["memberId"] for s in after["team1"]] == [s["memberId"] for s in made["team1"]]
+
+
+async def test_minimap_thumb_is_default_and_full_asks_for_original(client):
+    """목록은 작은 판, 재생 화면만 원본(요청/지적: "미니맵 배경이 화질이 너무 안좋아").
+
+    그림을 2048px로 키우면 재생 화면은 좋아지지만 활동 목록이 한 화면에 그 페이지의 맵
+    종류만큼 원본을 나르게 된다. 그래서 512px 작은 판(thumb)을 함께 저장하고 기본 응답에는
+    그것만 싣는다 — 원본이 필요한 자리(재생 화면)만 ?full=1로 다시 묻는다. 작은 판이 없는
+    옛 행은 그대로 원본으로 되돌아가야 한다(마이그레이션 없이 호환)."""
+    p1 = await _signup(client, "player01", "Shadow#1001")
+    await _signup(client, "player02", "Mist#1002")
+    headers = {"Authorization": f"Bearer {p1['accessToken']}"}
+    await _create(client, headers, date="2026-07-01", gsa="2026-07-01T03:00:00+00:00", map_data=_MAP)
+    await _create(client, headers, date="2026-07-01", gsa="2026-07-01T04:00:00+00:00", map_data=_MAP2)
+
+    big = _PNG + "AAAA"   # 원본 — 작은 판과 구별만 되면 된다.
+    made = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "빠른무한", "image": big, "thumb": _PNG, "hashes": [_MAP["hash"]],
+    })
+    assert made.status_code == 200, made.text
+    image_id = made.json()["id"]
+
+    def one(body: dict) -> dict:
+        return next(m for m in body["maps"] if m["hash"] == _MAP["hash"])
+
+    plain = await client.get(
+        "/api/game-results/replay-maps", headers=headers, params={"hash": _MAP["hash"]})
+    assert one(plain.json())["image"] == _PNG
+
+    full = await client.get(
+        "/api/game-results/replay-maps", headers=headers,
+        params={"hash": _MAP["hash"], "full": "1"})
+    assert one(full.json())["image"] == big
+
+    # 44px 칸에 놓이는 맵연결 목록과 56px짜리 제어판 목록도 작은 판이다.
+    choices = await client.get("/api/game-results/replay-maps/images", headers=headers)
+    assert [i["image"] for i in choices.json()["images"]] == [_PNG]
+    cat = await client.get("/api/game-results/replay-maps/catalog", headers=headers)
+    assert [i["image"] for i in cat.json()["images"]] == [_PNG]
+
+    # 작은 판 없이 올린 옛 행 — 어디서나 원본으로 되돌아간다.
+    old = await client.post("/api/game-results/replay-maps/images", headers=headers, json={
+        "name": "예전 그림", "image": big, "hashes": [_MAP2["hash"]],
+    })
+    assert old.status_code == 200, old.text
+    legacy = await client.get(
+        "/api/game-results/replay-maps", headers=headers, params={"hash": _MAP2["hash"]})
+    assert legacy.json()["maps"][0]["image"] == big
+
+    # 그림을 갈면 작은 판도 함께 간다 — 목록에 옛 그림이 남으면 안 된다.
+    newbig, newthumb = big + "BBBB", _PNG + "CCCC"
+    swapped = await client.put(
+        f"/api/game-results/replay-maps/images/{image_id}", headers=headers,
+        json={"name": "빠른무한", "image": newbig, "thumb": newthumb})
+    assert swapped.status_code == 200, swapped.text
+    after = await client.get(
+        "/api/game-results/replay-maps", headers=headers, params={"hash": _MAP["hash"]})
+    assert one(after.json())["image"] == newthumb
+    after_full = await client.get(
+        "/api/game-results/replay-maps", headers=headers,
+        params={"hash": _MAP["hash"], "full": "1"})
+    assert one(after_full.json())["image"] == newbig

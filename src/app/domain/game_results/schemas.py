@@ -231,9 +231,14 @@ class ReplayMapList(BaseModel):
     maps: list[ReplayMapOut]
 
 
-# 미니맵 그림 한 장의 상한 — data URL 문자열 길이다(base64라 실제 바이트의 약 4/3). 실제
-# 미니맵은 512px 한 장이면 충분하고, 프론트가 올릴 때 그 크기로 줄여 보낸다.
-_IMAGE_MAX_CHARS = 900_000
+# 미니맵 그림 한 장의 상한 — data URL 문자열 길이다(base64라 실제 바이트의 약 4/3).
+# 여태 512px 한 장이면 충분하다고 봤는데, 재생 화면의 맵 상자가 1024 CSS px(레티나면
+# 2048 device px)이고 더블클릭 확대는 4배까지 간다 — 512px은 그 자리에서 이미 4배 늘어난
+# 그림이라 "4K 원본인데도 화질이 안 좋다"는 지적이 나왔다. 프론트가 2048px WebP로 올리게
+# 바꿨고, WebP 인코더가 없는 브라우저의 JPEG 경로까지 여유 있게 담기도록 상한을 올린다.
+_IMAGE_MAX_CHARS = 1_200_000
+# 작은 판(512px)의 상한 — 목록에 실려 나가는 쪽이라 넉넉히 잡아도 이 자릿수를 안 넘는다.
+_THUMB_MAX_CHARS = 300_000
 
 
 class MinimapWalkWrite(BaseModel):
@@ -251,14 +256,18 @@ class MinimapImageWrite(BaseModel):
     name: str = Field(min_length=1, max_length=150)
     # 고칠 때 그림을 그대로 두려면 생략한다.
     image: str | None = Field(default=None, max_length=_IMAGE_MAX_CHARS)
+    # 같은 그림의 512px 판 — 목록용. 서버에 이미지 처리기가 없고 프론트가 어차피 캔버스로
+    # 한 번 줄이므로, 올릴 때 두 판을 함께 만들어 보낸다. 안 보내면 image 하나로 산다.
+    thumb: str | None = Field(default=None, max_length=_THUMB_MAX_CHARS)
     # 지형 격자(JSON 문자열, 요청) - 보내면 갈아 끼운다. 빈 문자열은 지우기다.
     walk: str | None = Field(default=None, max_length=40000)
     hashes: list[str] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def _check_image(self) -> "MinimapImageWrite":
-        if self.image is not None and not self.image.startswith("data:image/"):
-            raise ValueError("미니맵 그림은 data:image/... 형식이어야 합니다.")
+        for field in (self.image, self.thumb):
+            if field is not None and not field.startswith("data:image/"):
+                raise ValueError("미니맵 그림은 data:image/... 형식이어야 합니다.")
         return self
 
 

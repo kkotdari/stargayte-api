@@ -188,6 +188,11 @@ class MinimapImage(TimestampMixin, Base):
     # data URL 그대로("data:image/png;base64,..."). 파일 저장소를 쓰지 않는 이유는 장 수가
     # 맵 종류 수(십여 장)뿐이고, 한 벌을 받아 두면 계속 쓰기 때문이다.
     image: Mapped[str] = mapped_column(Text, nullable=False)
+    # 같은 그림의 작은 판(512px, data URL) — 목록에 실어 보내는 것은 이쪽이다(지적:
+    # "미니맵 배경이 화질이 너무 안좋아"를 고치려고 image를 2048px로 키웠는데, 그대로
+    # 두면 활동 목록 한 화면이 맵 종류 수만큼 2048px을 나른다). 재생 화면이 실제로
+    # 크게 그릴 때만 ?full=1로 원본을 따로 받는다. 옛 행은 NULL이라 image로 되돌아간다.
+    thumb: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 지형(이동 가능/불가) 격자 - 프론트가 그림을 분석해 만들고 운영자가 검수/수정한 값
     # (요청). JSON 문자열이고, 없으면 프론트가 그때그때 색으로 어림한다.
     walk: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -603,8 +603,18 @@ class GameResultRepository:
         )
         return list((await self._session.execute(stmt)).all())
 
-    async def list_minimap_images(self) -> list[MinimapImage]:
+    async def list_minimap_images(self, ids: list[int] | None = None) -> list[MinimapImage]:
+        """등록된 미니맵 그림 — ids를 주면 그 몇 장만 읽는다.
+
+        여태 늘 전부 읽었다. 맵 격자 조회(list_replay_maps)는 한 번에 최대 32개 해시를
+        묻는데 그 32줄이 가리키는 그림이 두어 장이어도 등록된 그림을 통째로 읽어
+        버렸다 — 그림이 512px일 때는 티가 안 났지만 2048px로 키우면 한 요청이 수 MB를
+        읽어 그중 몇 장만 쓴다. 필요한 id만 받는 길을 낸다."""
         stmt = select(MinimapImage).order_by(MinimapImage.id)
+        if ids is not None:
+            if not ids:
+                return []
+            stmt = stmt.where(MinimapImage.id.in_(list(dict.fromkeys(ids))))
         return list((await self._session.execute(stmt)).scalars().all())
 
     async def get_minimap_image(self, image_id: int) -> MinimapImage | None:

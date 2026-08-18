@@ -1368,22 +1368,34 @@ class GameResultService:
         aliases = await self._repo.list_all_replay_aliases()
         return {a.raw_name: a for a in aliases}
 
-    async def list_replay_maps(self, hashes: list[str]) -> list[ReplayMapOut]:
-        """미니맵 격자 조회 — 클라이언트가 아직 안 받아 둔 해시만 모아서 묻는다."""
+    async def list_replay_maps(self, hashes: list[str], full: bool = False) -> list[ReplayMapOut]:
+        """미니맵 격자 조회 — 클라이언트가 아직 안 받아 둔 해시만 모아서 묻는다.
+
+        full은 "원본 그림까지 달라"다. 기본은 512px 작은 판(thumb)을 싣는다 — 활동 목록은
+        한 화면에 그 페이지에 나온 맵 종류만큼 이 응답을 받으므로, 재생 화면 하나를 위해
+        2048px을 전부 나르면 목록이 무거워진다. 크게 그릴 때만 그 한 장을 다시 묻는다.
+        옛 행은 thumb가 NULL이라 그대로 image로 되돌아간다(마이그레이션 없이 호환)."""
         # 한 번에 물을 수 있는 개수를 묶어 둔다: 해시가 통째로 IN 절에 들어가고 격자 하나가
         # 22KB라, 상한이 없으면 한 요청으로 수 MB를 뽑아 갈 수 있다.
         uniq = list(dict.fromkeys(h for h in hashes if h))[:32]
         rows = await self._repo.list_replay_maps(uniq)
         # 사람이 올려 둔 실제 미니맵 그림 — 여러 맵이 한 장을 함께 가리킬 수 있으므로(요청:
-        # 이름·판본만 다른 맵 묶기) 한 번만 읽어 나눠 쓴다.
-        images = {img.id: img for img in await self._repo.list_minimap_images()} \
-            if any(r.image_id for r in rows) else {}
+        # 이름·판본만 다른 맵 묶기) 한 번만 읽어 나눠 쓴다. 이 응답에 실제로 실릴 것만
+        # 읽는다(여태 등록된 그림을 통째로 읽었다 — 2048px에서는 그게 수 MB다).
+        images = {
+            img.id: img
+            for img in await self._repo.list_minimap_images([r.image_id for r in rows if r.image_id])
+        }
         return [
             ReplayMapOut(
                 hash=r.map_hash, name=r.name, width=r.width, height=r.height,
                 palette=list(r.palette or []), tiles=r.tiles,
                 resources=list(r.resources or []),
-                image=images[r.image_id].image if r.image_id in images else None,
+                image=(
+                    (images[r.image_id].image if full else
+                     (images[r.image_id].thumb or images[r.image_id].image))
+                    if r.image_id in images else None
+                ),
                 image_id=r.image_id if r.image_id in images else None,
                 # 검수된 지형(요청) - 재생 화면이 어림 대신 쓴다.
                 walk=images[r.image_id].walk if r.image_id in images else None,
@@ -1405,13 +1417,21 @@ class GameResultService:
                 )
                 for r in rows
             ],
-            images=[MinimapImageOut(id=i.id, name=i.name, image=i.image, walk=i.walk) for i in images],
+            # 제어판 목록의 그림 칸은 56px이고, 지형 검수도 가로 128로 줄여 본다 —
+            # 512px 작은 판이면 충분하다(옛 행은 thumb가 없으니 image로 되돌아간다).
+            images=[
+                MinimapImageOut(id=i.id, name=i.name, image=i.thumb or i.image, walk=i.walk)
+                for i in images
+            ],
         )
 
     async def create_minimap_image(self, payload: MinimapImageWrite) -> MinimapImageOut:
         if not payload.image:
             raise ValidationError("미니맵 그림을 함께 올려야 합니다.")
-        row = MinimapImage(name=payload.name, image=payload.image, walk=payload.walk or None)
+        row = MinimapImage(
+            name=payload.name, image=payload.image, thumb=payload.thumb or None,
+            walk=payload.walk or None,
+        )
         self._repo.add_minimap_image(row)
         await self._repo.flush()
         if payload.hashes:
@@ -1434,6 +1454,9 @@ class GameResultService:
         row.name = payload.name
         if payload.image:
             row.image = payload.image
+            # 그림을 갈면 작은 판도 함께 갈아야 한다 — 안 보냈으면 옛 작은 판이 남아
+            # 목록에는 옛 그림이, 재생 화면에는 새 그림이 뜨는 어긋남이 생긴다.
+            row.thumb = payload.thumb or None
         # 지형(요청) - 보냈을 때만 갈고, 빈 문자열은 지우기다.
         if payload.walk is not None:
             row.walk = payload.walk or None
@@ -1477,7 +1500,8 @@ class GameResultService:
         수(몇 장)뿐이라 목록에 실어도 가볍다."""
         counts = await self._repo.count_matches_by_image()
         return [
-            MinimapChoice(id=i.id, name=i.name, image=i.image, matches=counts.get(i.id, 0))
+            # 이 목록의 그림이 놓이는 자리는 44px 칸이다 — 작은 판이면 넘치고도 남는다.
+            MinimapChoice(id=i.id, name=i.name, image=i.thumb or i.image, matches=counts.get(i.id, 0))
             for i in await self._repo.list_minimap_images()
         ]
 

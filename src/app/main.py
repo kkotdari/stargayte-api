@@ -99,6 +99,7 @@ async def _ensure_schema() -> None:
             ("add replay map image id", _add_replay_map_image_id),
             ("add replay map linked by", _add_replay_map_linked_by),
             ("add game result view count", _add_game_result_view_count),
+            ("add minimap image thumb", _add_minimap_image_thumb),
             ("add league match schedule_posted_at", _add_league_match_schedule_posted_at),
             ("add challenge time note", _add_challenge_time_note),
             ("add challenge canceled_by", _add_challenge_canceled_by),
@@ -300,6 +301,31 @@ async def _add_replay_map_image_id(conn: object) -> None:
         except Exception:  # noqa: BLE001
             continue
     logging.getLogger(__name__).debug("replay_maps.image_id 컬럼 추가 건너뜀", exc_info=True)
+
+
+async def _add_minimap_image_thumb(conn: object) -> None:
+    """minimap_images.thumb 컬럼을 더한다(멱등) — 같은 그림의 512px 작은 판이다.
+
+    재생 화면 화질 지적("4K 이미지인데도 화질이 안좋아")을 고치려고 image를 2048px로
+    키우면서 필요해졌다. 목록(활동 화면·맵연결·제어판)은 이 작은 판을 싣고, 재생 화면만
+    ?full=1로 원본을 따로 받는다. NULL이면 서비스가 image로 되돌아가므로 옛 행은
+    그대로 두면 된다."""
+    import logging
+
+    from sqlalchemy import text
+
+    # IF NOT EXISTS는 PostgreSQL(운영)만 알아듣는다 — SQLite(개발/테스트)에서는 구문 오류가
+    # 나므로 그냥 ADD COLUMN으로 한 번 더 시도하고, 이미 있으면 그때 나는 오류를 삼킨다.
+    for sql in (
+        "ALTER TABLE minimap_images ADD COLUMN IF NOT EXISTS thumb TEXT",
+        "ALTER TABLE minimap_images ADD COLUMN thumb TEXT",
+    ):
+        try:
+            await conn.execute(text(sql))  # type: ignore[attr-defined]
+            return
+        except Exception:  # noqa: BLE001
+            continue
+    logging.getLogger(__name__).debug("minimap_images.thumb 컬럼 추가 건너뜀", exc_info=True)
 
 
 async def _add_game_result_view_count(conn: object) -> None:

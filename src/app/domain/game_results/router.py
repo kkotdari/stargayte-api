@@ -178,14 +178,19 @@ async def get_earliest_date(
 async def list_replay_maps(
     db: DbSession, storage: StorageDep, _current: CurrentMember,
     hash: list[str] = Query(default_factory=list),
+    full: bool = Query(default=False),
 ) -> ReplayMapList:
     """미니맵 격자를 해시로 받아 온다(?hash=..&hash=..).
 
     경기 응답에는 해시만 실려 있다 — 격자 하나가 22KB인데 같은 맵을 쓰는 경기가 수십 건이라,
     목록에 끼워 보내면 같은 값이 계속 되풀이된다. 그래서 클라이언트가 아직 안 받아 둔 해시만
     모아 여기로 묻고 한 번 받은 것은 계속 들고 쓴다(내용 해시라 절대 바뀌지 않는다).
+
+    ?full=1이면 미니맵 그림을 512px 작은 판 대신 원본(2048px)으로 싣는다 — 재생 화면이
+    실제로 크게 그릴 때 그 한 장만 다시 묻는 자리다. 기본이 작은 판인 이유는 활동 목록이
+    한 화면에 그 페이지의 맵 종류만큼 이 응답을 받기 때문이다.
     """
-    maps = await GameResultService(db, storage).list_replay_maps(hash)
+    maps = await GameResultService(db, storage).list_replay_maps(hash, full=full)
     return ReplayMapList(maps=maps)
 
 
