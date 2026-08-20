@@ -306,7 +306,11 @@ static unsigned bwdump_tag(const bwgame::unit_t* u) {
      키 흐름 (트랙 차례대로, 트랙마다 앞 키와의 **차이**를 적는다)
        트랙마다 앞프레임=앞x=앞y=0에서 시작
        키마다: varint(zigzag(프레임차)) · varint(zigzag(x차)) · varint(zigzag(y차))
-               · u8 방향(0~255) · u8 상태
+               · u8 방향(0~255) · u8 상태 · varint(zigzag(종류차))
+       ★ 종류가 키마다 실린다 — 한 태그의 한 생애 안에서 종류가 **바뀐다**. 라바가
+         알이 되고 저글링이 되고, 시즈탱크가 시즈모드가 되고, 저글링이 파묻힌다. 트랙에
+         하나만 실으면 라바 시절도 저글링으로 그려진다. 안 바뀌는 동안은 0이라 거의
+         공짜다(눌리면 사라진다).
        varint는 7비트씩 끊어 담고 더 있으면 최상위 비트를 세운다.
        zigzag는 (v << 1) ^ (v >> 31) — 음수도 작은 수로 만든다.
      체력 흐름 → 인터셉터 흐름 (트랙 차례대로, 키가 있는 트랙만)
@@ -392,11 +396,12 @@ static void bwdump_write_binary(const std::map<unsigned, std::vector<track_key_t
     put_u32(b, (unsigned)(iit == ic_store.end() ? 0 : iit->second.size()));
   }
   for (const auto& kv : store) {
-    int pf = 0, px = 0, py = 0;
+    int pf = 0, px = 0, py = 0, pt = 0;
     for (const auto& k : kv.second) {
       put_varint(b, k.frame - pf); put_varint(b, k.x - px); put_varint(b, k.y - py);
       put_u8(b, (unsigned)k.head); put_u8(b, (unsigned)k.state);
-      pf = k.frame; px = k.x; py = k.y;
+      put_varint(b, k.type - pt);
+      pf = k.frame; px = k.x; py = k.y; pt = k.type;
     }
   }
   /* 체력·인터셉터는 자리 키와 **따로** 간다. 섞으면 한쪽이 바뀔 때마다 다른 쪽 키까지
