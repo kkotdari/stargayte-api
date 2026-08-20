@@ -6,6 +6,7 @@ from app.domain.app_version.router import router as app_version_router
 from app.domain.auth.router import router as auth_router
 from app.domain.challenges.router import router as challenges_router
 from app.domain.leagues.router import router as leagues_router
+from app.domain.game_results.openbw_router import router as openbw_router
 from app.domain.game_results.router import router as game_results_router
 from app.domain.members.router import router as members_router
 from app.domain.schedules.router import router as schedules_router
@@ -22,3 +23,6 @@ api_router.include_router(schedules_router)
 # 복수형이고, 목록을 받는 데 /feed 같은 꼬리말이 붙지 않는다.
 api_router.include_router(activity_router, prefix="/activities")
 api_router.include_router(leagues_router)
+# 게임 자료 부트스트랩 — /game-results 밑에 두면 /{match_id}가 먼저 물어 간다.
+# 평소에는 토큰이 비어 있어 404인 길이다(openbw_bootstrap.py).
+api_router.include_router(openbw_router)
