@@ -693,14 +693,17 @@ class ReplayNameMappingWrite(BaseModel):
 
 
 class UnitTracksOut(BaseModel):
-    """개체 트랙 응답.
+    """참값 자취 응답.
 
-    data   — 개체 트랙(v2). 사건(명령·연구·마법)을 담는다. 프론트가 만들어 올린다.
-    motion — 참값 자취. 유닛의 자리·방향·상태를 담는다. **서버가 굽는다**(openbw/README.md).
-             이게 있으면 프론트는 브라우저 시뮬을 안 돌린다.
-    둘 다 없으면 null이다.
+    motion — 유닛의 자리·방향·상태. **서버가 리플레이를 실제로 돌려 굽는다**
+             (openbw/README.md). 아직 안 구웠으면 null이다.
+
+    ★ `data`(유추 표) 칸을 걷었다 — 유추를 걷어내며 라우터는 motion만 넘기게 바뀌었는데
+      스키마에는 필수 칸으로 남아 있어, 이 엔드포인트가 **매번 500으로 죽었다**
+      (pydantic: "1 validation error for UnitTracksOut / data / Field required").
+      그래서 자취가 멀쩡히 구워져 있는 경기도 프론트에서는 "재생할 수 없는 게임"으로
+      보였다. 프론트도 motion 하나만 읽는다(api/client.ts getGameUnitTracks).
     """
 
-    data: str | None
     motion: str | None = None
 
