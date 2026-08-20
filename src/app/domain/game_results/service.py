@@ -397,9 +397,12 @@ def _fname_safe(s: str) -> str:
 
 
 def build_replay_display_name(match: "GameResult") -> str:
-    """리플레이 다운로드 파일명 — SG_경기번호.rep(재지적: 더 짧게. 긴 한글 이름은
-    브루드워가 리플레이 목록에서 인식을 못 한다. 전부 ASCII·짧게)."""
-    return f"SG_{match.match_no}.rep"
+    """리플레이 다운로드 파일명 — **경기번호 그대로**(요청).
+
+    긴 한글 이름은 브루드워가 리플레이 목록에서 인식을 못 한다. 앞머리 표식(SG_)도 뗐다 —
+    이름이 곧 경기번호면 화면에서 본 번호로 파일을 바로 찾는다.
+    """
+    return f"{match.match_no}.rep"
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -1580,6 +1583,27 @@ class GameResultService:
             raise NotFoundError("맵 격자를 찾을 수 없습니다.")
         return maps[0]
 
+    async def _unique_match_no(self, base: str, *, keep: str | None = None) -> str:
+        """경기번호를 정한다 — **초까지 열두 자리**가 기본이다(요청: 뒤 두 자리 빼기).
+
+        예전에는 늘 두 자리 일련번호를 붙여 열네 자리였다. 실제 경기 시각은 초까지 가면
+        이미 겹칠 일이 거의 없어 그 두 자리는 대부분 `00`으로 낭비됐다. 그래서 **비어
+        있으면 그냥 열두 자리**를 쓰고, 정말 겹칠 때만 뒤에 일련번호를 붙인다.
+
+        겹치는 경우가 실제로 있다 — 수기 등록은 시각을 몰라 `YYMMDD000000`으로 모이므로
+        같은 날 두 번째부터는 번호가 붙는다. 그 자리를 없애면 등록이 막힌다.
+        """
+        if keep is not None and keep == base:
+            return base
+        if await self._repo.get_by_match_no(base) is None:
+            return base
+        suffix = await self._repo.next_match_no_suffix(base)
+        for n in range(max(1, suffix), 100):
+            cand = f"{base}{n:02d}"
+            if cand == keep or await self._repo.get_by_match_no(cand) is None:
+                return cand
+        raise ValidationError("같은 시각의 경기번호가 이미 100건입니다.")
+
     async def rewrite_summary(self, match_id: int, payload: SummaryRewrite) -> None:
         """등록된 경기의 리플레이 파생 데이터를 다시 써 넣는다(재분석) — 경기 내용은 안 건드린다.
 
@@ -1591,8 +1615,16 @@ class GameResultService:
         if match is None or match.result_row is None:
             raise NotFoundError("경기결과를 찾을 수 없습니다.")
         rr = match.result_row
-        # 재분석 김에 리플레이 파일명도 새 양식으로(지적: 긴 한글 이름은 브루드워가
-        # 인식을 못 한다) — 옛 경기의 저장된 표시 이름을 SG_경기번호로 통일.
+        # 경기번호도 다시 매긴다(요청: 앞으로 재분석 시 다 바뀌게) — 뒤 두 자리를 떼고
+        # 초까지 열두 자리로 통일한다. 리플레이에서 읽은 시작 시각이 옛 것과 다르면 그
+        # 시각으로 옮겨 간다. 이미 다른 경기가 쓰는 번호면 그 경기 것을 뺏지 않는다.
+        started = payload.game_started_at
+        if started is None and rr.game_started_at is not None:
+            started = rr.game_started_at.replace(tzinfo=timezone.utc)
+        new_base = _match_no_base(match.match_date, started)
+        if match.match_no != new_base:
+            match.match_no = await self._unique_match_no(new_base, keep=match.match_no)
+        # 파일명은 경기번호 그대로다(요청) — 번호가 바뀌었으면 이름도 함께 바뀐다.
         if rr.replay is not None:
             rr.replay.display_name = build_replay_display_name(match)
         map_hash = await self._store_replay_map(payload.map_data)
@@ -1666,11 +1698,11 @@ class GameResultService:
 
         match_date = date.fromisoformat(payload.date)
         match_no_base = _match_no_base(match_date, payload.game_started_at)
-        match_no_suffix = await self._repo.next_match_no_suffix(match_no_base)
+        match_no = await self._unique_match_no(match_no_base)
 
         # replay=None 을 명시해 flush 이후 접근 시 비동기 lazy-load가 걸리지 않게 한다.
         match = GameResult(
-            match_no=f"{match_no_base}{match_no_suffix:02d}",
+            match_no=match_no,
             match_date=match_date,
             match_type=payload.match_type,
             result_row=GameOutcome(

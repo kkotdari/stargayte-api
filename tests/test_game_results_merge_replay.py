@@ -102,7 +102,7 @@ async def test_replay_filename_new_format_and_merge_updates_it(client):
     match = create.json()
     match_no = match["matchNo"]
     # 맵의 특수문자(!)만 삭제되고 일반 문장기호(괄호)는 남는다(요청). displayName은 서버가 만든다.
-    assert match["replay"]["displayName"] == f"SG_{match_no}.rep", (
+    assert match["replay"]["displayName"] == f"{match_no}.rep", (
         match["replay"]["displayName"]
     )
 
@@ -114,7 +114,7 @@ async def test_replay_filename_new_format_and_merge_updates_it(client):
     })
     assert merge.status_code == 200, merge.text
     got = (await client.get(f"/api/game-results/{match['id']}", headers=headers)).json()
-    assert got["replay"]["displayName"] == f"SG_{match_no}.rep", (
+    assert got["replay"]["displayName"] == f"{match_no}.rep", (
         got["replay"]["displayName"]
     )
 
