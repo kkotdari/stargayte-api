@@ -1,8 +1,8 @@
 diff --git a/actions.h b/actions.h
-index 5a0ad23..f68e3dd 100644
+index 5a0ad23..b34f313 100644
 --- a/actions.h
 +++ b/actions.h
-@@ -3,6 +3,15 @@
+@@ -3,6 +3,16 @@
  
  #include "bwgame.h"
  
@@ -12,13 +12,14 @@ index 5a0ad23..f68e3dd 100644
 +void bwdump_why(const char* what, int step);
 +void bwdump_owner(const char* what, int cmd_owner, int unit_owner);
 +void bwdump_when(const char* what, int frame, int owner, int extra);
++void bwdump_ping(int frame, int owner, int x, int y);
 +void bwdump_gen(int frame, unsigned want, unsigned got, unsigned kind);
 +extern int bwdump_cur_owner;
 +
  namespace bwgame {
  
  struct action_state {
-@@ -18,7 +27,7 @@ struct action_state {
+@@ -18,7 +28,7 @@ struct action_state {
  	int next_action_frame = 0;
  
  	std::array<static_vector<unit_t*, 12>, 8> selection{};
@@ -27,7 +28,7 @@ index 5a0ad23..f68e3dd 100644
  };
  
  static inline action_state copy_state(const action_state& action_st, const state& source_st, const state& dest_st) {
-@@ -66,7 +75,7 @@ struct action_functions: state_functions {
+@@ -66,7 +76,7 @@ struct action_functions: state_functions {
  	}
  
  	auto control_group(int owner, size_t group_n) const {
@@ -36,7 +37,7 @@ index 5a0ad23..f68e3dd 100644
  			return get_unit(u);
  		}), [](unit_t* u) {
  			return u != nullptr;
-@@ -331,21 +340,27 @@ struct action_functions: state_functions {
+@@ -331,21 +341,27 @@ struct action_functions: state_functions {
  	}
  
  	bool action_train(int owner, const unit_type_t* unit_type) {
@@ -72,7 +73,7 @@ index 5a0ad23..f68e3dd 100644
  		if (ut_addon(unit_type)) {
  			xy pos(int(32 * tile_pos.x) + unit_type->placement_size.x / 2, int(32 * tile_pos.y) + unit_type->placement_size.y / 2);
  			if (can_place_building(u, owner, unit_type, pos, false, false)) {
-@@ -1008,11 +1023,136 @@ struct action_functions: state_functions {
+@@ -1008,11 +1024,136 @@ struct action_functions: state_functions {
  		static_vector<unit_t*, 12> units;
  		for (size_t i = 0; i != n; ++i) {
  			auto uid = unit_id(r.template get<uint16_t>());
@@ -209,7 +210,22 @@ index 5a0ad23..f68e3dd 100644
  	template<typename reader_T>
  	bool read_action_shift_select(int owner, reader_T&& r) {
  		size_t n = r.template get<uint8_t>();
-@@ -1340,15 +1480,41 @@ struct action_functions: state_functions {
+@@ -1229,8 +1370,12 @@ struct action_functions: state_functions {
+ 
+ 	template<typename reader_T>
+ 	bool read_action_ping_minimap(int owner, reader_T&& r) {
+-		r.template get<uint16_t>();
+-		r.template get<uint16_t>();
++		/* 핑은 게임 상태를 안 건드린다 — 원본은 좌표를 읽고 그냥 버렸다. 우리는 그 자리에서
++		   적어 둔다: 재생 화면이 "여기 봐"라고 찍은 자리를 그려야 하는데, 핑은 명령일 뿐
++		   유닛이나 상태로는 어디에도 안 남아 여기 말고는 알아낼 길이 없다. */
++		int x = (int)r.template get<uint16_t>();
++		int y = (int)r.template get<uint16_t>();
++		bwdump_ping((int)st.current_frame, owner, x, y);
+ 		return true;
+ 	}
+ 
+@@ -1340,15 +1485,41 @@ struct action_functions: state_functions {
  	bool read_action(reader_T&& r) {
  		int player_id = r.template get<uint8_t>();
  		auto i = std::find(action_st.player_id.begin(), action_st.player_id.end(), player_id);
@@ -252,7 +268,7 @@ index 5a0ad23..f68e3dd 100644
  		case 9:
  			return read_action_select(owner, r);
  		case 10:
-@@ -1454,11 +1620,16 @@ struct action_functions: state_functions {
+@@ -1454,11 +1625,16 @@ struct action_functions: state_functions {
  	}
  
  	void execute_actions(uint8_t* actions_data_begin, uint8_t* actions_data_end) {
@@ -272,10 +288,10 @@ index 5a0ad23..f68e3dd 100644
  				return;
  			}
 diff --git a/bwgame.h b/bwgame.h
-index 4cd76d6..5dfd983 100644
+index 4cd76d6..7b7243b 100644
 --- a/bwgame.h
 +++ b/bwgame.h
-@@ -9,11 +9,30 @@
+@@ -9,11 +9,31 @@
  #include "korean.h"
  
  #include <algorithm>
@@ -301,12 +317,13 @@ index 4cd76d6..5dfd983 100644
 +void bwdump_selown(int frame, int cmd_owner, int unit_owner, int kind, unsigned tag);
 +void bwdump_aim_big(int frame, unsigned tag, int kind, int owner, int ox, int oy, int rx, int ry);
 +void bwdump_rng(int source, int frame);
++void bwdump_cast(int frame, int owner, int x, int y, int tech);
 +void bwdump_ord(int id, int frame);
 +
  namespace bwgame {
  
  static const std::array<unsigned int, 64> tan_table = {
-@@ -296,17 +315,17 @@ struct state_base_non_copyable {
+@@ -296,17 +316,17 @@ struct state_base_non_copyable {
  	intrusive_list<unit_t, void, &unit_t::cloaked_unit_link> cloaked_units;
  	intrusive_list<unit_t, psionic_matrix_link_f> psionic_matrix_units;
  
@@ -329,7 +346,7 @@ index 4cd76d6..5dfd983 100644
  
  	intrusive_list<path_t, default_link_f> free_paths;
  	a_list<path_t> paths;
-@@ -630,24 +649,25 @@ struct state_functions {
+@@ -630,24 +650,25 @@ struct state_functions {
  		return u;
  	}
  
@@ -363,7 +380,7 @@ index 4cd76d6..5dfd983 100644
  	}
  
  	bool is_in_map_bounds(const unit_type_t* unit_type, xy pos) const {
-@@ -2623,6 +2643,16 @@ struct state_functions {
+@@ -2623,6 +2644,16 @@ struct state_functions {
  	}
  
  	void kill_unit(unit_t* u) {
@@ -380,7 +397,7 @@ index 4cd76d6..5dfd983 100644
  		drop_carried_items(u);
  		while (!u->order_queue.empty()) {
  			remove_queued_order(u, &u->order_queue.front());
-@@ -3129,7 +3159,7 @@ struct state_functions {
+@@ -3129,7 +3160,7 @@ struct state_functions {
  					break;
  				}
  			}
@@ -389,7 +406,22 @@ index 4cd76d6..5dfd983 100644
  			u->connected_unit = nullptr;
  			u_unset_status_flag(u, unit_t::status_flag_loaded);
  
-@@ -7729,7 +7759,12 @@ struct state_functions {
+@@ -5927,7 +5958,13 @@ struct state_functions {
+ 		if (is_in_range()) {
+ 			if (!u_movement_flag(u, 4)) stop_unit(u);
+ 			if (u->spell_cooldown == 0 && unit_can_fire_weapon(u, weapon) && !u_movement_flag(u, 2) && unit_is_at_move_target(u)) {
+-				if (tech) u->energy -= fp8::integer(tech->energy_cost);
++				if (tech) {
++					u->energy -= fp8::integer(tech->energy_cost);
++					/* 시전의 순간 — 명령을 누른 때가 아니라 기운을 **실제로 쓰는** 때다.
++					   누른 자리와 터지는 자리는 다르다(가다가 죽거나 취소되기도 한다). */
++					bwdump_cast((int)st.current_frame, u->owner,
++						u->order_target.pos.x, u->order_target.pos.y, (int)tech->id);
++				}
+ 				u->spell_cooldown = get_modified_weapon_cooldown(u, weapon) + (lcg_rand(49) & 3) - 1;
+ 				u_set_movement_flag(u, 8);
+ 				u->order_signal &= ~2;
+@@ -7729,7 +7766,12 @@ struct state_functions {
  			order_ResetHarvestCollision(u);
  			break;
  		case Orders::CTFCOP2:
@@ -403,7 +435,7 @@ index 4cd76d6..5dfd983 100644
  			break;
  		case Orders::SelfDestructing:
  			order_SelfDestructing(u);
-@@ -8071,28 +8106,63 @@ struct state_functions {
+@@ -8071,28 +8113,63 @@ struct state_functions {
  			order_Patrol(u);
  			break;
  		case Orders::CTFCOPInit:
@@ -474,7 +506,7 @@ index 4cd76d6..5dfd983 100644
  			break;
  		case Orders::Neutral:
  			order_Neutral(u);
-@@ -10756,7 +10826,7 @@ struct state_functions {
+@@ -10756,7 +10833,7 @@ struct state_functions {
  			st.free_paths.pop_front();
  			return r;
  		}
@@ -483,7 +515,7 @@ index 4cd76d6..5dfd983 100644
  		return &*st.paths.emplace(st.paths.end());
  	}
  
-@@ -13104,6 +13174,7 @@ struct state_functions {
+@@ -13104,6 +13181,7 @@ struct state_functions {
  	}
  
  	void process_triggers() {
@@ -491,7 +523,7 @@ index 4cd76d6..5dfd983 100644
  		int timer_step = 42;
  
  		for (size_t i = 0; i != 12; ++i) {
-@@ -13195,6 +13266,17 @@ struct state_functions {
+@@ -13195,6 +13273,17 @@ struct state_functions {
  	}
  
  	int lcg_rand(int source) {
@@ -509,7 +541,7 @@ index 4cd76d6..5dfd983 100644
  		++st.random_counts[source];
  		++st.total_random_counts;
  		st.lcg_rand_state = st.lcg_rand_state * 22695477 + 1;
-@@ -14492,10 +14574,14 @@ struct state_functions {
+@@ -14492,10 +14581,14 @@ struct state_functions {
  	}
  
  	bullet_t* create_bullet(const weapon_type_t* weapon_type, unit_t* source_unit, xy pos, int owner, direction_t heading) {
@@ -526,7 +558,7 @@ index 4cd76d6..5dfd983 100644
  		if (!initialize_bullet(b, weapon_type, source_unit, pos, owner, heading)) {
  			return nullptr;
  		}
-@@ -14539,7 +14625,7 @@ struct state_functions {
+@@ -14539,7 +14632,7 @@ struct state_functions {
  			st.free_thingies.pop_front();
  			return r;
  		}
@@ -535,7 +567,7 @@ index 4cd76d6..5dfd983 100644
  		return &*st.thingies.emplace(st.thingies.end());
  	}
  
-@@ -15271,7 +15357,7 @@ struct state_functions {
+@@ -15271,7 +15364,7 @@ struct state_functions {
  		if (!image_type)  error("attempt to create image of null type");
  
  		image_t* image = st.images_container.top();
@@ -544,7 +576,7 @@ index 4cd76d6..5dfd983 100644
  		st.images_container.pop();
  
  		if (sprite->images.empty()) {
-@@ -15307,7 +15393,7 @@ struct state_functions {
+@@ -15307,7 +15400,7 @@ struct state_functions {
  		if (!sprite_type)  error("attempt to create sprite of null type");
  
  		sprite_t* sprite = st.sprites_container.top();
@@ -553,7 +585,7 @@ index 4cd76d6..5dfd983 100644
  		st.sprites_container.pop();
  
  		auto initialize_sprite = [&]() {
-@@ -16322,14 +16408,17 @@ struct state_functions {
+@@ -16322,14 +16415,17 @@ struct state_functions {
  			unit_t* u = st.units_container.top();
  			if (!u) {
  				st.last_error = 61; // Cannot create more units
@@ -571,7 +603,7 @@ index 4cd76d6..5dfd983 100644
  				return (unit_t*)nullptr;
  			}
  			st.units_container.pop();
-@@ -16778,7 +16867,7 @@ struct state_functions {
+@@ -16778,7 +16874,7 @@ struct state_functions {
  
  	order_t* create_order(const order_type_t* order_type, order_target_t target) {
  		order_t* o = st.orders_container.top();
@@ -580,7 +612,7 @@ index 4cd76d6..5dfd983 100644
  		st.orders_container.pop();
  		++st.active_orders_size;
  		o->order_type = order_type;
-@@ -16848,7 +16937,7 @@ struct state_functions {
+@@ -16848,7 +16944,7 @@ struct state_functions {
  			}
  		}
  		if (queue) {
@@ -589,7 +621,7 @@ index 4cd76d6..5dfd983 100644
  				queue_order_back(u, order_type, target);
  			}
  		} else {
-@@ -17206,7 +17295,12 @@ struct state_functions {
+@@ -17206,7 +17302,12 @@ struct state_functions {
  			else set_unit_order(u, u->unit_type->human_ai_idle);
  		}
  		if (ut_flag(u, (unit_type_t::flags_t)0x800)) {
@@ -603,7 +635,7 @@ index 4cd76d6..5dfd983 100644
  		}
  		u->air_strength = get_unit_strength(u, false);
  		u->ground_strength = get_unit_strength(u, true);
-@@ -18896,8 +18990,13 @@ struct state_functions {
+@@ -18896,8 +18997,13 @@ struct state_functions {
  			return trigger_count_comparison(c, trigger_opponent_count(owner, c.group));
  		case 22: // always
  			return true;
@@ -618,7 +650,7 @@ index 4cd76d6..5dfd983 100644
  			return false;
  		}
  	}
-@@ -19039,6 +19138,7 @@ struct state_functions {
+@@ -19039,6 +19145,7 @@ struct state_functions {
  	};
  
  	bool execute_trigger_action(execute_trigger_struct& ets, int owner, running_trigger& rt, running_trigger::action& ra, const trigger::action& a) {
@@ -626,7 +658,7 @@ index 4cd76d6..5dfd983 100644
  		switch (a.type) {
  		case 1: // victory
  			if (st.players[owner].controller == player_t::controller_occupied || st.players[owner].controller == player_t::controller_computer_game) {
-@@ -19299,8 +19399,9 @@ struct state_functions {
+@@ -19299,8 +19406,9 @@ struct state_functions {
  			}
  			return true;
  		default:
@@ -638,7 +670,7 @@ index 4cd76d6..5dfd983 100644
  		}
  	}
  
-@@ -19559,7 +19660,7 @@ struct state_copier {
+@@ -19559,7 +19667,7 @@ struct state_copier {
  	state_functions funcs;
  	state_copier(const state&st, state& r) : st(st), r(r), funcs(r) {}
  
@@ -647,7 +679,7 @@ index 4cd76d6..5dfd983 100644
  	std::array<bool, 100> bullet_copied{};
  	std::array<bool, 2500> sprite_copied{};
  	std::array<bool, 5000> image_copied{};
-@@ -19953,19 +20054,24 @@ struct game_load_functions : state_functions {
+@@ -19953,19 +20061,24 @@ struct game_load_functions : state_functions {
  		for (auto& v : st.player_units) v.clear();
  
  		st.units_container = {};
@@ -672,7 +704,7 @@ index 4cd76d6..5dfd983 100644
  
  		st.active_thingies_size = 0;
  		st.active_thingies.clear();
-@@ -21307,6 +21413,30 @@ struct game_load_functions : state_functions {
+@@ -21307,6 +21420,30 @@ struct game_load_functions : state_functions {
  				}
  			}
  		};
@@ -703,7 +735,7 @@ index 4cd76d6..5dfd983 100644
  		tag_funcs["SPRP"] = [&](data_reader_le r) {
  			game_st.scenario_name = get_map_string(r.get<uint16_t>());
  			game_st.scenario_description = get_map_string(r.get<uint16_t>());
-@@ -21770,11 +21900,14 @@ struct game_load_functions : state_functions {
+@@ -21770,11 +21907,14 @@ struct game_load_functions : state_functions {
  			{"ERA ", true},
  			{"OWNR", true},
  			{"SIDE", true},
@@ -719,7 +751,7 @@ index 4cd76d6..5dfd983 100644
  
  		reset();
  
-@@ -21808,7 +21941,8 @@ struct game_load_functions : state_functions {
+@@ -21808,7 +21948,8 @@ struct game_load_functions : state_functions {
  		if (version == 59 || version == 63) {
  			if (use_map_settings) {
  				read_chunks({
@@ -729,7 +761,7 @@ index 4cd76d6..5dfd983 100644
  					{"MTXM", true},
  					{"THG2", true},
  					{"MASK", true},
-@@ -21830,16 +21964,21 @@ struct game_load_functions : state_functions {
+@@ -21830,16 +21971,21 @@ struct game_load_functions : state_functions {
  				});
  			} else {
  				read_chunks({
@@ -754,7 +786,7 @@ index 4cd76d6..5dfd983 100644
  					{"MTXM", true},
  					{"THG2", true},
  					{"MASK", true},
-@@ -21857,7 +21996,8 @@ struct game_load_functions : state_functions {
+@@ -21857,7 +22003,8 @@ struct game_load_functions : state_functions {
  				});
  			} else {
  				read_chunks({

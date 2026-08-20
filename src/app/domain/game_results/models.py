@@ -13,7 +13,12 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+# 큰 글 칸 — MySQL의 TEXT는 **64KB**라 트랙이 안 들어간다(자취 한 판이 3.7MB까지 간다).
+# sqlite는 Text에 길이 제한이 없어 그대로 쓴다.
+BigText = Text().with_variant(LONGTEXT, "mysql")
 
 from app.db.base import Base
 from app.db.mixins import AuditMixin, TimestampMixin
@@ -249,7 +254,7 @@ class GameResultUnitTracks(TimestampMixin, Base):
         ForeignKey("game_results.id", ondelete="CASCADE"), nullable=False, unique=True, index=True,
     )
     # v2 트랙 JSON 문자열 — 4:4 한 판 실측 원시 173KB, 접으면 100KB 안쪽.
-    data: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[str] = mapped_column(BigText, nullable=False)
 
 
 class GameResultMotionTracks(TimestampMixin, Base):
@@ -272,5 +277,5 @@ class GameResultMotionTracks(TimestampMixin, Base):
     game_result_id: Mapped[int] = mapped_column(
         ForeignKey("game_results.id", ondelete="CASCADE"), nullable=False, unique=True, index=True,
     )
-    # 26분짜리 8인전 실측 1.8MB — 상한은 스키마와 같은 4MB로 본다.
-    data: Mapped[str] = mapped_column(Text, nullable=False)
+    # 실측 0.8~3.8MB(판 길이·사람 수에 따라). 상한은 스키마와 같은 12MB로 본다.
+    data: Mapped[str] = mapped_column(BigText, nullable=False)

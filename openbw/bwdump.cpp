@@ -295,18 +295,58 @@ static unsigned bwdump_tag(const bwgame::unit_t* u) {
      전체 = zlib( 아래 바이트열 )              ← 작은 끝(little-endian)
 
      머리
-       char[4] "OBWT" · u8 판(=1) · f32 초당프레임 · i32 믿을프레임(-1이면 끝까지)
-       u32 트랙수
-     트랙표 × 트랙수
-       u32 태그 · u8 임자 · u16 유닛종류 · u32 키수
+       char[4] "OBWT" · u8 판(=2) · f32 초당프레임 · i32 믿을프레임(-1이면 끝까지)
+     로스터
+       u8 사람수, 사람마다:
+         u8 임자(0~11) · u8 리플레이id · u8 종족 · u8 편(force) · u8 controller
+         · u32 개인색 · u8 이름길이 · 이름 바이트(UTF-8)
+     트랙표
+       u32 트랙수, 트랙마다:
+         u32 태그 · u8 임자 · u16 유닛종류 · u32 키수 · u32 체력키수 · u32 인터셉터키수
      키 흐름 (트랙 차례대로, 트랙마다 앞 키와의 **차이**를 적는다)
        트랙마다 앞프레임=앞x=앞y=0에서 시작
        키마다: varint(zigzag(프레임차)) · varint(zigzag(x차)) · varint(zigzag(y차))
                · u8 방향(0~255) · u8 상태
        varint는 7비트씩 끊어 담고 더 있으면 최상위 비트를 세운다.
        zigzag는 (v << 1) ^ (v >> 31) — 음수도 작은 수로 만든다.
+     체력 흐름 → 인터셉터 흐름 (트랙 차례대로, 키가 있는 트랙만)
+       키마다: varint(프레임차) · varint(값차)
+     업그레이드  u32 개수, 개마다 varint(프레임차) · u16 id · u8 단계 · u8 사람
+                 id는 업그레이드 번호 그대로, 기술은 0x8000을 얹는다
+     마법        u32 개수, 개마다 varint(프레임차) · u16 x · u16 y · u8 기술 · u8 사람
+     핑          u32 개수, 개마다 varint(프레임차) · u16 x · u16 y · u8 사람
 
-   x·y는 픽셀, 프레임은 그대로다. 읽는 쪽이 초·타일·도로 바꾼다. */
+   x·y는 픽셀, 프레임은 그대로다. 읽는 쪽이 초·타일·도로 바꾼다.
+
+   ★ 순서가 곧 규약이다. 여기를 고치면 src/utils/openbwTracks.ts를 같이 고쳐야 하고,
+     scripts/openbw-tracks-check.mjs가 그 둘이 어긋나면 잡아 준다. */
+/* ── 브라우저가 유추하던 몫을 여기서 낸다 ────────────────────────────────────────
+   재생 화면은 자리·방향·상태 말고도 다섯을 더 쓴다: 로스터(누가 무슨 종족·무슨 색),
+   체력, 인터셉터 수, 업그레이드·기술, 마법, 핑. 여태는 이걸 브라우저가 리플레이 명령에서
+   **유추**했다 — 명령만 보고 "지금 이 유닛 체력이 얼마쯤일 것이다"를 셈하는 식이라,
+   틀려도 틀린 줄을 알 길이 없었다.
+
+   넷은 게임 상태에 그대로 들어 있다(체력·인터셉터·업그레이드·마법). 핑 하나만 게임
+   상태가 아니라 명령인데, 덤퍼는 명령 스트림을 어차피 통째로 지나가므로 그 자리에서
+   적으면 된다(actions.h의 read_action_ping_minimap).
+
+   이것들이 다 나오면 브라우저가 리플레이를 파싱할 이유가 하나도 안 남는다. */
+struct roster_t { int owner, pid, race, force, controller; unsigned color; std::string name; };
+struct up_ev_t { int frame, id, level, player; };    /* id는 업그레이드 그대로, 기술은 0x8000|id */
+struct cast_ev_t { int frame, x, y, tech, player; };
+struct ping_ev_t { int frame, x, y, player; };
+static std::vector<roster_t> g_roster;
+static std::vector<up_ev_t> g_ups;
+static std::vector<cast_ev_t> g_casts;
+static std::vector<ping_ev_t> g_pings;
+/* 상한 — 어긋난 판이 끝없이 쌓는 것을 막는다. 실측은 핑 38회·마법 수백 회 규모다. */
+void bwdump_ping(int frame, int owner, int x, int y) {
+  if (g_pings.size() < 20000) g_pings.push_back({frame, x, y, owner});
+}
+void bwdump_cast(int frame, int owner, int x, int y, int tech) {
+  if (g_casts.size() < 100000) g_casts.push_back({frame, x, y, tech, owner});
+}
+
 struct track_key_t { int frame, x, y, head, state, type, owner; };
 
 static void put_u8(std::vector<uint8_t>& b, unsigned v) { b.push_back((uint8_t)(v & 0xff)); }
@@ -317,12 +357,26 @@ static void put_varint(std::vector<uint8_t>& b, int v) {
   for (;;) { uint8_t c = z & 0x7f; z >>= 7; if (z) b.push_back(c | 0x80); else { b.push_back(c); break; } }
 }
 
-static void bwdump_write_binary(const std::map<unsigned, std::vector<track_key_t>>& store, int trust_frame) {
+typedef std::map<unsigned, std::vector<std::pair<int,int>>> tick_store_t;  /* 태그 → [프레임, 값] */
+
+static void bwdump_write_binary(const std::map<unsigned, std::vector<track_key_t>>& store,
+    const tick_store_t& hp_store, const tick_store_t& ic_store, int trust_frame) {
   std::vector<uint8_t> b;
   b.push_back('O'); b.push_back('B'); b.push_back('W'); b.push_back('T');
-  put_u8(b, 1);
+  put_u8(b, 2);
   { const float fps = 23.81f; uint32_t bits; std::memcpy(&bits, &fps, 4); put_u32(b, bits); }
   put_u32(b, (unsigned)trust_frame);
+  /* 로스터 — 임자 번호(0~11)와 리플레이가 적어 둔 사람 정보. 이름은 UTF-8이다
+     (한글 아이디는 CP949로 들어 있어 replay.h와 같은 자로 옮긴다). */
+  put_u8(b, (unsigned)g_roster.size());
+  for (const auto& r : g_roster) {
+    put_u8(b, (unsigned)r.owner); put_u8(b, (unsigned)r.pid);
+    put_u8(b, (unsigned)r.race); put_u8(b, (unsigned)r.force);
+    put_u8(b, (unsigned)r.controller); put_u32(b, r.color);
+    const std::string nm = r.name.size() > 255 ? r.name.substr(0, 255) : r.name;
+    put_u8(b, (unsigned)nm.size());
+    for (unsigned char c : nm) b.push_back(c);
+  }
   put_u32(b, (unsigned)store.size());
   for (const auto& kv : store) {
     /* 임자·종류는 **마지막에 무엇이었나**로 잡는다 — 라바가 알이 되고 저글링이 되는 것이
@@ -330,8 +384,12 @@ static void bwdump_write_binary(const std::map<unsigned, std::vector<track_key_t
     int owner = kv.second.empty() ? 0 : kv.second.front().owner;
     int type = kv.second.empty() ? 0 : kv.second.front().type;
     for (const auto& k : kv.second) if (k.state != 3) { owner = k.owner; type = k.type; }
+    auto hit = hp_store.find(kv.first);
+    auto iit = ic_store.find(kv.first);
     put_u32(b, kv.first); put_u8(b, (unsigned)owner);
     put_u16(b, (unsigned)type); put_u32(b, (unsigned)kv.second.size());
+    put_u32(b, (unsigned)(hit == hp_store.end() ? 0 : hit->second.size()));
+    put_u32(b, (unsigned)(iit == ic_store.end() ? 0 : iit->second.size()));
   }
   for (const auto& kv : store) {
     int pf = 0, px = 0, py = 0;
@@ -341,13 +399,46 @@ static void bwdump_write_binary(const std::map<unsigned, std::vector<track_key_t
       pf = k.frame; px = k.x; py = k.y;
     }
   }
+  /* 체력·인터셉터는 자리 키와 **따로** 간다. 섞으면 한쪽이 바뀔 때마다 다른 쪽 키까지
+     끌려 나와 키 수가 몇 배가 된다 — 체력은 맞을 때마다 바뀌고 자리는 걸을 때마다
+     바뀌는데, 그 둘은 같이 안 일어난다. */
+  auto put_ticks = [&](const tick_store_t& ts) {
+    for (const auto& kv : store) {
+      auto it = ts.find(kv.first);
+      if (it == ts.end()) continue;
+      int pf = 0, pv = 0;
+      for (const auto& t : it->second) {
+        put_varint(b, t.first - pf); put_varint(b, t.second - pv);
+        pf = t.first; pv = t.second;
+      }
+    }
+  };
+  put_ticks(hp_store);
+  put_ticks(ic_store);
+  /* 판 전체에 하나씩인 것들 — 업그레이드·마법·핑. 프레임은 차이로 적는다(차례대로다). */
+  put_u32(b, (unsigned)g_ups.size());
+  { int pf = 0; for (const auto& e : g_ups) {
+      put_varint(b, e.frame - pf); put_u16(b, (unsigned)e.id);
+      put_u8(b, (unsigned)e.level); put_u8(b, (unsigned)e.player); pf = e.frame; } }
+  put_u32(b, (unsigned)g_casts.size());
+  { int pf = 0; for (const auto& e : g_casts) {
+      put_varint(b, e.frame - pf); put_u16(b, (unsigned)e.x); put_u16(b, (unsigned)e.y);
+      put_u8(b, (unsigned)e.tech); put_u8(b, (unsigned)e.player); pf = e.frame; } }
+  put_u32(b, (unsigned)g_pings.size());
+  { int pf = 0; for (const auto& e : g_pings) {
+      put_varint(b, e.frame - pf); put_u16(b, (unsigned)e.x); put_u16(b, (unsigned)e.y);
+      put_u8(b, (unsigned)e.player); pf = e.frame; } }
   uLongf out_len = compressBound((uLong)b.size());
   std::vector<uint8_t> out(out_len);
   if (compress2(out.data(), &out_len, b.data(), (uLong)b.size(), 9) != Z_OK)
     { fprintf(stderr, "트랙을 누르지 못했다\n"); exit(1); }
   fwrite(out.data(), 1, out_len, stdout);
-  fprintf(stderr, "이진 트랙 — 트랙 %zu개 · 편 %.1fMB → 눌러서 %.1fMB\n",
-    store.size(), b.size() / 1048576.0, out_len / 1048576.0);
+  size_t hpn = 0, icn = 0;
+  for (const auto& kv : hp_store) hpn += kv.second.size();
+  for (const auto& kv : ic_store) icn += kv.second.size();
+  fprintf(stderr, "이진 트랙 — 트랙 %zu개 · 체력 %zu · 인터셉터 %zu · 업그레이드 %zu · 마법 %zu · 핑 %zu\n",
+    store.size(), hpn, icn, g_ups.size(), g_casts.size(), g_pings.size());
+  fprintf(stderr, "  편 %.1fMB → 눌러서 %.1fMB\n", b.size() / 1048576.0, out_len / 1048576.0);
 }
 
 using namespace bwgame;
@@ -634,9 +725,43 @@ int main(int argc, char** argv) {
     const int HEAD9 = getenv("BWDUMP_HEAD") ? atoi(getenv("BWDUMP_HEAD")) : 28;
     std::map<unsigned, key_t> anchor9;   /* 마지막으로 적은 키 */
     std::map<unsigned, key_t> pend9;     /* 아직 안 적은 직전 표본 */
+    /* 로스터 — 리플레이 머리말이 아는 것을 그대로 옮긴다. 한글 아이디는 CP949로 들어
+       있어서 replay.h가 지도 이름에 쓰는 것과 같은 자로 UTF-8로 옮긴다. */
+    for (int pi = 0; pi < 12; ++pi) {
+      const int ctl = st.players[pi].controller;
+      if (ctl != player_t::controller_occupied && ctl != player_t::controller_computer_game
+          && ctl != player_t::controller_computer && ctl != player_t::controller_user_left) continue;
+      a_string nm = replay_st.player_name[pi], kn;
+      if (korean::korean_locale_to_utf8(nm, kn)) nm = kn;
+      g_roster.push_back({ pi, (int)action_st.player_id[pi], (int)st.players[pi].race,
+        st.players[pi].force, ctl, (unsigned)st.players[pi].color, std::string(nm.c_str()) });
+    }
+    /* 체력(실드 포함)과 인터셉터 수 — **바뀔 때만** 적는다. 안 바뀌는 동안은 한 줄도
+       안 남으므로, 안 맞는 유닛은 태어날 때 한 번이 전부다. */
+    tick_store_t hp9, ic9;
+    std::map<unsigned, int> lasthp9, lastic9;
+    /* 업그레이드·기술 — 상태를 표본마다 훑어 **달라진 것만** 적는다. 리플레이 명령에는
+       '연구를 눌렀다'만 있고 언제 끝났는지가 없다(프로토스는 전력이 끊기면 멈춘다).
+       여기서는 실제로 올라간 순간이 그대로 나온다. */
+    static int lastup9[12][61] = {{0}};
+    static bool lasttc9[12][44] = {{false}};
     while ((int)st.current_frame < (int)replay_st.end_frame) {
       rf.next_frame();
       if ((int)st.current_frame % step) continue;
+      for (const auto& r : g_roster) {
+        for (int ui = 0; ui < 61; ++ui) {
+          const int lv = st.upgrade_levels[r.owner][(UpgradeTypes)ui];
+          if (lv == lastup9[r.owner][ui]) continue;
+          lastup9[r.owner][ui] = lv;
+          g_ups.push_back({ (int)st.current_frame, ui, lv, r.owner });
+        }
+        for (int ti = 0; ti < 44; ++ti) {
+          const bool got = st.tech_researched[r.owner][(TechTypes)ti];
+          if (got == lasttc9[r.owner][ti]) continue;
+          lasttc9[r.owner][ti] = got;
+          if (got) g_ups.push_back({ (int)st.current_frame, 0x8000 | ti, 1, r.owner });
+        }
+      }
       std::vector<unit_t*> all9;
       std::set<unsigned> seen9;
       for (unit_t* u : ptr(st.visible_units)) all9.push_back(u);
@@ -659,6 +784,35 @@ int main(int argc, char** argv) {
         else if (fighting9) state9 = 4;
         else if (rf.u_movement_flag(u, 2)) state9 = 1;
         const unsigned tg = bwdump_tag(u);
+        if (!is_map_resource((int)u->unit_type->id)) {
+          /* 실드를 더한 값이다 — 재생 화면의 체력바가 그렇게 그린다. 0은 오직 죽음의
+             표시라 살아 있으면 최소 1로 올린다(반올림에 죽는 일이 없게). */
+          int hpv = (u->hp.raw_value + u->shield_points.raw_value) / 256;
+          if (hpv < 1) hpv = 1;
+          auto lh = lasthp9.find(tg);
+          /* 잔물결은 안 적는다 — 저그는 체력이, 프로토스는 실드가 **쉬는 내내** 1씩 차
+             오른다. 그걸 다 적으면 체력 키가 자리 키만큼 불어나는데(60만 개), 화면에
+             그려지는 것은 체력바 한 칸이라 눈에 보이지도 않는다. 최대치의 2%나 2점 중
+             큰 쪽을 넘을 때만, 그리고 **다 찼거나 죽기 직전**은 놓치지 않게 적는다. */
+          const int hpmax = (u->unit_type->hitpoints.raw_value
+            + u->unit_type->shield_points * 256) / 256;
+          int thr = hpmax / 50; if (thr < 2) thr = 2;
+          const bool edge = hpv >= hpmax || hpv <= hpmax / 20;
+          if (lh == lasthp9.end() || std::abs(lh->second - hpv) >= thr
+              || (edge && lh->second != hpv)) {
+            hp9[tg].push_back({ (int)st.current_frame, hpv }); lasthp9[tg] = hpv;
+          }
+          /* 인터셉터는 캐리어만 있다 — 그 자리는 유닛 종류마다 다른 것이 겹쳐 있는
+             공용체라, 캐리어가 아닌데 읽으면 엉뚱한 수가 나온다. */
+          if (u->unit_type->id == UnitTypes::Protoss_Carrier
+              || u->unit_type->id == UnitTypes::Hero_Gantrithor) {
+            const int icv = (int)(u->carrier.inside_count + u->carrier.outside_count);
+            auto li = lastic9.find(tg);
+            if (li == lastic9.end() || li->second != icv) {
+              ic9[tg].push_back({ (int)st.current_frame, icv }); lastic9[tg] = icv;
+            }
+          }
+        }
         const key_t cur{ (int)st.current_frame, u->position.x, u->position.y,
           (int)rf.direction_index(u->heading), state9, (int)u->unit_type->id, (int)u->owner };
         seen9.insert(tg);
@@ -706,8 +860,25 @@ int main(int argc, char** argv) {
     for (auto& kv : pend9) emit9(kv.first, kv.second);
     /* 믿을 수 있는 구간은 **다 돌고 나서야** 알 수 있다(고르기 적중률로 재므로).
        그래서 맨 뒤에 적는다 — 읽는 쪽은 줄을 다 훑으니 자리는 상관없다. */
-    if (!bin_mode) printf("#trust\t%d\n", bwdump_trust_frame());
-    if (bin_mode) bwdump_write_binary(store9, bwdump_trust_frame());
+    if (!bin_mode) {
+      /* 글자 갈래에도 똑같이 낸다 — 자물쇠(scripts/openbw-tracks-check.mjs)가 이진과
+         견주는 잣대다. 사람이 읽을 것은 아니라 꼴은 투박해도 된다. */
+      for (const auto& r : g_roster)
+        printf("#player\t%d\t%d\t%d\t%d\t%d\t%u\t%s\n",
+          r.owner, r.pid, r.race, r.force, r.controller, r.color, r.name.c_str());
+      for (const auto& kv : hp9) for (const auto& t : kv.second)
+        printf("#hp\t%u\t%d\t%d\n", kv.first, t.first, t.second);
+      for (const auto& kv : ic9) for (const auto& t : kv.second)
+        printf("#ic\t%u\t%d\t%d\n", kv.first, t.first, t.second);
+      for (const auto& e : g_ups)
+        printf("#up\t%d\t%d\t%d\t%d\n", e.frame, e.id, e.level, e.player);
+      for (const auto& e : g_casts)
+        printf("#cast\t%d\t%d\t%d\t%d\t%d\n", e.frame, e.x, e.y, e.tech, e.player);
+      for (const auto& e : g_pings)
+        printf("#ping\t%d\t%d\t%d\t%d\n", e.frame, e.x, e.y, e.player);
+      printf("#trust\t%d\n", bwdump_trust_frame());
+    }
+    if (bin_mode) bwdump_write_binary(store9, hp9, ic9, bwdump_trust_frame());
     {
       const int tf = bwdump_trust_frame();
       fprintf(stderr, "키가 나온 까닭 — 처음 %ld · 갈래바뀜 %ld · 길벗어남 %ld · 방향꺾임 %ld · 오래됨 %ld · 사라짐 %ld\n",
