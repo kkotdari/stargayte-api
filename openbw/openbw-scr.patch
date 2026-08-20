@@ -1,25 +1,26 @@
 diff --git a/actions.h b/actions.h
-index 5a0ad23..b34f313 100644
+index 5a0ad23..e26f313 100644
 --- a/actions.h
 +++ b/actions.h
-@@ -3,6 +3,16 @@
+@@ -3,6 +3,17 @@
  
  #include "bwgame.h"
  
 +void bwdump_resolve(int frame, bool ok, bool slot, unsigned raw);
-+void bwdump_action(int id, int frame);
++void bwdump_action(int id, int frame, int owner);
 +void bwdump_gen(int frame, unsigned want, unsigned got, unsigned kind);
 +void bwdump_why(const char* what, int step);
 +void bwdump_owner(const char* what, int cmd_owner, int unit_owner);
 +void bwdump_when(const char* what, int frame, int owner, int extra);
 +void bwdump_ping(int frame, int owner, int x, int y);
++void bwdump_order(int frame, int owner, unsigned tag, int x, int y, int kind);
 +void bwdump_gen(int frame, unsigned want, unsigned got, unsigned kind);
 +extern int bwdump_cur_owner;
 +
  namespace bwgame {
  
  struct action_state {
-@@ -18,7 +28,7 @@ struct action_state {
+@@ -18,7 +29,7 @@ struct action_state {
  	int next_action_frame = 0;
  
  	std::array<static_vector<unit_t*, 12>, 8> selection{};
@@ -28,7 +29,7 @@ index 5a0ad23..b34f313 100644
  };
  
  static inline action_state copy_state(const action_state& action_st, const state& source_st, const state& dest_st) {
-@@ -66,7 +76,7 @@ struct action_functions: state_functions {
+@@ -66,7 +77,7 @@ struct action_functions: state_functions {
  	}
  
  	auto control_group(int owner, size_t group_n) const {
@@ -37,7 +38,7 @@ index 5a0ad23..b34f313 100644
  			return get_unit(u);
  		}), [](unit_t* u) {
  			return u != nullptr;
-@@ -331,21 +341,27 @@ struct action_functions: state_functions {
+@@ -331,21 +342,27 @@ struct action_functions: state_functions {
  	}
  
  	bool action_train(int owner, const unit_type_t* unit_type) {
@@ -73,7 +74,31 @@ index 5a0ad23..b34f313 100644
  		if (ut_addon(unit_type)) {
  			xy pos(int(32 * tile_pos.x) + unit_type->placement_size.x / 2, int(32 * tile_pos.y) + unit_type->placement_size.y / 2);
  			if (can_place_building(u, owner, unit_type, pos, false, false)) {
-@@ -1008,11 +1024,136 @@ struct action_functions: state_functions {
+@@ -367,6 +384,12 @@ struct action_functions: state_functions {
+ 
+ 	bool action_default_order(int owner, xy pos, unit_t* target, const unit_type_t* target_unit_type, bool queue) {
+ 		if (!is_in_map_bounds(pos)) return false;
++		/* 마우스 자국과 선택 링의 재료 — 고른 유닛마다 "이 시각에 여기로 명령받았다"를
++		   적는다. 게임 상태에는 안 남는 것이라(누른 사람만 아는 일) 명령 스트림을 지나는
++		   이 자리 말고는 알아낼 데가 없다. 우클릭은 표적이 있으면 공격, 없으면 이동이다. */
++		for (unit_t* u9 : selected_units(owner))
++			bwdump_order((int)st.current_frame, owner, get_unit_id_32(u9).raw_value,
++				pos.x, pos.y, target ? 7 : 0);
+ 		if (target) target_unit_type = nullptr;
+ 		else if (target_unit_type) {
+ 			if (player_position_is_visible(owner, pos)) {
+@@ -436,6 +459,10 @@ struct action_functions: state_functions {
+ 	}
+ 
+ 	bool action_order(int owner, const order_type_t* input_order, xy pos, unit_t* target, const unit_type_t* target_unit_type, bool queue) {
++		if (is_in_map_bounds(pos))
++			for (unit_t* u9 : selected_units(owner))
++				bwdump_order((int)st.current_frame, owner, get_unit_id_32(u9).raw_value,
++					pos.x, pos.y, target ? 7 : 0);
+ 		if (!is_in_map_bounds(pos)) return false;
+ 		switch (input_order->id) {
+ 		case Orders::Die:
+@@ -1008,11 +1035,136 @@ struct action_functions: state_functions {
  		static_vector<unit_t*, 12> units;
  		for (size_t i = 0; i != n; ++i) {
  			auto uid = unit_id(r.template get<uint16_t>());
@@ -210,7 +235,7 @@ index 5a0ad23..b34f313 100644
  	template<typename reader_T>
  	bool read_action_shift_select(int owner, reader_T&& r) {
  		size_t n = r.template get<uint8_t>();
-@@ -1229,8 +1370,12 @@ struct action_functions: state_functions {
+@@ -1229,8 +1381,12 @@ struct action_functions: state_functions {
  
  	template<typename reader_T>
  	bool read_action_ping_minimap(int owner, reader_T&& r) {
@@ -225,7 +250,7 @@ index 5a0ad23..b34f313 100644
  		return true;
  	}
  
-@@ -1340,15 +1485,41 @@ struct action_functions: state_functions {
+@@ -1340,15 +1496,41 @@ struct action_functions: state_functions {
  	bool read_action(reader_T&& r) {
  		int player_id = r.template get<uint8_t>();
  		auto i = std::find(action_st.player_id.begin(), action_st.player_id.end(), player_id);
@@ -248,7 +273,7 @@ index 5a0ad23..b34f313 100644
  	template<typename reader_T>
  	bool read_action(int owner, reader_T&& r) {
  		int action_id = r.template get<uint8_t>();
-+		bwdump_action(action_id, (int)st.current_frame);
++		bwdump_action(action_id, (int)st.current_frame, owner);
 +		bwdump_cur_owner = owner;
  		on_action(owner, action_id);
  		switch (action_id) {
@@ -268,7 +293,7 @@ index 5a0ad23..b34f313 100644
  		case 9:
  			return read_action_select(owner, r);
  		case 10:
-@@ -1454,11 +1625,16 @@ struct action_functions: state_functions {
+@@ -1454,11 +1636,16 @@ struct action_functions: state_functions {
  	}
  
  	void execute_actions(uint8_t* actions_data_begin, uint8_t* actions_data_end) {
