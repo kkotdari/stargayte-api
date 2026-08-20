@@ -1548,9 +1548,13 @@ class GameResultService:
         if data is None:
             raise ValidationError("참값을 굽지 못했습니다. 서버 로그를 확인하세요.")
 
-        await self._repo.upsert_unit_tracks(match_id, data)
+        await self._repo.upsert_motion_tracks(match_id, data)
         await self._session.commit()
         return f"참값 트랙 {len(data) / 1_048_576:.2f}MB 를 구웠습니다."
+
+    async def get_motion_tracks(self, match_id: int) -> str | None:
+        """참값 자취 조회 — 없으면 None(아직 안 구웠거나 못 굽는 경기)."""
+        return await self._repo.get_motion_tracks(match_id)
 
     async def get_unit_tracks(self, match_id: int) -> str | None:
         """개체 트랙(v2) 조회 — 없으면 None(프론트가 토글을 감춘다)."""

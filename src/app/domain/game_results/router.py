@@ -288,9 +288,13 @@ async def put_unit_tracks(
 async def get_unit_tracks(
     match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> UnitTracksOut:
-    """개체 트랙(v2) 조회 — 없으면 data가 null(옛 경기: 토글 감춤)."""
-    data = await GameResultService(db, storage).get_unit_tracks(match_id)
-    return UnitTracksOut(data=data)
+    """개체 트랙 조회 — 사건(data)과 서버가 구운 참값 자취(motion)를 함께 준다.
+    없으면 각각 null이다(옛 경기·아직 안 구운 경기)."""
+    service = GameResultService(db, storage)
+    return UnitTracksOut(
+        data=await service.get_unit_tracks(match_id),
+        motion=await service.get_motion_tracks(match_id),
+    )
 
 
 @router.post("/duplicate-check", response_model=DuplicateCheckResponse)

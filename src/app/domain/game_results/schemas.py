@@ -700,7 +700,14 @@ class UnitTracksWrite(BaseModel):
 
 
 class UnitTracksOut(BaseModel):
-    """개체 트랙(v2) 응답 — 없으면 null."""
+    """개체 트랙 응답.
+
+    data   — 개체 트랙(v2). 사건(명령·연구·마법)을 담는다. 프론트가 만들어 올린다.
+    motion — 참값 자취. 유닛의 자리·방향·상태를 담는다. **서버가 굽는다**(openbw/README.md).
+             이게 있으면 프론트는 브라우저 시뮬을 안 돌린다.
+    둘 다 없으면 null이다.
+    """
 
     data: str | None
+    motion: str | None = None
 

@@ -12,6 +12,7 @@ from app.domain.game_results.models import (
     MinimapImage,
     Replay,
     ReplayMap,
+    GameResultMotionTracks,
     GameResultUnitTracks,
 )
 from app.domain.members.models import Member, ReplayAlias
@@ -658,6 +659,22 @@ class GameResultRepository:
         else:
             existing.data = data
         await self._session.flush()
+
+    async def upsert_motion_tracks(self, match_id: int, data: str) -> None:
+        """참값 자취 저장 — 경기당 한 벌, 다시 구우면 갈아 끼운다."""
+        existing = await self._session.scalar(
+            select(GameResultMotionTracks).where(GameResultMotionTracks.game_result_id == match_id)
+        )
+        if existing is None:
+            self._session.add(GameResultMotionTracks(game_result_id=match_id, data=data))
+        else:
+            existing.data = data
+
+    async def get_motion_tracks(self, match_id: int) -> str | None:
+        """참값 자취 조회 — 아직 안 구운 경기는 None(프론트가 옛 길로 돈다)."""
+        return await self._session.scalar(
+            select(GameResultMotionTracks.data).where(GameResultMotionTracks.game_result_id == match_id)
+        )
 
     async def get_unit_tracks(self, match_id: int) -> str | None:
         """개체 트랙(v2) 조회 — 없으면 None(옛 경기·미분석)."""

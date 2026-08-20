@@ -250,3 +250,27 @@ class GameResultUnitTracks(TimestampMixin, Base):
     )
     # v2 트랙 JSON 문자열 — 4:4 한 판 실측 원시 173KB, 접으면 100KB 안쪽.
     data: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class GameResultMotionTracks(TimestampMixin, Base):
+    """참값 자취 — 서버가 리플레이를 **실제로 시뮬레이션해** 뽑은 유닛의 자리·방향·상태.
+
+    개체 트랙(game_result_unit_tracks)과 자리를 나눈 이유: 그쪽은 사건(명령·연구·마법)을
+    담고 프론트가 만들지만, 이쪽은 자리를 담고 **서버만** 만든다. 한 칸에 같이 두면 한쪽을
+    쓸 때 다른 쪽이 덮인다.
+
+    여태 자리는 브라우저가 개체 트랙 위에서 시뮬을 돌려 얻었다 — 경기를 열 때마다, 폰마다.
+    이제 서버가 한 번 구워 두면 모두가 그것을 받는다(openbw/README.md).
+
+    내용은 덤퍼가 낸 조밀 이진(zlib)을 base64로 담은 것이다. 서버는 열어 보지 않는다 —
+    푸는 곳은 프론트 한 곳뿐이다(src/utils/openbwTracks.ts).
+    """
+
+    __tablename__ = "game_result_motion_tracks"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    game_result_id: Mapped[int] = mapped_column(
+        ForeignKey("game_results.id", ondelete="CASCADE"), nullable=False, unique=True, index=True,
+    )
+    # 26분짜리 8인전 실측 1.8MB — 상한은 스키마와 같은 4MB로 본다.
+    data: Mapped[str] = mapped_column(Text, nullable=False)
