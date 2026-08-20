@@ -1,7 +1,9 @@
+import os
 from functools import lru_cache
+from pathlib import PurePosixPath
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -110,6 +112,31 @@ class Settings(BaseSettings):
         if any(h < 0 or h > 23 for h in value):
             raise ValueError("rank_recompute_hours는 0~23 사이여야 한다")
         return sorted(set(value))
+
+    @model_validator(mode="after")
+    def _rebase_onto_volume(self) -> "Settings":
+        """저장 자리를 **볼륨 안**으로 옮긴다 — 상대경로면 재배포 때 통째로 날아간다.
+
+        Railway는 볼륨을 붙이면서 `RAILWAY_VOLUME_MOUNT_PATH`(예: `/data`)를 넣어 준다.
+        그런데 우리 기본값은 `var/uploads`처럼 **상대경로**라 컨테이너 작업 폴더(`/app`)
+        밑에 쌓인다 — 볼륨이 아니라 컨테이너 안이다. 컨테이너는 배포할 때마다 새로 만들어
+        지므로 그 안에 쌓인 것은 배포 한 번에 전부 사라진다. 실제로 그렇게 잃었다.
+
+        그래서 볼륨이 붙어 있으면 상대경로를 볼륨 밑으로 옮겨 놓는다. **절대경로로 직접
+        지정한 값은 건드리지 않는다** — 사람이 콕 집어 정한 것이 자동 규칙을 이긴다.
+        볼륨이 없는 곳(개발 노트북·시험)에서는 아무 일도 안 일어난다.
+        """
+        mount = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+        if not mount or not mount.startswith("/"):
+            return self
+        for field in ("storage_local_root", "openbw_data_root"):
+            cur = getattr(self, field)
+            if not cur or cur.startswith("/"):
+                continue
+            # "var/uploads" → "/data/uploads" — 앞의 var/는 컨테이너 쪽 관행이라 뗀다.
+            parts = [p for p in PurePosixPath(cur).parts if p not in (".", "var")]
+            setattr(self, field, str(PurePosixPath(mount).joinpath(*parts)))
+        return self
 
     @field_validator("database_url", mode="before")
     @classmethod
