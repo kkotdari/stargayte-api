@@ -13,7 +13,6 @@ from app.domain.game_results.models import (
     Replay,
     ReplayMap,
     GameResultMotionTracks,
-    GameResultUnitTracks,
 )
 from app.domain.members.models import Member, ReplayAlias
 
@@ -649,16 +648,6 @@ class GameResultRepository:
         )
         return {int(r[0]): int(r[1]) for r in (await self._session.execute(stmt)).all()}
 
-    async def upsert_unit_tracks(self, match_id: int, data: str) -> None:
-        """개체 트랙(v2) 저장 — 경기당 한 벌, 다시 올리면 갈아 끼운다(재분석)."""
-        existing = await self._session.scalar(
-            select(GameResultUnitTracks).where(GameResultUnitTracks.game_result_id == match_id)
-        )
-        if existing is None:
-            self._session.add(GameResultUnitTracks(game_result_id=match_id, data=data))
-        else:
-            existing.data = data
-        await self._session.flush()
 
     async def upsert_motion_tracks(self, match_id: int, data: str) -> None:
         """참값 자취 저장 — 경기당 한 벌, 다시 구우면 갈아 끼운다."""
@@ -676,11 +665,6 @@ class GameResultRepository:
             select(GameResultMotionTracks.data).where(GameResultMotionTracks.game_result_id == match_id)
         )
 
-    async def get_unit_tracks(self, match_id: int) -> str | None:
-        """개체 트랙(v2) 조회 — 없으면 None(옛 경기·미분석)."""
-        return await self._session.scalar(
-            select(GameResultUnitTracks.data).where(GameResultUnitTracks.game_result_id == match_id)
-        )
 
     async def bump_view_count(self, match_id: int) -> int:
         """게임 상세 페이지 조회수 +1(요청) — 행이 없으면 0을 돌려준다."""

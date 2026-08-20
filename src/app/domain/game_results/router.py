@@ -37,7 +37,6 @@ from app.domain.game_results.schemas import (
     ReplayNameMappingMember,
     ReplayNameMappingWrite,
     UnitTracksOut,
-    UnitTracksWrite,
 )
 from app.domain.game_results import openbw
 from app.domain.game_results.service import GameResultService, to_game_result_out
@@ -276,25 +275,16 @@ async def mark_game_viewed(
     await GameResultService(db, storage).mark_viewed(match_id)
 
 
-@router.put("/{match_id}/unit-tracks", status_code=status.HTTP_204_NO_CONTENT)
-async def put_unit_tracks(
-    match_id: int, payload: UnitTracksWrite, db: DbSession, storage: StorageDep, _current: CurrentMember
-) -> None:
-    """개체 트랙(v2) 저장(요청: 별도 테이블로 비교) — 등록·재분석 때 프론트가 올린다."""
-    await GameResultService(db, storage).put_unit_tracks(match_id, payload.data)
-
-
 @router.get("/{match_id}/unit-tracks", response_model=UnitTracksOut)
 async def get_unit_tracks(
     match_id: int, db: DbSession, storage: StorageDep, _current: CurrentMember
 ) -> UnitTracksOut:
-    """개체 트랙 조회 — 사건(data)과 서버가 구운 참값 자취(motion)를 함께 준다.
-    없으면 각각 null이다(옛 경기·아직 안 구운 경기)."""
-    service = GameResultService(db, storage)
-    return UnitTracksOut(
-        data=await service.get_unit_tracks(match_id),
-        motion=await service.get_motion_tracks(match_id),
-    )
+    """참값 자취 — 서버가 리플레이를 실제로 돌려 구운 것. 아직 안 구웠으면 null이다.
+
+    (걷어냄) 예전에는 프론트가 명령에서 **유추해** 만든 표(data)도 함께 줬다. 이제 자리도
+    체력도 업그레이드도 마법도 핑도 전부 참값에서 오므로 유추할 것이 없다.
+    """
+    return UnitTracksOut(motion=await GameResultService(db, storage).get_motion_tracks(match_id))
 
 
 @router.post("/duplicate-check", response_model=DuplicateCheckResponse)

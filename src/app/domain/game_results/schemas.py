@@ -691,13 +691,6 @@ class ReplayNameMappingWrite(BaseModel):
     # kind가 "member"일 때만 필요 — 대상 회원의 로그인 아이디(members.id).
     member_id: str | None = Field(default=None, alias="memberId")
 
-class UnitTracksWrite(BaseModel):
-    """개체 트랙(v2) 저장 — 프론트 소유 JSON 문자열. 체력 자취·합성 개체·상태 증거가
-    실리면서 긴 4:4가 2MB를 넘었다(수리: 재분석 217건 중 8건 업로드 거절) — 4MB로 늘린다.
-    프론트 솎기(1.9MB 목표)가 평소 크기를 죄고, 이 상한은 마지막 안전벽이다."""
-
-    data: str = Field(min_length=2, max_length=4_000_000)
-
 
 class UnitTracksOut(BaseModel):
     """개체 트랙 응답.
