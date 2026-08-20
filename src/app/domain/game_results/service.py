@@ -1585,11 +1585,24 @@ class GameResultService:
         그럼 시각을 모르는 경기(수기 등록)는 어쩌나 — **없는 시각**을 준다: `YYMMDD99####`.
         99시는 실제로 없는 시각이라 리플레이가 만든 번호와 절대 안 부딪히고, 번호를 보는
         것만으로 "시각을 모르는 경기"임이 드러난다. 자릿수도 그대로 열둘이다.
-        (같은 초에 시작한 리플레이 두 개도 이 칸으로 비켜 준다 — 드문 일이다.)
+
+        정말 다른 두 경기가 **같은 초**에 시작했다면(다른 방에서 동시에 — 거의 없는 일이다)
+        원래 번호를 **그대로 두고 뒤에 붙인다**: `260816235903` → `260816235903-2`.
+        한 글자를 알파벳으로 갈아 끼우는 길도 있었지만(…590A), 그러면 `03`의 중복인지
+        `09`의 중복인지가 번호에서 사라진다 — 중복이라는 사실보다 **무엇의 중복인지**가
+        더 중요하다. 뒤에 붙이면 앞 열두 자리가 원본 그대로라 한눈에 읽힌다.
+        (같은 경기를 여러 사람이 녹화한 것은 여기까지 안 온다 — 시작 시각이 같으면 중복으로
+        잡혀 한 경기로 합쳐진다. check_duplicates·merge_replay 참고.)
         """
         if base is not None:
             if base == keep or await self._repo.get_by_match_no(base) is None:
                 return base
+            # 2부터 9까지 — 칸이 열네 자리라 여기까지다. 실제로 두 건을 넘길 일이 없다.
+            for n in range(2, 10):
+                cand = f"{base}-{n}"
+                if cand == keep or await self._repo.get_by_match_no(cand) is None:
+                    return cand
+            raise ValidationError("같은 초에 시작한 경기가 이미 아홉 건입니다.")
         return await self._repo.next_impossible_match_no(match_date.strftime("%y%m%d"))
 
     async def rewrite_summary(self, match_id: int, payload: SummaryRewrite) -> None:

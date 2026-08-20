@@ -38,6 +38,8 @@ class GameResult(AuditMixin, TimestampMixin, Base):
     # 초까지 가면 겹칠 일이 거의 없다. 시각을 모르는 경기(수기 등록)는 **없는 시각**을
     # 받는다: YYMMDD99####. 99시는 실제로 없는 시각이라 리플레이가 만든 번호와 절대
     # 안 부딪히고, 번호만 봐도 "시각을 모르는 경기"임이 드러난다.
+    # 정말 다른 두 경기가 같은 초에 시작했다면(거의 없는 일) 원본을 그대로 두고 뒤에
+    # 붙인다: 260816235903-2. 무엇의 중복인지가 번호에 남아야 하기 때문이다.
     # 재분석하면 다시 매긴다(요청) — 읽은 시각이 달라지면 번호도 옮겨 간다.
     # service.py의 _unique_match_no 참고.
     match_no: Mapped[str] = mapped_column(String(14), nullable=False, unique=True)
