@@ -357,7 +357,7 @@ logger = logging.getLogger(__name__)
 _KST = timezone(timedelta(hours=9))
 
 
-def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
+def _match_no_base(match_date: date, game_started_at: datetime | None) -> str | None:
     # 리플레이가 있으면 실제 경기 시작 시각(KST)을, 없으면(수동 등록) 경기 날짜만 알 수
     # 있으니 자정(000000)으로 채운다 — 같은 날 여러 건이면 뒤 2자리 일련번호로 갈린다.
     #
@@ -373,7 +373,7 @@ def _match_no_base(match_date: date, game_started_at: datetime | None) -> str:
         local = game_started_at.astimezone(_KST) if game_started_at.tzinfo else game_started_at
         if local.date() == match_date:
             return local.strftime("%y%m%d%H%M%S")
-    return match_date.strftime("%y%m%d") + "000000"
+    return None
 
 
 # 리플레이 다운로드 파일명 생성(요청):
@@ -1574,26 +1574,23 @@ class GameResultService:
             raise NotFoundError("맵 격자를 찾을 수 없습니다.")
         return maps[0]
 
-    async def _unique_match_no(self, base: str, *, keep: str | None = None) -> str:
-        """경기번호를 정한다 — **초까지 열두 자리**가 기본이다(요청: 뒤 두 자리 빼기).
+    async def _unique_match_no(
+        self, match_date: date, base: str | None, *, keep: str | None = None
+    ) -> str:
+        """경기번호를 정한다 — **언제나 열두 자리**(YYMMDDHHMMSS)다.
 
-        예전에는 늘 두 자리 일련번호를 붙여 열네 자리였다. 실제 경기 시각은 초까지 가면
-        이미 겹칠 일이 거의 없어 그 두 자리는 대부분 `00`으로 낭비됐다. 그래서 **비어
-        있으면 그냥 열두 자리**를 쓰고, 정말 겹칠 때만 뒤에 일련번호를 붙인다.
+        예전에는 뒤에 두 자리 일련번호를 붙여 열네 자리였다. 실제 경기 시각은 초까지 가면
+        겹칠 일이 거의 없어 그 두 자리가 대부분 `00`으로 낭비됐다.
 
-        겹치는 경우가 실제로 있다 — 수기 등록은 시각을 몰라 `YYMMDD000000`으로 모이므로
-        같은 날 두 번째부터는 번호가 붙는다. 그 자리를 없애면 등록이 막힌다.
+        그럼 시각을 모르는 경기(수기 등록)는 어쩌나 — **없는 시각**을 준다: `YYMMDD99####`.
+        99시는 실제로 없는 시각이라 리플레이가 만든 번호와 절대 안 부딪히고, 번호를 보는
+        것만으로 "시각을 모르는 경기"임이 드러난다. 자릿수도 그대로 열둘이다.
+        (같은 초에 시작한 리플레이 두 개도 이 칸으로 비켜 준다 — 드문 일이다.)
         """
-        if keep is not None and keep == base:
-            return base
-        if await self._repo.get_by_match_no(base) is None:
-            return base
-        suffix = await self._repo.next_match_no_suffix(base)
-        for n in range(max(1, suffix), 100):
-            cand = f"{base}{n:02d}"
-            if cand == keep or await self._repo.get_by_match_no(cand) is None:
-                return cand
-        raise ValidationError("같은 시각의 경기번호가 이미 100건입니다.")
+        if base is not None:
+            if base == keep or await self._repo.get_by_match_no(base) is None:
+                return base
+        return await self._repo.next_impossible_match_no(match_date.strftime("%y%m%d"))
 
     async def rewrite_summary(self, match_id: int, payload: SummaryRewrite) -> None:
         """등록된 경기의 리플레이 파생 데이터를 다시 써 넣는다(재분석) — 경기 내용은 안 건드린다.
@@ -1613,8 +1610,11 @@ class GameResultService:
         if started is None and rr.game_started_at is not None:
             started = rr.game_started_at.replace(tzinfo=timezone.utc)
         new_base = _match_no_base(match.match_date, started)
-        if match.match_no != new_base:
-            match.match_no = await self._unique_match_no(new_base, keep=match.match_no)
+        # 시각을 모르는 경기(new_base가 None)는 이미 받은 '없는 시각' 번호를 그대로 둔다 —
+        # 재분석 때마다 새 번호를 뽑으면 사람이 외운 번호가 계속 바뀐다.
+        if new_base is not None and match.match_no != new_base:
+            match.match_no = await self._unique_match_no(
+                match.match_date, new_base, keep=match.match_no)
         # 파일명은 경기번호 그대로다(요청) — 번호가 바뀌었으면 이름도 함께 바뀐다.
         if rr.replay is not None:
             rr.replay.display_name = build_replay_display_name(match)
@@ -1689,7 +1689,7 @@ class GameResultService:
 
         match_date = date.fromisoformat(payload.date)
         match_no_base = _match_no_base(match_date, payload.game_started_at)
-        match_no = await self._unique_match_no(match_no_base)
+        match_no = await self._unique_match_no(match_date, match_no_base)
 
         # replay=None 을 명시해 flush 이후 접근 시 비동기 lazy-load가 걸리지 않게 한다.
         match = GameResult(

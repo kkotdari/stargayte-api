@@ -55,6 +55,19 @@ class GameResultRepository:
         stmt = self._base_query().where(GameResult.match_no == match_no)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def next_impossible_match_no(self, day: str) -> str:
+        """그 날짜의 **없는 시각** 칸에서 다음 빈 번호를 준다 — `YYMMDD99####`.
+
+        시각을 모르는 경기(수기 등록)에 쓴다. 99시는 실제로 없는 시각이라 리플레이가
+        만든 번호와 절대 안 부딪히고, 번호를 보면 "시각을 모르는 경기"임이 그대로 드러난다.
+        하루에 만 건까지 담긴다.
+        """
+        prefix = f"{day}99"
+        seq_expr = func.cast(func.substr(GameResult.match_no, len(prefix) + 1, 4), Integer)
+        stmt = select(func.max(seq_expr)).where(GameResult.match_no.like(f"{prefix}%"))
+        top = (await self._session.execute(stmt)).scalar_one_or_none()
+        return f"{prefix}{(0 if top is None else top + 1):04d}"
+
     async def next_match_no_suffix(self, base: str) -> int:
         # 같은 12자리(YYMMDDHHMMSS) base를 쓰는 행 중 가장 큰 2자리 일련번호 다음 값을
         # 돌려준다 — 문자열 뒤 2자리를 정수로 잘라 비교(같은 자릿수라 문자열 정렬=숫자
