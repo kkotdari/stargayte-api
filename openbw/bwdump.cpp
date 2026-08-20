@@ -3,7 +3,16 @@
  * 자료폴더에는 MPQ가 아니라 **풀어 놓은 파일 열 개**만 있으면 된다:
  *   arr/{units,weapons,upgrades,techdata,flingy,sprites,images,orders}.dat
  *   arr/images.tbl · scripts/iscript.bin
- * 그림·소리는 한 장도 안 쓴다(시뮬레이션만 한다). */
+ * 그림·소리는 한 장도 안 쓴다(시뮬레이션만 한다).
+ *
+ * ★ 이 파일은 **베낀 것이다.** 원본은 프론트 리포의 `tools/openbw/bwdump.cpp`이고,
+ *   고칠 일이 있으면 거기서 고친 뒤 여기로 통째로 복사해야 한다. Dockerfile이 굽는
+ *   것은 **이쪽**이라, 원본만 고치면 아무리 재분석해도 서버 바이너리는 옛것 그대로다.
+ *   실제로 그 일이 났다(지적: "재분석 여러번 했는데 가스 건물은 안붙어") — 가스 건물을
+ *   자취에 싣는 고침이 원본에만 들어가 있어, 서버는 24줄이 빠진 판을 굽고 있었다.
+ *
+ *   베껴 온 자리: stargayte 6a95d8f "간헐천이 가스 건물이 되면 자취에 싣는다"
+ *   (다음에 베낄 때 이 줄도 함께 갈아라 — 이 줄이 곧 두 파일이 언제 갈렸는지의 기록이다) */
 #include "replay.h"
 #include "modern_replay.h"
 #include <cstdio>
@@ -1081,6 +1090,30 @@ int main(int argc, char** argv) {
         const key_t cur{ (int)st.current_frame, u->position.x, u->position.y,
           (int)rf.direction_index(u->heading), state9, (int)u->unit_type->id, (int)u->owner };
         seen9.insert(tg);
+        /* 간헐천이 가스 건물이 되는 자리(지적: "실제로 가스건물지어도 맵에 안나옴") ──
+           원작은 정제소·어시밀레이터·익스트랙터를 지을 때 **간헐천 그 개체의 종류를
+           바꾼다** — 라바가 알이 되는 것과 같고, 태그가 그대로다. 그런데 여기 건너뛰기
+           명단(skipres9)은 태그로 잡히고 한 번 들면 영영 나가지 못했다. 그래서 가스
+           건물은 자취에 **한 줄도** 안 실렸다(실측: 한 판의 가스 건물 47채, 자취 키 0).
+           지금이 아니라 앞으로도 안 실린다 — 앱은 지도에서 자원만 그리므로 그 자리는
+           끝내 빈 땅이었다.
+           종류가 자원에서 벗어나면 명단에서 빼고 닻도 지운다: 다음 줄이 새 개체처럼
+           첫 키를 내, 앱에서는 그 태그의 새 생애(가스 건물)로 갈린다. 반대로 건물이
+           부서져 도로 간헐천이 되면 다시 명단에 넣는다 — 지도가 그리는 것으로 돌아간다. */
+        {
+          const bool res_now = is_map_resource(cur.type);
+          const bool skipping = skipres9.count(tg) != 0;
+          if (skipping && !res_now) { skipres9.erase(tg); anchor9.erase(tg); pend9.erase(tg); }
+          else if (!skipping && res_now && anchor9.count(tg)) {
+            /* 가스 건물이 무너져 간헐천으로 돌아왔다 — 마지막 표본과 '사라짐'을 찍고
+               지도 몫으로 넘긴다. 안 찍으면 앱에 건물이 영영 서 있게 된다. */
+            auto pit0 = pend9.find(tg);
+            if (pit0 != pend9.end()) { emit9(tg, pit0->second); pend9.erase(pit0); }
+            key_t g0 = anchor9[tg]; g0.frame = (int)st.current_frame; g0.state = 3;
+            emit9(tg, g0);
+            skipres9.insert(tg); anchor9[tg] = cur; continue;
+          }
+        }
         auto it = anchor9.find(tg);
         if (it == anchor9.end()) {
           if (is_map_resource(cur.type)) { skipres9.insert(tg); anchor9[tg] = cur; continue; }
