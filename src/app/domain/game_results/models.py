@@ -32,10 +32,13 @@ class GameResult(AuditMixin, TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     # 사람이 보고 지목하기 위한 고유번호 — 등록 순서(id)가 아니라 "그 경기가 실제로 언제
     # 열렸는지"를 기준으로 한다(리플레이는 한참 지나서야 등록되는 경우가 흔해서, id 순서가
-    # 실제 경기 순서와 어긋난다). 형식: YYMMDDHHMMSS(리플레이가 있으면 실제 시작 시각(KST),
-    # 없으면 경기 날짜 + 000000) + 2자리 일련번호(00부터, 같은 초/같은 날짜가 겹치면 01, 02...
-    # 로 늘어난다 — 하루/한 초에 100건이 몰릴 일은 없다고 가정). service.py의 생성 로직
-    # 참고. 한 번 배정되면 이후 수정에서도 절대 바뀌지 않는다.
+    # 실제 경기 순서와 어긋난다). 형식: YYMMDDHHMMSS **열두 자리**(리플레이가 있으면
+    # 실제 시작 시각(KST), 없으면 경기 날짜 + 000000). 예전에는 늘 2자리 일련번호를 붙여
+    # 열네 자리였는데 그 두 자리가 대부분 00으로 낭비돼 뺐다(요청) — 실제 경기 시각은
+    # 초까지 가면 겹칠 일이 거의 없다. **겹칠 때만** 뒤에 01·02…가 붙는다: 수기 등록은
+    # 시각을 몰라 하루치가 한 번호로 모이므로 그 자리는 없앨 수 없다.
+    # 재분석하면 다시 매긴다(요청) — 읽은 시각이 달라지면 번호도 옮겨 간다.
+    # service.py의 _unique_match_no 참고.
     match_no: Mapped[str] = mapped_column(String(14), nullable=False, unique=True)
     match_date: Mapped[date] = mapped_column(Date, nullable=False)
     # 게임 상세(페이지) 조회수(요청) — 페이지가 열릴 때마다 1씩 는다. 기존 DB에는
