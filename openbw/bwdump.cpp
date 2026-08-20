@@ -14,6 +14,7 @@
 #include <vector>
 #include <algorithm>
 #include <set>
+#include <filesystem>
 #include <cmath>
 
 static int g_ok[64] = {0}, g_slot[64] = {0}, g_tot[64] = {0};
@@ -453,11 +454,38 @@ int main(int argc, char** argv) {
   std::string dir = argv[1];
   const int step = argc > 3 ? atoi(argv[3]) : 24;
 
+  /* 대소문자를 안 가리고 찾을 수 있게 자료 폴더를 한 번 훑어 색인을 만든다.
+     ─ 왜 필요한가: 게임 자료(images.tbl)는 그림 이름을 "Zerg\\Hive.grp"처럼 적어 두는데
+       뽑힌 파일은 "unit/zerg/Hive.grp"다(폴더는 소문자, 파일은 원래 대소문자). 맥은
+       대소문자를 안 가려서 그대로 열렸지만 리눅스는 가린다 — 운영에 올리고 나서야
+       "자료 파일 없음: /data/bwdata/unit/Zerg/Hive.grp"로 터졌다.
+     ─ 파일이 955개뿐이라 훑는 데 몇 ms다. */
+  std::map<std::string, std::string> file_index;
+  {
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(dir, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+      if (!it->is_regular_file(ec)) continue;
+      std::string rel = std::filesystem::relative(it->path(), dir, ec).generic_string();
+      if (ec) continue;
+      std::string low = rel;
+      for (char& c : low) c = (char)tolower((unsigned char)c);
+      file_index.emplace(low, rel);
+    }
+    if (file_index.empty())
+      { fprintf(stderr, "자료 폴더가 비었다: %s\n", dir.c_str()); exit(1); }
+  }
+
   auto load_file = [&](a_vector<uint8_t>& dst, a_string filename) {
     /* 이름 안의 역슬래시를 슬래시로 — images.tbl이 적어 둔 그림 이름은 "zerg\\avenger.grp"
        처럼 윈도 표기라, 그대로 이으면 맥·리눅스에서 파일을 못 찾는다. */
-    std::string p = dir + "/" + filename.c_str();
-    for (char& c : p) if (c == '\\') c = '/';
+    std::string rel = filename.c_str();
+    for (char& c : rel) if (c == '\\') c = '/';
+    { std::string low = rel;
+      for (char& c : low) c = (char)tolower((unsigned char)c);
+      auto it = file_index.find(low);
+      if (it != file_index.end()) rel = it->second; }
+    std::string p = dir + "/" + rel;
     FILE* f = fopen(p.c_str(), "rb");
     if (!f) error("자료 파일 없음: %s", p.c_str());
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
