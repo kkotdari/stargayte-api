@@ -456,6 +456,43 @@ struct ping_ev_t { int frame, x, y, player; };
 struct ord_ev_t { int frame; unsigned tag; int x, y, kind; };
 static std::vector<ord_ev_t> g_ords;
 static std::vector<roster_t> g_roster;
+/* 개인색 — 리마스터 리플레이는 사람마다 고른 색을 **CCLR 구획**에 담는다. 그 구획이
+   진짜다: 헤더의 색 칸은 색표 번호가 아니라 딴 것이라(판마다 같은 번호가 다른 색으로
+   나왔다) 쓸 수가 없었다.
+   꼴은 사람마다 float 넷(R·G·B·A, 0~1)이고 차례는 슬롯 순서다. 옛 리플레이(1.16)에는
+   이 구획이 없어 -1로 남고, 그때는 화면이 팀색으로 떨어진다. */
+static int g_cclr[12];
+static void bwdump_read_cclr(const char* path) {
+  for (int i = 0; i < 12; ++i) g_cclr[i] = -1;
+  FILE* f = fopen(path, "rb");
+  if (!f) return;
+  fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+  std::vector<uint8_t> b((size_t)n);
+  if (fread(b.data(), 1, (size_t)n, f) != (size_t)n) { fclose(f); return; }
+  fclose(f);
+  /* 구획 꼴: "CCLR" · u32 눌린길이 · u32 검사합 · u32 조각수 · u32 푼길이 · zlib */
+  for (size_t i = 0; i + 20 < b.size(); ++i) {
+    if (b[i] != 'C' || b[i+1] != 'C' || b[i+2] != 'L' || b[i+3] != 'R') continue;
+    uint32_t zlen; std::memcpy(&zlen, &b[i+4], 4);
+    if (zlen == 0 || i + 20 + zlen > b.size()) continue;
+    std::vector<uint8_t> out(12 * 16);
+    uLongf out_len = (uLongf)out.size();
+    if (uncompress(out.data(), &out_len, &b[i+20], (uLong)zlen) != Z_OK) continue;
+    const size_t people = out_len / 16;
+    for (size_t p2 = 0; p2 < people && p2 < 12; ++p2) {
+      float rgb[3];
+      std::memcpy(rgb, &out[p2 * 16], 12);
+      int v = 0;
+      for (int c2 = 0; c2 < 3; ++c2) {
+        int q = (int)(rgb[c2] * 255.0f + 0.5f);
+        if (q < 0) q = 0; if (q > 255) q = 255;
+        v = (v << 8) | q;
+      }
+      g_cclr[p2] = v;
+    }
+    return;
+  }
+}
 static std::vector<up_ev_t> g_ups;
 static std::vector<cast_ev_t> g_casts;
 static std::vector<ping_ev_t> g_pings;
@@ -668,6 +705,7 @@ int main(int argc, char** argv) {
   replay_functions rf(player.st(), action_st, replay_st);
   /* 옛 형식이면 OpenBW의 읽개로, 리마스터(1.21+)면 우리 읽개로 — 표식과 압축이 달라
      한쪽 읽개로는 다른 쪽을 못 읽는다(modern_replay.h 머리말). */
+  bwdump_read_cclr(argv[2]);   /* 개인색 — 위 CCLR 주석 */
   if (data_loading::is_modern_replay(argv[2])) {
     g_modern = true;
     fprintf(stderr, "리플레이 형식: 리마스터(1.21+)\n");
@@ -946,7 +984,8 @@ int main(int argc, char** argv) {
       a_string nm = replay_st.player_name[pi], kn;
       if (korean::korean_locale_to_utf8(nm, kn)) nm = kn;
       g_roster.push_back({ pi, (int)action_st.player_id[pi], (int)st.players[pi].race,
-        st.players[pi].force, ctl, (unsigned)st.players[pi].color, std::string(nm.c_str()) });
+        st.players[pi].force, ctl,
+        (unsigned)(g_cclr[pi] >= 0 ? g_cclr[pi] : 0xffffff), std::string(nm.c_str()) });
     }
     /* 체력(실드 포함)과 인터셉터 수 — **바뀔 때만** 적는다. 안 바뀌는 동안은 한 줄도
        안 남으므로, 안 맞는 유닛은 태어날 때 한 번이 전부다. */
