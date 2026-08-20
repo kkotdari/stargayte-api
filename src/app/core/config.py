@@ -47,6 +47,21 @@ class Settings(BaseSettings):
     storage_url_path: str = "/uploads"
     public_base_url: str = "http://localhost:8000"
 
+    # ── 참값 트랙 굽기(OpenBW) ────────────────────────────────────────────────
+    # 리플레이를 실제로 시뮬레이션해 유닛의 참 자리를 뽑는다(openbw/README.md).
+    # 프론트가 커맨드에서 유추하던 트랙을 대체한다.
+    #
+    # 게임 자료(arr/*.dat, scripts/iscript.bin 따위 18MB)는 **리포에 안 넣는다** — 업로드
+    # 볼륨 안에 한 번만 올려 두고 여기로 가리킨다. 바이너리나 자료가 없으면 굽기만 조용히
+    # 건너뛰고 앱은 그대로 뜬다(프론트가 예전 길로 돌아간다).
+    openbw_enabled: bool = True
+    openbw_bin: str = "/usr/local/bin/bwdump"
+    openbw_data_root: str = "var/bwdata"
+    # 몇 프레임마다 유닛 자리를 볼 것인가. 3이면 0.13초마다 — 촘촘할수록 곱지만 짐이 무겁다.
+    openbw_step: int = 3
+    # 한 판 굽는 데 허용할 시간(초). 30분짜리 8인전이 20초쯤 걸린다 — 넉넉히 준다.
+    openbw_timeout_seconds: int = 180
+
     # 랭크 변동 기능 자체를 켜고 끄는 스위치(요청: 지금 구조가 깔끔하지 않아 일단 멈춘다).
     # 꺼 두면 ① 부팅 때 기준선을 안 깐다(손으로 비운 표가 다시 차지 않게) ② 집계 스케줄러가
     # 아예 안 뜬다 ③ 활동 목록에 카드가 안 나간다(남아 있는 행이 있어도) ④ 제어판의 수동

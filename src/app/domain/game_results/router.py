@@ -1,7 +1,7 @@
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, BackgroundTasks, Query, status
 from fastapi.responses import Response
 
 from app.api.deps import CurrentAdmin, CurrentMember, DbSession, StorageDep
@@ -39,6 +39,7 @@ from app.domain.game_results.schemas import (
     UnitTracksOut,
     UnitTracksWrite,
 )
+from app.domain.game_results import openbw
 from app.domain.game_results.service import GameResultService, to_game_result_out
 
 
@@ -377,10 +378,15 @@ async def delete_all_matches(db: DbSession, storage: StorageDep, admin: CurrentA
 
 @router.post("", response_model=GameResultOut)
 async def create_match(
-    payload: GameResultWrite, db: DbSession, storage: StorageDep, current: CurrentMember
+    payload: GameResultWrite, background: BackgroundTasks,
+    db: DbSession, storage: StorageDep, current: CurrentMember
 ) -> GameResultOut:
     service = GameResultService(db, storage)
     match = await service.create_match(payload, actor=current)
+    # 리플레이가 붙었으면 참값 트랙을 뒤에서 굽는다(openbw/README.md). 몇십 초 걸리므로
+    # 등록 응답을 붙잡지 않는다 — 실패해도 등록은 그대로다.
+    if payload.replay is not None:
+        background.add_task(openbw.bake_quietly, match.id)
     return to_game_result_out(
         match, storage, await service.alias_by_player_name(),
         actor_pk=current.pk, is_admin=current.has_any_role("0202"),
@@ -391,13 +397,19 @@ async def create_match(
 async def rewrite_summary(
     match_id: int,
     payload: SummaryRewrite,
+    background: BackgroundTasks,
     db: DbSession,
     storage: StorageDep,
     _: CurrentAdmin,
 ) -> None:
     """등록된 경기의 리플레이 파생 데이터를 다시 써 넣는다(재분석) — 경기 내용은 안 건드린다.
-    파서가 브라우저 쪽에만 있어서, 화면이 리플레이를 다시 분석해 보내온다."""
+    지표·맵 같은 파생 값은 파서가 브라우저 쪽에만 있어서 화면이 다시 읽어 보내온다.
+
+    유닛 트랙만은 여기서 서버가 직접 굽는다(openbw/README.md) — 리플레이를 **실제로
+    시뮬레이션**하므로 화면이 커맨드에서 유추하던 것보다 정확하다. 몇십 초 걸리니 응답을
+    붙잡지 않고 뒤에서 돌리고, 실패해도 재분석 자체는 성공으로 둔다."""
     await GameResultService(db, storage).rewrite_summary(match_id, payload)
+    background.add_task(openbw.bake_quietly, match_id)
 
 
 @router.get("/{match_id}", response_model=GameResultOut)

@@ -1,16 +1,20 @@
+import asyncio
 import base64
 import io
 import logging
 import re
+import tempfile
 import zipfile
 from collections import OrderedDict, defaultdict
 from datetime import UTC, date, datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pydantic import ValidationError as PydanticValidationError
 
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
+from app.domain.game_results import openbw
 from app.domain.game_results.models import (
     GameResult,
     GameResultParticipant,
@@ -1511,6 +1515,42 @@ class GameResultService:
             raise NotFoundError("경기를 찾을 수 없습니다.")
         await self._repo.upsert_unit_tracks(match_id, data)
         await self._session.commit()
+
+    async def bake_unit_tracks(self, match_id: int) -> str:
+        """리플레이를 실제로 시뮬레이션해 참값 트랙을 굽고 저장한다(openbw.py).
+
+        굽기가 안 되는 사정(덤퍼·게임 자료 없음, 리플레이 없음, 시간 초과)은 **예외로 올린다** —
+        수동으로 부른 사람은 왜 안 됐는지 알아야 하기 때문이다. 자동 굽기 쪽은 이걸 감싸서
+        조용히 삼킨다(등록이 굽기 때문에 실패하면 안 된다).
+
+        돌려주는 값은 사람에게 보일 한 줄 요약이다.
+        """
+        if not openbw.is_available():
+            raise ValidationError(openbw.unavailable_reason())
+        match = await self._repo.get(match_id)
+        if match is None:
+            raise NotFoundError("경기를 찾을 수 없습니다.")
+        replay = match.result_row.replay if match.result_row else None
+        if replay is None:
+            raise ValidationError("이 경기에는 리플레이가 없습니다.")
+
+        # 저장소가 로컬이 아닐 수도 있으니 바이트로 읽어 임시 파일에 내려놓고 돌린다 —
+        # 덤퍼는 파일 경로를 받는다. 리플레이는 수백 KB라 부담이 없다.
+        try:
+            content = await self._storage.read(replay.file_path)
+        except OSError as exc:
+            raise ValidationError(f"리플레이 파일을 읽지 못했습니다: {exc}") from exc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "match.rep"
+            await asyncio.to_thread(path.write_bytes, content)
+            data = await openbw.bake(path)
+        if data is None:
+            raise ValidationError("참값을 굽지 못했습니다. 서버 로그를 확인하세요.")
+
+        await self._repo.upsert_unit_tracks(match_id, data)
+        await self._session.commit()
+        return f"참값 트랙 {len(data) / 1_048_576:.2f}MB 를 구웠습니다."
 
     async def get_unit_tracks(self, match_id: int) -> str | None:
         """개체 트랙(v2) 조회 — 없으면 None(프론트가 토글을 감춘다)."""

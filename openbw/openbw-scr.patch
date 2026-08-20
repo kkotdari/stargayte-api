@@ -1,0 +1,949 @@
+diff --git a/actions.h b/actions.h
+index 5a0ad23..f68e3dd 100644
+--- a/actions.h
++++ b/actions.h
+@@ -3,6 +3,15 @@
+ 
+ #include "bwgame.h"
+ 
++void bwdump_resolve(int frame, bool ok, bool slot, unsigned raw);
++void bwdump_action(int id, int frame);
++void bwdump_gen(int frame, unsigned want, unsigned got, unsigned kind);
++void bwdump_why(const char* what, int step);
++void bwdump_owner(const char* what, int cmd_owner, int unit_owner);
++void bwdump_when(const char* what, int frame, int owner, int extra);
++void bwdump_gen(int frame, unsigned want, unsigned got, unsigned kind);
++extern int bwdump_cur_owner;
++
+ namespace bwgame {
+ 
+ struct action_state {
+@@ -18,7 +27,7 @@ struct action_state {
+ 	int next_action_frame = 0;
+ 
+ 	std::array<static_vector<unit_t*, 12>, 8> selection{};
+-	std::array<std::array<static_vector<unit_id, 12>, 10>, 8> control_groups{};
++	std::array<std::array<static_vector<unit_id_32, 12>, 10>, 8> control_groups{};
+ };
+ 
+ static inline action_state copy_state(const action_state& action_st, const state& source_st, const state& dest_st) {
+@@ -66,7 +75,7 @@ struct action_functions: state_functions {
+ 	}
+ 
+ 	auto control_group(int owner, size_t group_n) const {
+-		return make_filter_range(make_transform_range(action_st.control_groups.at(owner).at(group_n), [this](unit_id u) {
++		return make_filter_range(make_transform_range(action_st.control_groups.at(owner).at(group_n), [this](unit_id_32 u) {
+ 			return get_unit(u);
+ 		}), [](unit_t* u) {
+ 			return u != nullptr;
+@@ -331,21 +340,27 @@ struct action_functions: state_functions {
+ 	}
+ 
+ 	bool action_train(int owner, const unit_type_t* unit_type) {
++		/* 왜 헛도나 — 어느 관문에서 막히는지 센다(BWDUMP_WHY). */
++		bwdump_why("train", 0);
++		bwdump_when("train", (int)st.current_frame, owner, -1);
++		bwdump_owner("train#in", owner, -1);
+ 		unit_t* u = get_single_selected_unit(owner);
+-		if (!u) return false;
+-		if (u->owner != owner) return false;
+-		if (!unit_can_build(u, unit_type)) return false;
+-		if (unit_type->id > UnitTypes::Spell_Disruption_Web) return false;
+-		if (!build_queue_push(u, unit_type)) return false;
++		if (!u) { bwdump_why("train", 1); bwdump_owner("train#nosel", owner, -1); bwdump_when("train:고른게없다", (int)st.current_frame, owner, (int)action_st.selection.at(owner).size()); return false; }
++		if (u->owner != owner) { bwdump_why("train", 2); bwdump_owner("train", owner, u->owner); bwdump_when("train:남의유닛", (int)st.current_frame, owner, u->owner); return false; }
++		if (!unit_can_build(u, unit_type)) { bwdump_why("train", 3); return false; }
++		if (unit_type->id > UnitTypes::Spell_Disruption_Web) { bwdump_why("train", 4); return false; }
++		if (!build_queue_push(u, unit_type)) { bwdump_why("train", 5); return false; }
+ 		set_secondary_order(u, get_order_type(Orders::Train));
+ 		return true;
+ 	}
+ 
+ 	bool action_build(int owner, const order_type_t* order_type, const unit_type_t* unit_type, xy_t<size_t> tile_pos) {
++		bwdump_why("build", 0);
++		bwdump_when("build", (int)st.current_frame, owner, -1);
+ 		unit_t* u = get_single_selected_unit(owner);
+-		if (!u) return false;
+-		if (u->owner != owner) return false;
+-		if (!unit_build_order_valid(u, order_type, unit_type, owner)) return false;
++		if (!u) { bwdump_why("build", 1); bwdump_when("build:고른게없다", (int)st.current_frame, owner, (int)action_st.selection.at(owner).size()); return false; }
++		if (u->owner != owner) { bwdump_why("build", 2); bwdump_owner("build", owner, u->owner); bwdump_when("build:남의유닛", (int)st.current_frame, owner, u->owner); return false; }
++		if (!unit_build_order_valid(u, order_type, unit_type, owner)) { bwdump_why("build", 3); return false; }
+ 		if (ut_addon(unit_type)) {
+ 			xy pos(int(32 * tile_pos.x) + unit_type->placement_size.x / 2, int(32 * tile_pos.y) + unit_type->placement_size.y / 2);
+ 			if (can_place_building(u, owner, unit_type, pos, false, false)) {
+@@ -1008,11 +1023,136 @@ struct action_functions: state_functions {
+ 		static_vector<unit_t*, 12> units;
+ 		for (size_t i = 0; i != n; ++i) {
+ 			auto uid = unit_id(r.template get<uint16_t>());
++			bwdump_resolve((int)st.current_frame, !!get_unit(uid), !!get_unit((size_t)(uid.index() - 1)), (unsigned)uid.raw_value);
+ 			units.push_back(get_unit(uid));
+ 		}
+ 		return action_select(owner, units);
+ 	}
+ 
++	/* 리마스터(1.21+)의 유닛 태그를 우리 유닛으로 옮긴다.
++	 *
++	 *  옛 태그는 `(index+1) | (generation << 11)`인 16비트였다. 리마스터는 32비트로 넓히면서
++	 *  **칸의 폭과 시작점을 함께 바꿨다**: index 칸이 13비트가 되고, 그 값이 1700(유닛 배열
++	 *  크기)만큼 밀려 있다. 곧
++	 *      태그 = (index + 1 + 1700) | (generation << 13)
++	 *  이다. 이 자리를 옛 규약으로 읽으면 index가 엉뚱한 곳(1700 남짓 위)을 가리켜, 고르기가
++	 *  **늘 빈손**이 되고 그러면 명령이 다 실행되는데도 아무 일이 안 일어난다.
++	 *
++	 *  어떻게 알아냈나 — 같은 지도(UGL 17 Anti-Hack)의 1.16 판과 리마스터 판을 나란히 돌렸다.
++	 *  1.16의 태그는 우리 id와 **한 자리도 안 틀리고** 같았고(3255·3256·3269…), 리마스터의
++	 *  태그는 임자가 누구든 정확히 **7844**만큼 컸다. 7844 = 1700 + 4×2048 − 2048×1 이므로
++	 *  위 식으로 떨어지고, 다른 지도(New Super빠른무한)에서도 그대로 맞았다. */
++	unit_t* get_unit_scr(uint32_t raw) const {
++		/* 리마스터의 32비트 태그 = (자리 + 1) | (세대 << 13).
++		   옛 16비트 태그는 자리 칸이 11비트였는데, 리마스터는 유닛 그릇을 3400칸으로
++		   늘리면서 자리 칸도 13비트로 넓혔다(그릇 크기는 리플레이의 LMTS 구획에 적혀 있다).
++		   그릇을 1700칸으로 두면 자리 번호가 `크기 − 몇째`라서 **모든 번호가 1700씩
++		   어긋난다** — 그래서 초반에는 맞다가 유닛이 늘수록 명령이 헛돌았다. */
++		size_t idx = (size_t)(raw & 0x1fff);
++		if (!idx) return nullptr;
++		unit_t* u = get_unit(idx - 1);
++		bool ok = false;
++		/* 세대 셈 후보(BWDUMP_GENRULE): 0=그대로 1=아무거나 2=만들때+죽을때 둘 다 셈
++		   3=±1까지 봐줌 */
++		const unsigned g_want = raw >> 13;
++		const unsigned g_have = u ? u->unit_id_generation % (1u << 19) : 0;
++		const int rule9 = getenv("BWDUMP_GENRULE") ? atoi(getenv("BWDUMP_GENRULE")) : 0;
++		if (u) {
++			if (getenv("BWDUMP_ANYGEN") || rule9 == 1) ok = true;
++			else if (rule9 == 2) ok = (g_want == (g_have ? g_have * 2 - 1 : 0));
++			else if (rule9 == 3) ok = (g_want + 1 >= g_have && g_have + 1 >= g_want);
++			else ok = (g_have == g_want);
++		}
++		/* 고르기가 맞았는지 늘 센다(싸다) — 이 비율이 곧 **시뮬이 아직 실제 게임과 같은가**를
++		   말해 준다. 떨어지기 시작한 시각 뒤로는 참값을 믿으면 안 된다. */
++		bwdump_resolve((int)st.current_frame, ok, !!u, raw);
++		if (u && getenv("BWDUMP_GEN"))
++			::bwdump_gen((int)st.current_frame, raw >> 13,
++				u->unit_id_generation % (1u << 19), (unsigned)u->unit_type->id);
++		return ok ? u : nullptr;
++	}
++
++	/* ── 리마스터(1.21+)의 명령 여섯 ── 0x60~0x65는 옛 0x14·0x15·0x18·0x09·0x0a·0x0b와
++	   하는 일이 같고, **유닛 태그가 16비트가 아니라 32비트**인 것만 다르다.
++	   (screp은 그 뒤 절반을 "Unknown, always 0?"로 건너뛰지만, 실제로는 세대(generation)가
++	   그 위쪽 비트에 실리는 확장 태그다 — OpenBW의 unit_id_32가 바로 그 꼴이고, 아래
++	   변환도 그것을 쓴다. 16비트만 읽고 나머지를 버리면 세대가 안 맞아 get_unit이 늘
++	   nullptr을 돌려주고, 그러면 **명령은 실행되는데 아무 일도 안 일어난다**.)
++	   1.21부터는 이 여섯만 쓰이므로, 없으면 요즘 리플레이는 첫 명령에서 죽는다. */
++	template<typename reader_T>
++	bool read_action_default_order_121(int owner, reader_T&& r) {
++		int x = r.template get<int16_t>();
++		int y = r.template get<int16_t>();
++		unit_t* target = get_unit_scr(r.template get<uint32_t>());
++		UnitTypes target_unit_type_id = (UnitTypes)r.template get<uint16_t>();
++		const unit_type_t* target_unit_type = target_unit_type_id == UnitTypes::None ? nullptr : get_unit_type(target_unit_type_id);
++		bool queue = r.template get<uint8_t>() != 0;
++		if (target && !ut_building(target) && target->owner < 11) {
++			::bwdump_aim((int)st.current_frame, x - target->sprite->position.x, y - target->sprite->position.y);
++			::bwdump_aim_big((int)st.current_frame, (unsigned)((target->index + 1) | ((target->unit_id_generation % (1u << 19)) << 13)),
++				(int)target->unit_type->id, (int)target->owner,
++				target->sprite->position.x, target->sprite->position.y, x, y);
++		}
++		if (getenv("BWDUMP_CMD")) { static int n=0; if (n++<12) fprintf(stderr, "  0x60 %6d프레임 임자%d x=%d y=%d 표적종류=%d 대기=%d\n", (int)st.current_frame, owner, x, y, (int)target_unit_type_id, (int)queue); }
++		return action_default_order(owner, {x, y}, target, target_unit_type, queue);
++	}
++	template<typename reader_T>
++	bool read_action_order_121(int owner, reader_T&& r) {
++		int x = r.template get<int16_t>();
++		int y = r.template get<int16_t>();
++		unit_t* target = get_unit_scr(r.template get<uint32_t>());
++		UnitTypes target_unit_type_id = (UnitTypes)r.template get<uint16_t>();
++		const unit_type_t* target_unit_type = target_unit_type_id == UnitTypes::None ? nullptr : get_unit_type(target_unit_type_id);
++		Orders order_id = (Orders)r.template get<uint8_t>();
++		const order_type_t* order_type = get_order_type(order_id);
++		bool queue = r.template get<uint8_t>() != 0;
++		if (target && !ut_building(target) && target->owner < 11) {
++			::bwdump_aim((int)st.current_frame, x - target->sprite->position.x, y - target->sprite->position.y);
++			::bwdump_aim_big((int)st.current_frame, (unsigned)((target->index + 1) | ((target->unit_id_generation % (1u << 19)) << 13)),
++				(int)target->unit_type->id, (int)target->owner,
++				target->sprite->position.x, target->sprite->position.y, x, y);
++		}
++		return action_order(owner, order_type, {x, y}, target, target_unit_type, queue);
++	}
++	template<typename reader_T>
++	bool read_action_unload_121(int owner, reader_T&& r) {
++		unit_t* target = get_unit_scr(r.template get<uint32_t>());
++		return action_unload(owner, target);
++	}
++
++	/* ── 리마스터(1.21+)의 고르기 셋 ── 0x63·0x64·0x65는 0x09·0x0a·0x0b와 하는 일이
++	   같지만 **유닛 하나에 4바이트**를 쓴다: 태그(uint16) 뒤에 늘 0인 uint16이 붙는다
++	   (icza/screp의 repparser가 그 자리를 "Unknown, always 0?"로 건너뛴다).
++	   1.21부터 이 셋만 쓰이므로, 이것이 없으면 요즘 리플레이는 첫 고르기에서 죽는다. */
++	template<typename reader_T>
++	static_vector<unit_t*, 12> read_selection_121(reader_T&& r, int owner9 = -1) {
++		size_t n = r.template get<uint8_t>();
++		if (n > 12) error("invalid selection of %d units", n);
++		static_vector<unit_t*, 12> units;
++		for (size_t i = 0; i != n; ++i) {
++			const uint32_t raw9 = r.template get<uint32_t>();
++			unit_t* u9 = get_unit_scr(raw9);
++			/* 고른 유닛의 임자가 명령 낸 사람과 다르면 그 순간 이미 어긋난 것이다 —
++			   사람은 제 유닛을 고른다. 고르기 적중률보다 훨씬 촘촘한 탐지기다. */
++			if (u9 && owner9 >= 0) ::bwdump_selown((int)st.current_frame, owner9,
++				(int)u9->owner, (int)u9->unit_type->id, raw9);
++			units.push_back(u9);
++		}
++		return units;
++	}
++	template<typename reader_T>
++	bool read_action_select_121(int owner, reader_T&& r) {
++		return action_select(owner, read_selection_121(std::forward<reader_T>(r), owner));
++	}
++	template<typename reader_T>
++	bool read_action_shift_select_121(int owner, reader_T&& r) {
++		return action_shift_select(owner, read_selection_121(std::forward<reader_T>(r), owner));
++	}
++	template<typename reader_T>
++	bool read_action_deselect_121(int owner, reader_T&& r) {
++		return action_deselect(owner, read_selection_121(std::forward<reader_T>(r)));
++	}
++
+ 	template<typename reader_T>
+ 	bool read_action_shift_select(int owner, reader_T&& r) {
+ 		size_t n = r.template get<uint8_t>();
+@@ -1340,15 +1480,41 @@ struct action_functions: state_functions {
+ 	bool read_action(reader_T&& r) {
+ 		int player_id = r.template get<uint8_t>();
+ 		auto i = std::find(action_st.player_id.begin(), action_st.player_id.end(), player_id);
+-		if (i == action_st.player_id.end()) error("execute_action: player id %d not found", player_id);
++		if (i == action_st.player_id.end()) {
++			/* 관전자다. 리마스터 리플레이에는 임자 번호 128 이상인 사람이 섞이는데,
++			   이들이 내는 것은 **채팅과 미니맵 찍기뿐**이라 게임에 아무 영향이 없다.
++			   그런데 여기서 죽으면 그 판을 통째로 못 읽는다(228판 중 49판이 그랬다).
++			   바이트만 제대로 먹어 치우고 넘어간다. 그 밖의 명령이면 그때는 죽는다 —
++			   조용히 건너뛰면 그 뒤 명령이 통째로 어긋나기 때문이다. */
++			int action_id = r.template get<uint8_t>();
++			if (action_id == 92) { r.template get<std::array<uint8_t, 81>>(); return true; }
++			if (action_id == 88) { r.template get<uint16_t>(); r.template get<uint16_t>(); return true; }
++			if (action_id == 87) { r.template get<uint8_t>(); return true; }
++			error("execute_action: player id %d not found (명령 %d)", player_id, action_id);
++		}
+ 		int owner = (int)(i - action_st.player_id.begin());
+ 		return read_action(owner, r);
+ 	}
+ 	template<typename reader_T>
+ 	bool read_action(int owner, reader_T&& r) {
+ 		int action_id = r.template get<uint8_t>();
++		bwdump_action(action_id, (int)st.current_frame);
++		bwdump_cur_owner = owner;
+ 		on_action(owner, action_id);
+ 		switch (action_id) {
++		// 리마스터(1.21+)의 명령 여섯 — 위 머리말을 보라.
++		case 96:
++			return read_action_default_order_121(owner, r);
++		case 97:
++			return read_action_order_121(owner, r);
++		case 98:
++			return read_action_unload_121(owner, r);
++		case 99:
++			return read_action_select_121(owner, r);
++		case 100:
++			return read_action_shift_select_121(owner, r);
++		case 101:
++			return read_action_deselect_121(owner, r);
+ 		case 9:
+ 			return read_action_select(owner, r);
+ 		case 10:
+@@ -1454,11 +1620,16 @@ struct action_functions: state_functions {
+ 	}
+ 
+ 	void execute_actions(uint8_t* actions_data_begin, uint8_t* actions_data_end) {
+-		if (st.current_frame != action_st.next_action_frame) return;
++		/* 명령 실행 시점 밀기(시험용) — BWDUMP_LAG로 프레임을 앞뒤로 민다. 리마스터가
++		   지연(latency)을 바꿨다면 이 값을 맞췄을 때 어긋남이 사라져야 한다. */
++		const int lag9 = getenv("BWDUMP_LAG") ? atoi(getenv("BWDUMP_LAG")) : 0;
++		/* 앞뒤 어느 쪽으로 밀어도 돌게 — 예전에는 == 비교라 양수 쪽에서 첫 묶음을
++		   영영 못 집고 아무 명령도 안 돌았다(0% 나오던 이유). */
++		if (st.current_frame + lag9 < action_st.next_action_frame) return;
+ 		while (action_st.actions_data_position != size_t(actions_data_end - actions_data_begin)) {
+ 			data_loading::data_reader_le r(actions_data_begin + action_st.actions_data_position, actions_data_end);
+ 			int frame = r.get<int32_t>();
+-			if (frame != st.current_frame) {
++			if (frame > st.current_frame + lag9) {
+ 				action_st.next_action_frame = frame;
+ 				return;
+ 			}
+diff --git a/bwgame.h b/bwgame.h
+index 4cd76d6..5dfd983 100644
+--- a/bwgame.h
++++ b/bwgame.h
+@@ -9,11 +9,30 @@
+ #include "korean.h"
+ 
+ #include <algorithm>
++#include <set>
+ #include <utility>
+ #include <cstdlib>
+ #include <cmath>
+ #include <functional>
+ 
++void bwdump_trig(int type);
++
++/* 그릇 한도 — 판마다 다르다. 요즘 리플레이(1.21+)의 LMTS 구획에 적힌 값이 곧 이것이고,
++   1.16.1의 두 배다. 유닛 자리 번호가 `한도 − 몇째`로 매겨지므로 이 수가 틀리면 명령이
++   가리키는 유닛 번호가 통째로 어긋난다. */
++struct bw_limits_t {
++	size_t units = 1700, bullets = 100, sprites = 2500, images = 5000, orders = 2000, thingies = 500;
++};
++extern bw_limits_t bw_limits;
++void bwdump_fail(const char* why, int frame, int id);
++void bwdump_aiorder(const char* name);
++void bwdump_trigmiss(int kind, int id);
++void bwdump_aim(int frame, int dx, int dy);
++void bwdump_selown(int frame, int cmd_owner, int unit_owner, int kind, unsigned tag);
++void bwdump_aim_big(int frame, unsigned tag, int kind, int owner, int ox, int oy, int rx, int ry);
++void bwdump_rng(int source, int frame);
++void bwdump_ord(int id, int frame);
++
+ namespace bwgame {
+ 
+ static const std::array<unsigned int, 64> tan_table = {
+@@ -296,17 +315,17 @@ struct state_base_non_copyable {
+ 	intrusive_list<unit_t, void, &unit_t::cloaked_unit_link> cloaked_units;
+ 	intrusive_list<unit_t, psionic_matrix_link_f> psionic_matrix_units;
+ 
+-	object_container<unit_t, 1700, 17> units_container;
++	object_container<unit_t, 3400, 17> units_container;
+ 
+ 	intrusive_list<bullet_t, default_link_f> active_bullets;
+-	object_container<bullet_t, 100, 10> bullets_container;
++	object_container<bullet_t, 400, 10> bullets_container;
+ 
+ 	a_vector<intrusive_list<sprite_t, default_link_f>> sprites_on_tile_line;
+-	object_container<sprite_t, 2500, 25> sprites_container;
++	object_container<sprite_t, 5000, 25> sprites_container;
+ 
+-	object_container<image_t, 5000, 50> images_container;
++	object_container<image_t, 10000, 50> images_container;
+ 
+-	object_container<order_t, 2000, 20> orders_container;
++	object_container<order_t, 4000, 20> orders_container;
+ 
+ 	intrusive_list<path_t, default_link_f> free_paths;
+ 	a_list<path_t> paths;
+@@ -630,24 +649,25 @@ struct state_functions {
+ 		return u;
+ 	}
+ 
+-	template<typename T>
+-	unit_t* get_unit(unit_id_t<T> id) const {
++	template<typename T, size_t B>
++	unit_t* get_unit(unit_id_t<T, B> id) const {
+ 		size_t idx = id.index();
+ 		if (!idx) return nullptr;
+ 		unit_t* u = get_unit(idx - 1);
+ 		if (!u) return nullptr;
+-		if (u->unit_id_generation % (1u << (int_bits<T>::value - 11)) != id.generation()) return nullptr;
++		if (u->unit_id_generation % (1u << (int_bits<T>::value - B)) != id.generation()) return nullptr;
+ 		return u;
+ 	}
+ 
+-	unit_id get_unit_id(const unit_t* u) const {
+-		if (!u) return unit_id{};
+-		return unit_id(u->index + 1, u->unit_id_generation % (1u << 5));
++	/* 엔진 속에서 유닛을 가리킬 때 쓰는 번호 — 자리 칸을 13비트로 넓힌 32비트 꼴을 쓴다.
++	   그래야 리마스터의 3400칸 그릇에서도 번호가 안 잘린다. */
++	unit_id_32 get_unit_id(const unit_t* u) const {
++		if (!u) return unit_id_32{};
++		return unit_id_32(u->index + 1, u->unit_id_generation % (1u << 19));
+ 	}
+ 
+ 	unit_id_32 get_unit_id_32(const unit_t* u) const {
+-		if (!u) return unit_id_32{};
+-		return unit_id_32(u->index + 1, u->unit_id_generation % (1u << 21));
++		return get_unit_id(u);
+ 	}
+ 
+ 	bool is_in_map_bounds(const unit_type_t* unit_type, xy pos) const {
+@@ -2623,6 +2643,16 @@ struct state_functions {
+ 	}
+ 
+ 	void kill_unit(unit_t* u) {
++		/* 첫 죽음들이 진짜 전사인지 본다 — 피가 0이면 맞아 죽은 것이고, 남아 있으면
++		   무언가가 걷어낸 것이다(트리거·변태·태우기 따위). */
++		if (getenv("BWDUMP_KILL")) {
++			static int n9 = 0;
++			if (n9++ < 30) fprintf(stderr, "  KILL %7.1f초 임자%d 종류%d 피%d/%d 방패%d 명령%d 자리(%d,%d)\n",
++				(int)st.current_frame / 23.81, (int)u->owner, (int)u->unit_type->id,
++				(int)(u->hp.raw_value >> 8), (int)(u->unit_type->hitpoints.raw_value >> 8),
++				(int)(u->shield_points.raw_value >> 8), (int)u->order_type->id,
++				u->sprite ? u->sprite->position.x : -1, u->sprite ? u->sprite->position.y : -1);
++		}
+ 		drop_carried_items(u);
+ 		while (!u->order_queue.empty()) {
+ 			remove_queued_order(u, &u->order_queue.front());
+@@ -3129,7 +3159,7 @@ struct state_functions {
+ 					break;
+ 				}
+ 			}
+-			container->loaded_units.at(index) = unit_id();
++			container->loaded_units.at(index) = unit_id_32();
+ 			u->connected_unit = nullptr;
+ 			u_unset_status_flag(u, unit_t::status_flag_loaded);
+ 
+@@ -7729,7 +7759,12 @@ struct state_functions {
+ 			order_ResetHarvestCollision(u);
+ 			break;
+ 		case Orders::CTFCOP2:
+-			error("CTFCOP2");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("CTFCOP2");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::SelfDestructing:
+ 			order_SelfDestructing(u);
+@@ -8071,28 +8106,63 @@ struct state_functions {
+ 			order_Patrol(u);
+ 			break;
+ 		case Orders::CTFCOPInit:
+-			error("CTFCOPInit");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("CTFCOPInit");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::CTFCOP2:
+ 			error("CTFCOP2");
+ 			break;
+ 		case Orders::ComputerAI:
+-			error("ComputerAI");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("ComputerAI");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::AtkMoveEP:
+-			error("AtkMoveEP");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("AtkMoveEP");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::HarassMove:
+-			error("HarassMove");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("HarassMove");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::AIPatrol:
+-			error("AIPatrol");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("AIPatrol");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::GuardPost:
+-			error("GuardPost");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("GuardPost");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::RescuePassive:
+-			error("RescuePassive");
++			/* 컴퓨터 AI 계열 명령 — OpenBW에 구현이 없다. 예전에는 여기서 죽어 리플레이를
++			   통째로 못 읽었다. 사람 경기에는 안 나오지만, 지도가 놓아 준 유닛이나 중립이
++			   이 명령을 받는 판이 있다. 죽는 대신 '가만히'로 돌리고 몇 번 났는지 센다 —
++			   많이 나면 그 판의 참값은 못 믿는다(덤퍼가 알려 준다). */
++			::bwdump_aiorder("RescuePassive");
++			set_unit_order(u, u->unit_type->return_to_idle);
+ 			break;
+ 		case Orders::Neutral:
+ 			order_Neutral(u);
+@@ -10756,7 +10826,7 @@ struct state_functions {
+ 			st.free_paths.pop_front();
+ 			return r;
+ 		}
+-		if (st.paths.size() >= 1024) return nullptr;
++		if (st.paths.size() >= 1024) { ::bwdump_fail("길찾기 경로가 꽉 참", (int)st.current_frame, 0); return nullptr; }
+ 		return &*st.paths.emplace(st.paths.end());
+ 	}
+ 
+@@ -13104,6 +13174,7 @@ struct state_functions {
+ 	}
+ 
+ 	void process_triggers() {
++		if (getenv("BWDUMP_TRIG")) { ::bwdump_trig(-1); }
+ 		int timer_step = 42;
+ 
+ 		for (size_t i = 0; i != 12; ++i) {
+@@ -13195,6 +13266,17 @@ struct state_functions {
+ 	}
+ 
+ 	int lcg_rand(int source) {
++		/* 시험용 — 정해진 프레임에서 난수를 딱 한 번 더 뽑아 흐름을 한 칸 민다.
++		   '아주 작은 오차 하나가 눈에 보이기까지 얼마나 걸리나'를 재는 데 쓴다. */
++		if (getenv("BWDUMP_KICK")) {
++			static int kicked = 0;
++			const int kf = atoi(getenv("BWDUMP_KICK"));
++			if (!kicked && (int)st.current_frame >= kf) {
++				kicked = 1;
++				st.lcg_rand_state = st.lcg_rand_state * 22695477 + 1;
++			}
++		}
++		if (getenv("BWDUMP_RNG")) ::bwdump_rng(source, (int)st.current_frame);
+ 		++st.random_counts[source];
+ 		++st.total_random_counts;
+ 		st.lcg_rand_state = st.lcg_rand_state * 22695477 + 1;
+@@ -14492,10 +14574,14 @@ struct state_functions {
+ 	}
+ 
+ 	bullet_t* create_bullet(const weapon_type_t* weapon_type, unit_t* source_unit, xy pos, int owner, direction_t heading) {
+-		if (weapon_type->id == WeaponTypes::Halo_Rockets && st.active_bullets_size >= 80) return nullptr;
++		/* 발키리 로켓만 걸리는 문턱 — 원판에서 총알 그릇 100칸의 8할이다. 리마스터는 그릇을
++		   400칸으로 늘렸으니 문턱도 같은 비율로 따라가야 한다. 80으로 두면 발키리가 실제보다
++		   덜 쏘고, 그 판의 전투 결과가 갈린다. */
++		if (weapon_type->id == WeaponTypes::Halo_Rockets
++			&& st.active_bullets_size >= (getenv("BWHALO") ? atoi(getenv("BWHALO")) : (int)(::bw_limits.bullets * 8 / 10))) return nullptr;
+ 		if (u_cannot_attack(source_unit) && !is_spell(weapon_type)) return nullptr;
+ 		bullet_t* b = st.bullets_container.top();
+-		if (!b) return nullptr;
++		if (!b) { ::bwdump_fail("총알 그릇이 꽉 참", (int)st.current_frame, (int)weapon_type->id); return nullptr; }
+ 		if (!initialize_bullet(b, weapon_type, source_unit, pos, owner, heading)) {
+ 			return nullptr;
+ 		}
+@@ -14539,7 +14625,7 @@ struct state_functions {
+ 			st.free_thingies.pop_front();
+ 			return r;
+ 		}
+-		if (st.thingies.size() >= 500) return nullptr;
++		if (st.thingies.size() >= ::bw_limits.thingies) { ::bwdump_fail("thingy 그릇이 꽉 참", (int)st.current_frame, 0); return nullptr; }
+ 		return &*st.thingies.emplace(st.thingies.end());
+ 	}
+ 
+@@ -15271,7 +15357,7 @@ struct state_functions {
+ 		if (!image_type)  error("attempt to create image of null type");
+ 
+ 		image_t* image = st.images_container.top();
+-		if (!image) return nullptr;
++		if (!image) { ::bwdump_fail("이미지 그릇이 꽉 참", -1, (int)image_type->id); return nullptr; }
+ 		st.images_container.pop();
+ 
+ 		if (sprite->images.empty()) {
+@@ -15307,7 +15393,7 @@ struct state_functions {
+ 		if (!sprite_type)  error("attempt to create sprite of null type");
+ 
+ 		sprite_t* sprite = st.sprites_container.top();
+-		if (!sprite) return nullptr;
++		if (!sprite) { ::bwdump_fail("스프라이트 그릇이 꽉 참", -1, (int)sprite_type->id); return nullptr; }
+ 		st.sprites_container.pop();
+ 
+ 		auto initialize_sprite = [&]() {
+@@ -16322,14 +16408,17 @@ struct state_functions {
+ 			unit_t* u = st.units_container.top();
+ 			if (!u) {
+ 				st.last_error = 61; // Cannot create more units
++				::bwdump_fail("유닛 그릇이 꽉 참", (int)st.current_frame, (int)unit_type->id);
+ 				return (unit_t*)nullptr;
+ 			}
+ 			if (!is_in_map_bounds(unit_type, pos)) {
+ 				st.last_error = 0;
++				::bwdump_fail("지도 밖", (int)st.current_frame, (int)unit_type->id);
+ 				return (unit_t*)nullptr;
+ 			}
+ 			if (!initialize_unit(u, unit_type, pos, owner)) {
+ 				st.last_error = 62; // Unable to create unit
++				::bwdump_fail("만들기 실패(스프라이트·이미지?)", (int)st.current_frame, (int)unit_type->id);
+ 				return (unit_t*)nullptr;
+ 			}
+ 			st.units_container.pop();
+@@ -16778,7 +16867,7 @@ struct state_functions {
+ 
+ 	order_t* create_order(const order_type_t* order_type, order_target_t target) {
+ 		order_t* o = st.orders_container.top();
+-		if (!o) return nullptr;
++		if (!o) { ::bwdump_fail("명령 그릇이 꽉 참", (int)st.current_frame, 0); return nullptr; }
+ 		st.orders_container.pop();
+ 		++st.active_orders_size;
+ 		o->order_type = order_type;
+@@ -16848,7 +16937,7 @@ struct state_functions {
+ 			}
+ 		}
+ 		if (queue) {
+-			if (u->order_queue_count < 8 && st.active_orders_size < 1800) {
++			if (u->order_queue_count < 8 && st.active_orders_size < (int)::bw_limits.orders - 200) {
+ 				queue_order_back(u, order_type, target);
+ 			}
+ 		} else {
+@@ -17206,7 +17295,12 @@ struct state_functions {
+ 			else set_unit_order(u, u->unit_type->human_ai_idle);
+ 		}
+ 		if (ut_flag(u, (unit_type_t::flags_t)0x800)) {
+-			error("fixme unknown flag");
++			/* units.dat의 0x800 깃발 — OpenBW가 뜻을 안 적어 두고 error로 죽는다.
++			   지도가 놓아 준 특수 유닛에 붙어 있는 판이 있어서, 그것 때문에 리플레이를
++			   통째로 못 읽었다. 무슨 유닛인지만 남기고 넘어간다. */
++			static std::set<int> seen9;
++			if (seen9.insert((int)u->unit_type->id).second)
++				fprintf(stderr, "  ⚠ units.dat 0x800 깃발 — 종류 %d (넘어감)\n", (int)u->unit_type->id);
+ 		}
+ 		u->air_strength = get_unit_strength(u, false);
+ 		u->ground_strength = get_unit_strength(u, true);
+@@ -18896,8 +18990,13 @@ struct state_functions {
+ 			return trigger_count_comparison(c, trigger_opponent_count(owner, c.group));
+ 		case 22: // always
+ 			return true;
++		case 23: // never
++			return false;
+ 		default:
+-			error("unknown trigger condition %d\n", c.type);
++			/* 안 만든 조건 — 예전에는 여기서 죽어 리플레이를 통째로 못 읽었다.
++			   'Deaths'(15) 같은 것은 무한·EUD 지도가 계수기로 흔히 쓴다. 죽는 대신
++			   '아니다'로 넘기고 몇 번 났는지 센다 — 덤퍼가 끝에 알려 준다. */
++			::bwdump_trigmiss(1, (int)c.type);
+ 			return false;
+ 		}
+ 	}
+@@ -19039,6 +19138,7 @@ struct state_functions {
+ 	};
+ 
+ 	bool execute_trigger_action(execute_trigger_struct& ets, int owner, running_trigger& rt, running_trigger::action& ra, const trigger::action& a) {
++		if (getenv("BWDUMP_TRIG")) { ::bwdump_trig((int)a.type); }
+ 		switch (a.type) {
+ 		case 1: // victory
+ 			if (st.players[owner].controller == player_t::controller_occupied || st.players[owner].controller == player_t::controller_computer_game) {
+@@ -19299,8 +19399,9 @@ struct state_functions {
+ 			}
+ 			return true;
+ 		default:
+-			error("unknown trigger action %d", a.type);
+-			return false;
++			/* 안 만든 동작 — 위 조건과 같은 이유로 죽이지 않는다. */
++			::bwdump_trigmiss(2, (int)a.type);
++			return true;
+ 		}
+ 	}
+ 
+@@ -19559,7 +19660,7 @@ struct state_copier {
+ 	state_functions funcs;
+ 	state_copier(const state&st, state& r) : st(st), r(r), funcs(r) {}
+ 
+-	std::array<bool, 1700> unit_copied{};
++	std::array<bool, 3400> unit_copied{};
+ 	std::array<bool, 100> bullet_copied{};
+ 	std::array<bool, 2500> sprite_copied{};
+ 	std::array<bool, 5000> image_copied{};
+@@ -19953,19 +20054,24 @@ struct game_load_functions : state_functions {
+ 		for (auto& v : st.player_units) v.clear();
+ 
+ 		st.units_container = {};
++		st.units_container.limit = ::bw_limits.units;
+ 
+ 		st.active_bullets_size = 0;
+ 		st.active_bullets.clear();
+ 		st.bullets_container = {};
++		st.bullets_container.limit = ::bw_limits.bullets;
+ 
+ 		st.sprites_container = {};
++		st.sprites_container.limit = ::bw_limits.sprites;
+ 		st.sprites_on_tile_line.clear();
+ 		st.sprites_on_tile_line.resize(game_st.map_tile_height);
+ 
+ 		st.images_container = {};
++		st.images_container.limit = ::bw_limits.images;
+ 
+ 		st.active_orders_size = 0;
+ 		st.orders_container = {};
++		st.orders_container.limit = ::bw_limits.orders;
+ 
+ 		st.active_thingies_size = 0;
+ 		st.active_thingies.clear();
+@@ -21307,6 +21413,30 @@ struct game_load_functions : state_functions {
+ 				}
+ 			}
+ 		};
++		/* STRx — 리마스터(1.21+)가 더한 **확장 문자열 청크**다. 옛 STR 와 짜임새는 같은데
++		   개수와 오프셋이 16비트가 아니라 32비트다(문자열이 65535개를 넘는 지도 때문에
++		   생겼다). 요즘 편집기로 저장한 지도는 STR 대신 이것만 갖고 있어서, 안 받으면
++		   "map is missing required chunk 'STR '"로 리플레이를 통째로 못 읽는다. */
++		tag_funcs["STRx"] = [&](data_reader_le r) {
++			if (r.left() < 4) return;
++			auto start = r;
++			size_t num = r.get<uint32_t>();
++			if (num > r.left() / 4) num = r.left() / 4;
++			game_st.map_strings.clear();
++			game_st.map_strings.resize(num);
++			for (size_t i = 0; i != num; ++i) {
++				size_t offset = r.get<uint32_t>();
++				auto t = start;
++				if (offset < t.left()) {
++					t.skip(offset);
++					char* b = (char*)t.ptr;
++					while (t.get<char>());
++					game_st.map_strings[i] = a_string(b, (char*)t.ptr - b - 1);
++				} else {
++					game_st.map_strings[i] = "<invalid string offset>";
++				}
++			}
++		};
+ 		tag_funcs["SPRP"] = [&](data_reader_le r) {
+ 			game_st.scenario_name = get_map_string(r.get<uint16_t>());
+ 			game_st.scenario_description = get_map_string(r.get<uint16_t>());
+@@ -21770,11 +21900,14 @@ struct game_load_functions : state_functions {
+ 			{"ERA ", true},
+ 			{"OWNR", true},
+ 			{"SIDE", true},
+-			{"STR ", true},
++			{"STRx", false},
++			{"STR ", false},
+ 			{"SPRP", true},
+ 			{"FORC", true},
+ 			{"VCOD", true}
+ 		});
++		/* 둘 중 하나는 반드시 있어야 한다 */
++		if (game_st.map_strings.empty()) error("map is missing both 'STR ' and 'STRx' chunks");
+ 
+ 		reset();
+ 
+@@ -21808,7 +21941,8 @@ struct game_load_functions : state_functions {
+ 		if (version == 59 || version == 63) {
+ 			if (use_map_settings) {
+ 				read_chunks({
+-					{"STR ", true},
++					{"STRx", false},
++			{"STR ", false},
+ 					{"MTXM", true},
+ 					{"THG2", true},
+ 					{"MASK", true},
+@@ -21830,16 +21964,21 @@ struct game_load_functions : state_functions {
+ 				});
+ 			} else {
+ 				read_chunks({
+-					{"STR ", true},
++					{"STRx", false},
++			{"STR ", false},
+ 					{"MTXM", true},
+ 					{"THG2", true},
+ 					{"UNIT", true}
+ 				});
+ 			}
+-		} else if (version == 205) {
++		} else if (version == 205 || version == 206) {
++			/* 206은 리마스터가 쓰는 지도 판본이다. 청크 짜임새는 브루드워(205)와 같고,
++			   문자열만 STRx(32비트)로 바뀐다 — 위 STRx 주석 참고. 안 받으면 요즘 편집기로
++			   저장한 지도를 쓴 리플레이를 통째로 못 읽는다. */
+ 			if (use_map_settings) {
+ 				read_chunks({
+-					{"STR ", true},
++					{"STRx", false},
++			{"STR ", false},
+ 					{"MTXM", true},
+ 					{"THG2", true},
+ 					{"MASK", true},
+@@ -21857,7 +21996,8 @@ struct game_load_functions : state_functions {
+ 				});
+ 			} else {
+ 				read_chunks({
+-					{"STR ", true},
++					{"STRx", false},
++			{"STR ", false},
+ 					{"MTXM", true},
+ 					{"THG2", true},
+ 					{"UNIT", true},
+diff --git a/game_types.h b/game_types.h
+index d2eaa3e..ec369d7 100644
+--- a/game_types.h
++++ b/game_types.h
+@@ -11,25 +11,29 @@ struct sprite_t;
+ struct flingy_t;
+ struct unit_t;
+ 
+-template<typename T>
++template<typename T, size_t index_bits = 11>
+ struct unit_id_t {
+ 	T raw_value = 0;
+ 	unit_id_t() = default;
+ 	explicit unit_id_t(T raw_value) : raw_value(raw_value) {}
+-	explicit unit_id_t(size_t index, unsigned int generation) : raw_value((T)(index | generation << 11)) {}
++	explicit unit_id_t(size_t index, unsigned int generation) : raw_value((T)(index | generation << index_bits)) {}
+ 	bool operator==(const unit_id_t& n) const {
+ 		return raw_value == n.raw_value;
+ 	}
+ 	size_t index() const {
+-		return raw_value & 0x7ff;
++		return raw_value & ((T)((1u << index_bits) - 1));
+ 	}
+ 	unsigned int generation() const {
+-		return raw_value >> 11;
++		return raw_value >> index_bits;
+ 	}
+ };
+ 
+-using unit_id = unit_id_t<uint16_t>;
+-using unit_id_32 = unit_id_t<uint32_t>;
++/* 옛 16비트 태그는 자리 칸이 11비트(1700칸까지)였다. 리마스터는 유닛 그릇을 3400칸으로
++   늘리면서 32비트 태그의 자리 칸을 13비트로 넓혔다. 엔진 **속**에서도(수송선 탑승 명부,
++   길찾기 충돌 기록) 자리 번호를 담으므로, 그쪽도 넓은 쪽을 써야 한다 — 11비트에 담으면
++   번호가 잘려 엉뚱한 유닛을 가리킨다. */
++using unit_id = unit_id_t<uint16_t, 11>;
++using unit_id_32 = unit_id_t<uint32_t, 13>;
+ 
+ struct default_link_f {
+ 	template<typename T>
+@@ -48,39 +52,44 @@ template<typename T, size_t max_size, size_t allocation_granularity>
+ struct object_container {
+ 	a_deque<std::array<T, allocation_granularity>> list;
+ 	intrusive_list<T, default_link_f> free_list;
++	/* 그릇 크기는 판마다 다르다 — 1.16.1은 유닛 1700칸이지만 리마스터는 3400칸이다
++	   (요즘 리플레이의 LMTS 구획에 그 수가 그대로 적혀 있다). 자리 번호가
++	   `크기 − 몇째로 만들어졌나`로 매겨지므로, 이 수가 틀리면 **모든 유닛 번호가
++	   1700씩 어긋난다** — 명령이 가리키는 유닛을 못 찾게 되는 진짜 원인이다. */
++	size_t limit = max_size;
+ 	size_t size = 0;
+ 	
+ 	T* get(size_t index, bool add_new_to_free = true) {
+-		if (index) index = max_size - index;
++		if (index) index = limit - index;
+ 		while (size <= index) grow(add_new_to_free);
+ 		return &list[index / allocation_granularity][index % allocation_granularity];
+ 	}
+ 	
+ 	T* try_get(size_t index) {
+-		if (index) index = max_size - index;
++		if (index) index = limit - index;
+ 		if (size <= index) return nullptr;
+ 		return &list[index / allocation_granularity][index % allocation_granularity];
+ 	}
+ 	
+ 	T* at(size_t index) {
+-		if (index) index = max_size - index;
++		if (index) index = limit - index;
+ 		if (size <= index) error("object_container::get const: invalid index %u", index);
+ 		return &list[index / allocation_granularity][index % allocation_granularity];
+ 	}
+ 	
+ 	const T* at(size_t index) const {
+-		if (index) index = max_size - index;
++		if (index) index = limit - index;
+ 		if (size <= index) error("object_container::get const: invalid index %u", index);
+ 		return &list[index / allocation_granularity][index % allocation_granularity];
+ 	}
+ 	
+ 	void grow(bool add_new_to_free) {
+-		if (size == max_size) error("object_container: attempt to grow beyond max_size");
++		if (size == limit) error("object_container: attempt to grow beyond max_size");
+ 		list.emplace_back();
+-		size_t n = std::min(allocation_granularity, max_size - size);
++		size_t n = std::min(allocation_granularity, limit - size);
+ 		for (size_t i = 0; i != n; ++i) {
+ 			T* obj = &list.back()[i];
+-			obj->index = size == 0 ? 0 : max_size - size;
++			obj->index = size == 0 ? 0 : limit - size;
+ 			if (add_new_to_free) free_list.push_back(*obj);
+ 			++size;
+ 		}
+@@ -88,9 +97,9 @@ struct object_container {
+ 	
+ 	T* top() {
+ 		if (free_list.empty()) {
+-			if (size == max_size) return nullptr;
++			if (size == limit) return nullptr;
+ 			grow(true);
+-		} else if (size != max_size && std::next(free_list.begin()) == free_list.end()) {
++		} else if (size != limit && std::next(free_list.begin()) == free_list.end()) {
+ 			grow(true);
+ 		}
+ 		auto* r = &free_list.front();
+@@ -540,7 +549,7 @@ struct path_t: link_base {
+ 	xy destination;
+ 	xy next;
+ 
+-	unit_id last_collision_unit;
++	unit_id_32 last_collision_unit;
+ 	fp8 last_collision_speed;
+ 	direction_t slide_free_direction;
+ 
+@@ -629,7 +638,7 @@ struct unit_t: flingy_t {
+ 	fp8 shield_construction_rate;
+ 	int remaining_build_time;
+ 	int previous_hp;
+-	std::array<unit_id, 8> loaded_units;
++	std::array<unit_id_32, 8> loaded_units;
+ 
+ 	struct fighter_link {
+ 		auto* operator()(unit_t* ptr) {
+diff --git a/replay.h b/replay.h
+index 00f44eb..fce6133 100644
+--- a/replay.h
++++ b/replay.h
+@@ -117,6 +117,8 @@ struct replay_functions: action_functions {
+ 		gir.get<uint16_t>(); // campaign id
+ 		gir.get<uint8_t>(); // command byte ?
+ 		uint32_t random_seed = gir.get<uint32_t>();
++		if (getenv("BWDUMP_SEEDADD")) random_seed += (uint32_t)atoi(getenv("BWDUMP_SEEDADD"));
++		if (getenv("BWDUMP_SEED")) fprintf(stderr, "난수 씨앗 %u (0x%08x) · 프레임수 %u\n", random_seed, random_seed, frame_count);
+ 		gir.get<std::array<uint8_t, 8>>(); // player bytes ?
+ 		gir.get<uint32_t>(); // ?
+ 		auto player_name = gir.get<std::array<char, 24>>();
+@@ -190,6 +192,10 @@ struct replay_functions: action_functions {
+ 		auto player_color = gir.get<std::array<uint32_t, 8>>(); // player colors
+ 		auto create_melee_units_for_player = gir.get<std::array<uint8_t, 8>>();
+ 		
++		if (getenv("BWDUMP_SETUP"))
++			fprintf(stderr, "설정: 승리조건 %d · 자원방식 %d · 시작유닛 %d · 토너먼트 %d · 시작미네랄 %u\n",
++				(int)victory_condition, (int)resource_type, (int)create_initial_units,
++				(int)tournament_mode, (unsigned)starting_minerals);
+ 		replay_st.end_frame = frame_count;
+ 		replay_st.game_type = game_type;
+ 		
+@@ -224,6 +230,36 @@ struct replay_functions: action_functions {
+ 		for (size_t i = 0; i != 8; ++i) {
+ 			st.players[i].color = (int)player_color[i];
+ 		}
++
++		/* 팀전은 같은 편끼리 **동맹**으로 시작한다 — 이걸 안 걸면 한 편이 서로 적이 되어
++		   만나자마자 치고받는다. 없던 전투가 벌어지니 죽는 유닛이 달라지고, 유닛 자리가
++		   어긋나면서 그 뒤 명령이 통째로 헛돈다.
++		     11 팀멜리 · 12 팀FFA · 13 팀CTF · 15 Top vs Bottom
++		   요즘 리플레이는 거의 다 15다(3v3·4v4 공방). 멜리(2)는 각자 남이라 안 건다. */
++		if (replay_st.game_type == 11 || replay_st.game_type == 12
++			|| replay_st.game_type == 13 || replay_st.game_type == 15) {
++			for (size_t i = 0; i != 8; ++i) {
++				if (st.players[i].controller != player_t::controller_occupied
++					&& st.players[i].controller != player_t::controller_computer_game) continue;
++				for (size_t j = 0; j != 8; ++j) {
++					if (i == j) continue;
++					if (st.players[j].controller != player_t::controller_occupied
++						&& st.players[j].controller != player_t::controller_computer_game) continue;
++					if (st.players[i].force != st.players[j].force) continue;
++					st.alliances[i][j] = 1;
++					st.shared_vision[i] |= 1 << j;
++				}
++			}
++		}
++		if (getenv("BWDUMP_ALLY")) {
++			fprintf(stderr, "게임 갈래 %u · 편(force)/동맹\n", (unsigned)replay_st.game_type);
++			for (size_t i = 0; i != 8; ++i) {
++				if (st.players[i].controller != player_t::controller_occupied) continue;
++				fprintf(stderr, "  임자%zu 편%d 종족%d  동맹: ", i, (int)st.players[i].force, (int)st.players[i].race);
++				for (size_t j = 0; j != 8; ++j) fprintf(stderr, "%d", (int)st.alliances[i][j]);
++				fprintf(stderr, "\n");
++			}
++		}
+ 	}
+ 	
+ 	void next_frame() {
